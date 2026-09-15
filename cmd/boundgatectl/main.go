@@ -1,0 +1,204 @@
+// boundgatectl controls the local boundgate-node daemon.
+//
+//	boundgatectl status
+//	boundgatectl identity
+//	boundgatectl enroll [-name NAME]
+//	boundgatectl profiles
+//	boundgatectl up [-profile NAME]
+//	boundgatectl down
+//	boundgatectl admin sign --control URL --node ID --fingerprint FP --token T   (admin side, see adminsign.go)
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
+)
+
+func main() {
+	socket := flag.String("socket", "/run/boundgate/node.sock", "node daemon socket")
+	asJSON := flag.Bool("json", false, "print raw JSON")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|enroll [-name NAME]|profiles|up [-profile NAME]|down\n"+
+			"       boundgatectl [-json] admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F|--agent-key S|--signature F|--out F]\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+	if flag.NArg() == 0 {
+		flag.Usage()
+		os.Exit(2)
+	}
+	if flag.Arg(0) == "admin" {
+		if err := runAdmin(flag.Args()[1:], *asJSON); err != nil {
+			fmt.Fprintln(os.Stderr, "boundgatectl:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	c := ipc.NewClient(*socket)
+	if err := run(c, flag.Args(), *asJSON); err != nil {
+		fmt.Fprintln(os.Stderr, "boundgatectl:", err)
+		os.Exit(1)
+	}
+}
+
+func run(c *ipc.Client, args []string, asJSON bool) error {
+	switch args[0] {
+	case "status":
+		s, err := c.Status()
+		if err != nil {
+			return err
+		}
+		return printStatus(s, asJSON)
+	case "identity":
+		s, err := c.Status()
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return dump(map[string]any{"node_name": s.NodeName, "node_id": s.NodeID, "spki": s.SPKI, "fingerprint": s.Fingerprint, "key_kind": s.KeyKind, "hardware_bound": s.HardwareBound,
+				"enrollment": s.Enrollment, "control": s.Control, "control_pin": s.ControlPin, "admin_keys": s.AdminKeys, "binding": s.Binding})
+		}
+		fmt.Printf("node:         %s\nkey:          %s (hardware-bound: %v)\nspki:         %s\nfingerprint:  %s\nenrollment:   %s\n", s.NodeName, s.KeyKind, s.HardwareBound, s.SPKI, s.Fingerprint, s.Enrollment)
+		fmt.Printf("control:      %s\ncontrol pin:  %s\n", s.Control, orNone(s.ControlPin))
+		if len(s.AdminKeys) == 0 {
+			fmt.Println("admin keys:   none pinned yet (pinned at enrollment)")
+		}
+		for i, k := range s.AdminKeys {
+			label := "admin keys:  "
+			if i > 0 {
+				label = "             "
+			}
+			fmt.Printf("%s %s\n", label, k)
+		}
+		if s.Binding != "" {
+			fmt.Printf("binding:      %s\n", s.Binding)
+		}
+		return nil
+	case "enroll":
+		fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
+		name := fs.String("name", "", "node name shown to the admin (default: configured name)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		st, err := c.Enroll(*name)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return dump(st)
+		}
+		fmt.Printf("status:       %s\nnode id:      %s\nname:         %s\nfingerprint:  %s\n", st.Status, st.NodeID, st.Name, st.Fingerprint)
+		switch st.Status {
+		case "pending":
+			fmt.Println("\nWaiting for approval. Give the fingerprint above to your administrator;")
+			fmt.Println("they must compare it with the request before approving.")
+		case "approved":
+			fmt.Printf("\nThis node is approved (overlay address %s). Use `boundgatectl up`.\n", st.OverlayIP)
+		case "revoked":
+			fmt.Println("\nThis node key was revoked. Delete the node state to create a new key and enroll again.")
+		}
+		return nil
+	case "profiles":
+		names, err := c.Profiles()
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return dump(names)
+		}
+		for _, n := range names {
+			fmt.Println(n)
+		}
+		return nil
+	case "up":
+		fs := flag.NewFlagSet("up", flag.ContinueOnError)
+		prof := fs.String("profile", "", "routing profile (default: the daemon's configured profile, else everything advertised)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		s, err := c.Up(*prof)
+		if err != nil {
+			return err
+		}
+		return printStatus(s, asJSON)
+	case "down":
+		s, err := c.Down()
+		if err != nil {
+			return err
+		}
+		return printStatus(s, asJSON)
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func printStatus(s node.Status, asJSON bool) error {
+	if asJSON {
+		return dump(s)
+	}
+	fmt.Printf("state:        %s\n", s.State)
+	if s.State != node.StateDown {
+		fmt.Printf("profile:      %s\noverlay ip:   %s\nroles:        %v\n", s.Profile, s.OverlayIP, s.Roles)
+		if len(s.Prefixes) > 0 {
+			fmt.Printf("announces:    %s\n", strings.Join(s.Prefixes, ", "))
+		}
+		for _, h := range s.Hubs {
+			mark := " "
+			if h.Primary {
+				mark = "*"
+			}
+			line := fmt.Sprintf("hub %s        %s (%s) %s", mark, h.Name, h.Addr, h.State)
+			if h.Error != "" {
+				line += ": " + h.Error
+			}
+			fmt.Println(line)
+		}
+		if len(s.Routes) > 0 {
+			fmt.Printf("routes:       %s\n", strings.Join(s.Routes, ", "))
+		}
+		if s.Tunnels > 0 {
+			fmt.Printf("tunnels:      %d\n", s.Tunnels)
+		}
+		fmt.Printf("since:        %s\n", s.Since.Format("2006-01-02 15:04:05"))
+	}
+	if s.LastError != "" {
+		fmt.Printf("last error:   %s\n", s.LastError)
+	}
+	if s.BindingError != "" {
+		fmt.Printf("binding:      INVALID: %s\n", s.BindingError)
+	}
+	if s.ControlError != "" {
+		fmt.Printf("control:      ERROR: %s\n", s.ControlError)
+	}
+	for _, p := range s.IgnoredPeers {
+		fmt.Printf("ignored peer: %s\n", p)
+	}
+	if s.LastClose != "" {
+		fmt.Printf("last close:   %s\n", s.LastClose)
+	}
+	fmt.Printf("enrollment:   %s", s.Enrollment)
+	if s.EnrollmentError != "" {
+		fmt.Printf(" (%s)", s.EnrollmentError)
+	}
+	fmt.Printf("\nnode:         %s (%s, hardware-bound: %v)\nfingerprint:  %s\nsnapshot:     v%d from %s\n", s.NodeName, s.KeyKind, s.HardwareBound, s.Fingerprint, s.SnapshotVersion, s.Control)
+	return nil
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+func dump(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}

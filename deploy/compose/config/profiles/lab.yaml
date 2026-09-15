@@ -1,0 +1,6 @@
+name: lab
+routing:
+  mode: include          # only these networks go through the overlay (∩ advertised)
+  networks:
+    - 10.60.0.0/24       # behind hub1 and hub2 (HA)
+    - 192.168.178.0/24   # behind node-r (subnet router, snat)

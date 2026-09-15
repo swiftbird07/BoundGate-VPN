@@ -339,3 +339,15 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+
+# ---> BoundGate
+# Browser exports of design chats contain session tokens. Never commit.
+*.webarchive
+Dream VPN Architektur.html
+.DS_Store
+# Local dev state
+/.dev/
+/var/
+/bin/
+/deploy/compose/state/
+/deploy/compose/logs/

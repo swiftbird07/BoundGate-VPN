@@ -1,0 +1,130 @@
+# Local development environment: everything runs in containers inside the
+# Colima VM. TUN devices, routes and nftables live in the containers' own
+# network namespaces; the macOS host is untouched.
+#
+#   make compose-up            # build binaries in the box, build images, start
+#   make setup-dev             # dev admin key, confirm + sign hub1, hub2, node-r, node-a
+#   docker compose -f deploy/compose/docker-compose.yml exec node-a boundgatectl up
+#   docker compose -f deploy/compose/docker-compose.yml exec node-a curl -s http://10.60.0.10
+#   make e2e                   # full M1.5/M1.6 check incl. HA, revocation, signed bindings
+#
+# Networks:
+#   public   172.30.0.0/24  control (.5), hub1 (.10), hub2 (.11), node-a (.20), node-r (.30)
+#   internal 10.60.0.0/24   hub1 (.2), hub2 (.3), target (.10)      "behind the hubs"
+#   lan      192.168.178.0/24 node-r (.30), target-lan (.10)        "Martin's home LAN"
+#   overlay  10.21.0.0/16   assigned by the control plane at approval
+
+name: boundgate
+
+networks:
+  public:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.60.0.0/24
+  lan:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.178.0/24
+
+x-node: &node
+  build:
+    context: ../..
+    dockerfile: deploy/compose/Dockerfile.node
+    args:
+      GOARCH: ${GOARCH:-arm64}
+  cap_add: [NET_ADMIN]
+  devices: ["/dev/net/tun:/dev/net/tun"]
+  sysctls:
+    net.ipv4.ip_forward: "1"
+  depends_on: [control]
+
+services:
+  control:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control
+      args:
+        GOARCH: ${GOARCH:-arm64}
+    networks:
+      public:
+        ipv4_address: 172.30.0.5
+    ports:
+      - "127.0.0.1:18443:443"     # admin API over TLS (self-signed dev cert)
+    volumes:
+      - ./config:/etc/boundgate:ro
+      - ./state/control:/var/lib/boundgate
+      - ./logs/control:/var/log/boundgate
+    command: ["boundgate-control", "-config", "/etc/boundgate/control.yaml"]
+
+  hub1:
+    <<: *node
+    networks:
+      public:
+        ipv4_address: 172.30.0.10
+      internal:
+        ipv4_address: 10.60.0.2
+    volumes:
+      - ./config:/etc/boundgate:ro
+      - ./state/hub1:/var/lib/boundgate
+      - ./logs/hub1:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/hub1.yaml"]
+
+  hub2:
+    <<: *node
+    networks:
+      public:
+        ipv4_address: 172.30.0.11
+      internal:
+        ipv4_address: 10.60.0.3
+    volumes:
+      - ./config:/etc/boundgate:ro
+      - ./state/hub2:/var/lib/boundgate
+      - ./logs/hub2:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/hub2.yaml"]
+
+  node-a:
+    <<: *node
+    networks:
+      public:
+        ipv4_address: 172.30.0.20
+    volumes:
+      - ./config:/etc/boundgate:ro
+      - ./state/node-a:/var/lib/boundgate
+      - ./logs/node-a:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/node-a.yaml"]
+
+  node-r:
+    <<: *node
+    networks:
+      public:
+        ipv4_address: 172.30.0.30
+      lan:
+        ipv4_address: 192.168.178.30
+    volumes:
+      - ./config:/etc/boundgate:ro
+      - ./state/node-r:/var/lib/boundgate
+      - ./logs/node-r:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/node-r.yaml"]
+
+  target:
+    image: traefik/whoami:v1.10.4
+    networks:
+      internal:
+        ipv4_address: 10.60.0.10
+    command: ["--port", "80", "--name", "target"]
+
+  target-lan:
+    image: traefik/whoami:v1.10.4
+    networks:
+      lan:
+        ipv4_address: 192.168.178.10
+    command: ["--port", "80", "--name", "target-lan"]

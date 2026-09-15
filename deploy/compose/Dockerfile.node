@@ -1,0 +1,10 @@
+# Runtime image for boundgate-node (all roles) plus boundgatectl and curl.
+# The binaries are built outside (make build-linux, i.e. `box go build`).
+FROM alpine:3.20
+ARG GOARCH=arm64
+RUN apk add --no-cache iproute2 nftables curl ca-certificates
+COPY bin/linux_${GOARCH}/boundgate-node /usr/local/bin/boundgate-node
+COPY bin/linux_${GOARCH}/boundgatectl /usr/local/bin/boundgatectl
+RUN mkdir -p /var/lib/boundgate /var/log/boundgate /etc/boundgate /run/boundgate
+ENTRYPOINT []
+CMD ["boundgate-node"]

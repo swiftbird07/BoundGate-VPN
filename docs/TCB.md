@@ -1,0 +1,65 @@
+# Trusted Computing Base
+
+The TCB is the code whose failure breaks the security promise ("a copied
+secret never authorizes a second device"). Keep it small, boring and
+reviewed. Everything outside the TCB may have bugs that cause wrong
+*authorization* decisions, but it cannot mint a node identity.
+
+## In the TCB
+
+| Component | Why |
+|---|---|
+| Go `crypto/tls`, `crypto/x509`, `crypto/ecdsa` | TLS 1.3 handshake, certificate parsing, signatures |
+| `github.com/quic-go/quic-go` (+ `http3`) | QUIC transport, TLS integration, HTTP/3 |
+| `github.com/quic-go/connect-ip-go` | RFC 9484 capsules and datagrams, assigned-address enforcement |
+| `internal/devicekey`, `devicekey/softkey`, `devicekey/tpm2key` | Key generation and signing; the only code touching private key material |
+| `internal/devicecert` | Builds the certificate that carries the key |
+| `internal/transport` | `parseDeviceCert`, `verifyDevice`, `verifyPinned` (spoke → hub), `serverKeyHash` + pin (node → control plane), `PeerFromTLSState`, `AuthenticatedPeer`, `CloseDevice` (revocation) |
+| `internal/registry` lookup path | `Holder.LookupSPKI` and `Holder.Stale`: a stale or wrong answer here admits a wrong node |
+| Node revocation path | snapshot diff → `Server.CloseDevice`; loss of own approval → `Holder.Clear` + teardown |
+| `internal/node/hub.go` `Accept`/`Serve` + `internal/node/forward` | Packets enter the overlay only from here, after the source check (and the ACL from M3) |
+| `internal/node/ipc` verb set | The local attack surface of the privileged daemon |
+| `internal/binding` (+ `golang.org/x/crypto/ssh`) | Canonical binding bytes, SSHSIG framing, signature verification against the pinned admin keys; `VerifySnapshot` decides which records a node believes |
+| Node snapshot intake | `controlclient.Run` → `Node.verifySnapshot` → `Holder.Store`: nothing reaches the holder unverified; own-binding failure clears the holder |
+| Pinned files in the node state directory | `admin_keys` and `control.pin` (written once, root-only); replacing them re-roots the node's trust |
+
+## Explicitly outside the TCB
+
+Control-plane SPA and admin API (including confirm, sign tokens and signer
+registration: they gate who *may* sign, the nodes decide what *was* signed),
+the control plane's database, OIDC handling, Cedar policies and the ACL
+engine, logs, profile files, the `boundgatectl` CLI (`admin sign` produces
+a signature; a wrong one is simply refused), route installation (`netcfg`).
+A compromise there can deny access or grant more network reach than
+intended (bounded by what hubs advertise and by the signed roles and
+prefixes), but cannot make an unapproved key pass the handshake or make a
+node believe an unsigned role.
+
+## Rules
+
+1. `transport.AuthenticatedPeer` has unexported fields and exactly one
+   constructor, `PeerFromTLSState`. A test (`TestNoOtherConstructors`, M1.6)
+   greps the AST for other constructions.
+2. Nothing above transport reads certificates. Layers receive a peer, a
+   session and a destination.
+3. The ACL API is `Authorize(peer, session, destination) → Decision`. There
+   is no `SetAuthenticated`, `SkipVerification` or similar.
+4. Authorization only removes capabilities: effective access =
+   registry (advertised) ∩ profile ∩ ACL.
+5. Transport may downgrade (H3 → TCP for the control channel today, for
+   tunnels later); authentication never does. Every fallback still requires
+   the device certificate.
+6. Enforcement happens on the side that lets traffic into a resource (hub,
+   subnet router, exit node; from M7 the receiving endpoint). The sender's
+   own checks are never the only ones.
+7. Dependencies in the TCB are pinned and updated deliberately, never
+   `go get -u`. The `box` dev container enforces a 14-day cooldown on module
+   versions (`gocooldown check`).
+
+## The 200 lines to review hardest
+
+`internal/transport/peer.go`, `pin.go` and `controlpin.go` between the raw
+TLS certificates and the `AuthenticatedPeer` (or the accepted hub, or the
+trusted control plane), `internal/binding/binding.go` (`Parse`, `Matches`,
+`Verify`, `VerifySnapshot`) and `sshsig.go`, plus `internal/node/hub.go`
+`Accept`/`Serve`. That is where the whole model either holds or doesn't.

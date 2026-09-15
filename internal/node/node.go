@@ -1,0 +1,966 @@
+// Package node is the privileged daemon every BoundGate participant runs.
+// It owns the device key, keeps the control channel (enrollment, registry
+// snapshots), and depending on its granted roles accepts tunnels (hub),
+// dials hubs (everything else), announces prefixes (subnet router, exit
+// node) and configures TUN, routes and NAT. The CLI/GUI talk to it over a
+// narrow local IPC (package ipc) and never see the key.
+package node
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.zx2c4.com/wireguard/tun"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicecert"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/softkey"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/controlclient"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/profile"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
+)
+
+// Config for the daemon.
+type Config struct {
+	Name string
+	// StateDir holds device.key and device.crt.
+	StateDir string
+	// KeyKind selects the DeviceKey implementation: "softkey" (default) or "tpm2" (M6).
+	KeyKind string
+	// ControlAddr is host:port of the control plane (port 443).
+	ControlAddr string
+	// ControlServerName is the node SNI, default "nodes." + host of ControlAddr.
+	ControlServerName string
+	// ControlPin is the hex SPKI hash of the control plane's node-channel
+	// key, if provisioned. Empty: trust on first use, stored in
+	// StateDir/control.pin and shown by `boundgatectl identity`.
+	ControlPin string
+	// Roles and Prefixes are what the node asks for at enrollment; an admin
+	// grants them (or not). PublicAddr is announced for the hub role.
+	Roles      []string
+	Prefixes   []registry.Prefix
+	PublicAddr string
+	// Listen is the hub tunnel listener (UDP), default ":443".
+	Listen string
+	// AutoUp brings the overlay up as soon as the first snapshot arrives
+	// (servers, hubs, routers). Interactive endpoints use `boundgatectl up`.
+	AutoUp bool
+	// Profile is the default routing profile name ("" = everything advertised).
+	Profile     string
+	ProfilesDir string
+	TUNName     string
+	MTU         int
+	Log         *slog.Logger
+}
+
+// State of the overlay.
+type State string
+
+const (
+	StateDown     State = "down"
+	StateStarting State = "starting"
+	StateUp       State = "up"
+)
+
+// Status is what the CLI shows.
+type Status struct {
+	State           State           `json:"state"`
+	Profile         string          `json:"profile,omitempty"`
+	OverlayIP       string          `json:"overlay_ip,omitempty"`
+	Roles           []registry.Role `json:"roles,omitempty"`
+	Prefixes        []string        `json:"prefixes,omitempty"`
+	Hubs            []HubStatus     `json:"hubs,omitempty"`
+	Routes          []string        `json:"routes,omitempty"`
+	Tunnels         int             `json:"tunnels"` // accepted tunnels (hub role)
+	Since           time.Time       `json:"since,omitempty"`
+	LastError       string          `json:"last_error,omitempty"`
+	LastClose       string          `json:"last_close,omitempty"`
+	NodeName        string          `json:"node_name"`
+	NodeID          string          `json:"node_id,omitempty"`
+	SPKI            string          `json:"spki"`
+	Fingerprint     string          `json:"fingerprint"`
+	KeyKind         string          `json:"key_kind"`
+	HardwareBound   bool            `json:"hardware_bound"`
+	Enrollment      string          `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
+	EnrollmentError string          `json:"enrollment_error,omitempty"`
+	Control         string          `json:"control"`
+	// ControlError is the last error of the control channel ("" = fine).
+	ControlError string `json:"control_error,omitempty"`
+	// ControlPin is the fingerprint of the pinned control-plane key.
+	ControlPin string `json:"control_pin,omitempty"`
+	// AdminKeys are the pinned admin signing keys (type + SHA256 fingerprint).
+	AdminKeys []string `json:"admin_keys,omitempty"`
+	// Binding reports the state of the node's own signed binding:
+	// "verified", "" (no snapshot yet) or an error text.
+	Binding      string `json:"binding,omitempty"`
+	BindingError string `json:"binding_error,omitempty"`
+	// IgnoredPeers lists peers whose binding did not verify (name: reason).
+	IgnoredPeers    []string `json:"ignored_peers,omitempty"`
+	SnapshotVersion uint64   `json:"snapshot_version"`
+}
+
+// Node is the daemon state.
+type Node struct {
+	cfg     Config
+	log     *slog.Logger
+	key     devicekey.DeviceKey
+	spki    devicekey.SPKIHash
+	cert    tls.Certificate
+	net     netcfg.Configurator
+	control *controlclient.Client
+	holder  *registry.Holder
+	pins    transport.PinStore
+
+	keysMu    sync.Mutex
+	adminKeys binding.Signers
+
+	mu       sync.Mutex
+	status   Status
+	sess     *session
+	autoDone bool
+}
+
+// New opens (or creates) the device key and certificate.
+func New(cfg Config) (*Node, error) {
+	if cfg.Log == nil {
+		cfg.Log = slog.Default()
+	}
+	if cfg.MTU == 0 {
+		cfg.MTU = 1280
+	}
+	if cfg.TUNName == "" {
+		cfg.TUNName = "bg0"
+	}
+	if cfg.Listen == "" {
+		cfg.Listen = ":443"
+	}
+	if cfg.Name == "" {
+		cfg.Name, _ = os.Hostname()
+	}
+	if cfg.ControlAddr == "" {
+		return nil, errors.New("node: control address is required")
+	}
+	if !strings.Contains(cfg.ControlAddr, ":") {
+		cfg.ControlAddr += ":443"
+	}
+	if cfg.ControlServerName == "" {
+		host, _, _ := net.SplitHostPort(cfg.ControlAddr)
+		cfg.ControlServerName = "nodes." + host
+	}
+	if _, err := registry.ParseRoles(cfg.Roles); err != nil {
+		return nil, err
+	}
+	for _, p := range cfg.Prefixes {
+		if err := p.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		return nil, err
+	}
+	var opener devicekey.Opener
+	switch cfg.KeyKind {
+	case "", "softkey":
+		opener = softkey.New(filepath.Join(cfg.StateDir, "device.key"))
+	default:
+		return nil, fmt.Errorf("node: unsupported key kind %q", cfg.KeyKind)
+	}
+	key, err := opener.Open(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	cert, err := devicecert.LoadOrCreate(filepath.Join(cfg.StateDir, "device.crt"), key, cfg.Name)
+	if err != nil {
+		return nil, err
+	}
+	spki, err := devicekey.HashPublicKey(key.Public())
+	if err != nil {
+		return nil, err
+	}
+	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: netcfg.New(), holder: &registry.Holder{}}
+	// control-plane pin: provisioned by config, else learned on first use
+	if cfg.ControlPin != "" {
+		pin, err := devicekey.ParseSPKIHash(cfg.ControlPin)
+		if err != nil {
+			return nil, fmt.Errorf("node: control.pin: %w", err)
+		}
+		n.pins = transport.NewMemPin(pin)
+	} else {
+		n.pins = &filePin{path: filepath.Join(cfg.StateDir, "control.pin")}
+	}
+	if keys, err := os.ReadFile(n.adminKeysPath()); err == nil {
+		n.adminKeys, err = binding.ParseSigners(keys)
+		if err != nil {
+			return nil, fmt.Errorf("node: %s: %w", n.adminKeysPath(), err)
+		}
+	}
+	onLearn := func(h devicekey.SPKIHash) {
+		cfg.Log.Warn("pinned control plane key on first use; compare this fingerprint with the operator's", "control", cfg.ControlAddr, "fingerprint", h.Fingerprint())
+	}
+	n.control = controlclient.New(controlclient.Config{
+		Addr: cfg.ControlAddr,
+		TLS:  transport.ClientTLSConfigControl(cert, cfg.ControlServerName, n.pins, onLearn),
+		Log:  cfg.Log, Verify: n.verifySnapshot, OnError: n.controlError,
+	})
+	n.status = Status{
+		State:         StateDown,
+		NodeName:      cfg.Name,
+		SPKI:          spki.String(),
+		Fingerprint:   spki.Fingerprint(),
+		KeyKind:       key.Kind(),
+		HardwareBound: key.HardwareBound(),
+		Enrollment:    "unknown",
+		Control:       cfg.ControlAddr,
+		AdminKeys:     n.adminKeys.Fingerprints(),
+	}
+	if pin, ok := n.pins.Pinned(); ok {
+		n.status.ControlPin = pin.Fingerprint()
+	}
+	cfg.Log.Info("node identity", "name", cfg.Name, "key_kind", key.Kind(), "hardware_bound", key.HardwareBound(), "spki", spki, "control", cfg.ControlAddr,
+		"control_pin", n.status.ControlPin, "admin_keys", len(n.adminKeys))
+	return n, nil
+}
+
+func (n *Node) adminKeysPath() string { return filepath.Join(n.cfg.StateDir, "admin_keys") }
+
+// controlError records the control channel state and explains a pin
+// mismatch once per episode.
+func (n *Node) controlError(err error) {
+	n.mu.Lock()
+	prev := n.status.ControlError
+	if err == nil {
+		n.status.ControlError = ""
+	} else {
+		n.status.ControlError = err.Error()
+	}
+	n.mu.Unlock()
+	if err != nil && errors.Is(err, transport.ErrControlKeyMismatch) && !strings.Contains(prev, "pinned key") {
+		n.log.Error("control plane key changed; refusing to talk to it. If the change is intended, remove control.pin (or update control.pin in the config) and restart", "err", err)
+	}
+}
+
+// pinAdminKeys stores the admin signing keys delivered at enrollment, once.
+// Later deliveries are ignored: the keys a node trusts are fixed at
+// enrollment (losing all of them means re-enrolling).
+func (n *Node) pinAdminKeys(lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	n.keysMu.Lock()
+	defer n.keysMu.Unlock()
+	if len(n.adminKeys) > 0 {
+		return
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	keys, err := binding.ParseSigners([]byte(text))
+	if err != nil || len(keys) == 0 {
+		n.log.Error("admin keys from the control plane are unusable", "err", err)
+		return
+	}
+	if err := os.WriteFile(n.adminKeysPath(), []byte(text), 0o600); err != nil {
+		n.log.Error("store admin keys", "err", err)
+		return
+	}
+	n.adminKeys = keys
+	n.mu.Lock()
+	n.status.AdminKeys = keys.Fingerprints()
+	n.mu.Unlock()
+	n.log.Warn("pinned admin signing keys at enrollment; they are never updated", "keys", keys.Fingerprints())
+}
+
+func (n *Node) signers() binding.Signers {
+	n.keysMu.Lock()
+	defer n.keysMu.Unlock()
+	return n.adminKeys
+}
+
+// applyEnrollStatus records what the control plane said and pins keys.
+func (n *Node) applyEnrollStatus(st api.EnrollStatus) {
+	n.pinAdminKeys(st.AdminSignerKeys)
+	if st.ControlSPKI != "" {
+		if want, err := devicekey.ParseSPKIHash(st.ControlSPKI); err == nil {
+			if pin, ok := n.pins.Pinned(); ok && pin != want {
+				n.log.Error("control plane reports a node-channel key that differs from the pinned one", "pinned", pin.Fingerprint(), "reported", want.Fingerprint())
+			}
+		}
+	}
+	n.mu.Lock()
+	n.status.Enrollment, n.status.EnrollmentError, n.status.NodeID = st.Status, "", st.NodeID
+	if pin, ok := n.pins.Pinned(); ok {
+		n.status.ControlPin = pin.Fingerprint()
+	}
+	n.mu.Unlock()
+}
+
+// verifySnapshot checks every binding against the pinned admin keys. Peers
+// that fail are dropped (and listed in the status); if the node's own
+// binding fails the snapshot is refused and the overlay goes down.
+func (n *Node) verifySnapshot(s *registry.Snapshot) error {
+	rejected, err := binding.VerifySnapshot(s, n.signers())
+	n.mu.Lock()
+	n.status.IgnoredPeers = nil
+	for _, r := range rejected {
+		n.status.IgnoredPeers = append(n.status.IgnoredPeers, r.Name+": "+r.Err.Error())
+	}
+	if err != nil {
+		n.status.Binding, n.status.BindingError = "invalid", err.Error()
+		n.autoDone = false // come back automatically once the binding verifies again
+	} else {
+		n.status.Binding, n.status.BindingError = "verified", ""
+	}
+	n.mu.Unlock()
+	for _, r := range rejected {
+		n.log.Warn("peer ignored: binding does not verify", "peer", r.Name, "node", r.ID, "err", r.Err)
+	}
+	if err != nil {
+		n.Down("own binding does not verify: " + err.Error())
+		return err
+	}
+	return nil
+}
+
+// filePin stores the control-plane pin in the state directory.
+type filePin struct {
+	mu   sync.Mutex
+	path string
+}
+
+func (f *filePin) Pinned() (devicekey.SPKIHash, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, err := os.ReadFile(f.path)
+	if err != nil {
+		return devicekey.SPKIHash{}, false
+	}
+	h, err := devicekey.ParseSPKIHash(string(b))
+	if err != nil {
+		return devicekey.SPKIHash{}, false
+	}
+	return h, true
+}
+
+func (f *filePin) Learn(h devicekey.SPKIHash) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return os.WriteFile(f.path, []byte(h.String()+"\n"), 0o600)
+}
+
+// Run drives the control channel until ctx ends: enrollment status, then
+// snapshots and heartbeats while approved. It returns when ctx is done.
+func (n *Node) Run(ctx context.Context) {
+	go n.heartbeats(ctx)
+	for ctx.Err() == nil {
+		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		st, err := n.control.EnrollStatus(sctx)
+		cancel()
+		if err != nil {
+			n.mu.Lock()
+			n.status.EnrollmentError = err.Error()
+			n.mu.Unlock()
+			n.controlError(err)
+		} else {
+			n.applyEnrollStatus(st)
+			n.controlError(nil)
+		}
+		if err == nil && st.Status == "approved" {
+			err = n.control.Run(ctx, n.holder, n.onSnapshot)
+			if errors.Is(err, controlclient.ErrNotApproved) {
+				n.log.Warn("control plane no longer approves this node")
+				n.holder.Clear()
+				n.mu.Lock()
+				n.status.Enrollment, n.status.SnapshotVersion, n.status.Binding = "revoked", 0, ""
+				n.autoDone = false // auto_up nodes come back once approved again
+				n.mu.Unlock()
+				n.Down("node no longer approved by the control plane")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// onSnapshot reacts to a new registry version.
+func (n *Node) onSnapshot(diff registry.Diff, snap *registry.Snapshot) {
+	n.mu.Lock()
+	n.status.SnapshotVersion = snap.Version
+	n.status.NodeID = string(snap.Self.ID)
+	s := n.sess
+	auto := n.cfg.AutoUp && !n.autoDone && s == nil
+	if auto {
+		n.autoDone = true
+	}
+	n.mu.Unlock()
+	if s != nil {
+		s.applyDiff(diff, snap)
+	}
+	if auto {
+		go func() {
+			if err := n.Up(context.Background(), n.cfg.Profile); err != nil {
+				n.log.Error("auto up failed", "err", err)
+			}
+		}()
+	}
+}
+
+func (n *Node) heartbeats(ctx context.Context) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		snap := n.holder.Load()
+		if snap == nil {
+			continue
+		}
+		n.mu.Lock()
+		tunnels := 0
+		if n.sess != nil && n.sess.srv != nil {
+			tunnels = len(n.sess.srv.ActiveDevices())
+		}
+		n.mu.Unlock()
+		hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := n.control.Heartbeat(hctx, snap.Version, tunnels); err != nil {
+			n.log.Warn("heartbeat failed", "err", err)
+		}
+		cancel()
+	}
+}
+
+// Status returns the current status.
+func (n *Node) Status() Status {
+	n.publishStatus()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.status
+}
+
+// publishStatus refreshes the volatile parts (hub links, routes, tunnels).
+func (n *Node) publishStatus() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	s := n.sess
+	if s == nil {
+		return
+	}
+	n.status.Hubs, n.status.Routes, n.status.Tunnels = nil, nil, 0
+	if s.spoke != nil {
+		n.status.Hubs = s.spoke.hubs()
+		n.status.Routes = s.spoke.routes()
+	}
+	if s.srv != nil {
+		n.status.Tunnels = len(s.srv.ActiveDevices())
+	}
+	if s.spoke != nil || s.srv != nil {
+		n.status.State = StateUp
+	}
+}
+
+// Enroll submits the enrollment request and returns the control plane's
+// answer. It is idempotent.
+func (n *Node) Enroll(ctx context.Context, name string) (api.EnrollStatus, error) {
+	if name == "" {
+		name = n.cfg.Name
+	}
+	host, _ := os.Hostname()
+	st, err := n.control.Enroll(ctx, api.EnrollRequest{
+		Name:          name,
+		Hostname:      host,
+		Platform:      runtime.GOOS,
+		KeyKind:       n.key.Kind(),
+		HardwareBound: n.key.HardwareBound(),
+		Roles:         n.cfg.Roles,
+		Prefixes:      n.cfg.Prefixes,
+		PublicAddr:    n.cfg.PublicAddr,
+	})
+	if err != nil {
+		n.mu.Lock()
+		n.status.EnrollmentError = err.Error()
+		n.mu.Unlock()
+		return st, err
+	}
+	n.applyEnrollStatus(st)
+	n.log.Info("enrollment", "status", st.Status, "node_id", st.NodeID, "fingerprint", st.Fingerprint)
+	return st, nil
+}
+
+// Profiles lists the available profile names.
+func (n *Node) Profiles() ([]string, error) {
+	ps, err := profile.LoadDir(n.cfg.ProfilesDir)
+	if err != nil {
+		return nil, err
+	}
+	names := []string{"full"}
+	for _, p := range ps {
+		if p.Name != "full" {
+			names = append(names, p.Name)
+		}
+	}
+	return names, nil
+}
+
+func (n *Node) loadProfile(name string) (*profile.Profile, error) {
+	if name == "" || name == "full" {
+		return profile.Full(), nil
+	}
+	ps, err := profile.LoadDir(n.cfg.ProfilesDir)
+	if err != nil {
+		return nil, fmt.Errorf("profiles: %w", err)
+	}
+	for _, p := range ps {
+		if p.Name == name {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("unknown profile %q", name)
+}
+
+// waitReady makes sure the node is approved and holds a snapshot. The
+// control loop learns about an approval within a few seconds; an `up` right
+// after the admin clicked should not fail on that race, so this refreshes
+// the enrollment state and waits briefly for the first snapshot.
+func (n *Node) waitReady(ctx context.Context) error {
+	n.mu.Lock()
+	st := n.status.Enrollment
+	n.mu.Unlock()
+	if st != "approved" {
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		es, err := n.control.EnrollStatus(sctx)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("node: control plane: %w", err)
+		}
+		n.applyEnrollStatus(es)
+		if es.Status != "approved" {
+			return fmt.Errorf("node: not approved by the control plane (enrollment: %s); run `boundgatectl enroll` and ask an admin to confirm and sign %s", es.Status, n.spki.Fingerprint())
+		}
+	}
+	deadline := time.Now().Add(12 * time.Second)
+	for {
+		if s := n.holder.Load(); s != nil && s.Self.ID != "" && !n.holder.Stale(time.Now()) {
+			return nil
+		}
+		n.mu.Lock()
+		bindErr := n.status.BindingError
+		n.mu.Unlock()
+		if bindErr != "" {
+			return fmt.Errorf("node: own binding does not verify against the pinned admin keys: %s", bindErr)
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return errors.New("node: no current registry snapshot; is the control plane reachable? try again in a moment")
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// ErrAlreadyUp is returned by Up while the overlay is up.
+var ErrAlreadyUp = errors.New("node: overlay is already up; run down first")
+
+// Up brings the overlay up: TUN, address, hub listener and/or hub links,
+// routes. It returns once the local side is configured; hub links connect
+// in the background (see Status).
+func (n *Node) Up(ctx context.Context, profileName string) error {
+	if err := n.waitReady(ctx); err != nil {
+		return err
+	}
+	n.mu.Lock()
+	if n.sess != nil {
+		n.mu.Unlock()
+		return ErrAlreadyUp
+	}
+	snap := n.holder.Load()
+	if snap == nil || snap.Self.ID == "" || n.holder.Stale(time.Now()) {
+		n.mu.Unlock()
+		return errors.New("node: no current registry snapshot; is the control plane reachable? try again in a moment")
+	}
+	prof, err := n.loadProfile(profileName)
+	if err != nil {
+		n.mu.Unlock()
+		return err
+	}
+	s := newSession(n, snap, prof)
+	n.sess = s
+	n.status.State, n.status.LastError, n.status.Profile = StateStarting, "", prof.Name
+	n.mu.Unlock()
+
+	if err := s.apply(ctx); err != nil {
+		s.teardown()
+		n.mu.Lock()
+		if n.sess == s {
+			n.sess = nil
+		}
+		n.status.State, n.status.LastError, n.status.Profile = StateDown, err.Error(), ""
+		n.mu.Unlock()
+		return err
+	}
+	n.mu.Lock()
+	n.status.State = StateUp
+	n.status.OverlayIP = s.self.OverlayIP.String()
+	n.status.Roles = s.self.Roles
+	n.status.Prefixes = nil
+	for _, p := range s.self.Prefixes {
+		n.status.Prefixes = append(n.status.Prefixes, p.Prefix.String()+" ("+string(p.Mode)+")")
+	}
+	n.status.Since = s.since
+	n.status.LastClose = ""
+	n.mu.Unlock()
+	go n.watch(s)
+	return nil
+}
+
+// Down tears the overlay down.
+func (n *Node) Down(reason string) {
+	n.mu.Lock()
+	s := n.sess
+	n.mu.Unlock()
+	if s == nil {
+		return
+	}
+	if reason == "" {
+		reason = "down by user"
+	}
+	s.close(reason)
+	<-s.done
+}
+
+// Close tears down on shutdown.
+func (n *Node) Close() {
+	n.Down("node shutting down")
+	n.control.Close()
+}
+
+func (n *Node) watch(s *session) {
+	<-s.done
+	n.mu.Lock()
+	if n.sess == s {
+		n.sess = nil
+		n.status.State = StateDown
+		n.status.LastClose = s.reason
+		n.status.Profile, n.status.OverlayIP, n.status.Roles, n.status.Prefixes, n.status.Hubs, n.status.Routes, n.status.Tunnels = "", "", nil, nil, nil, nil, 0
+	}
+	n.mu.Unlock()
+	n.log.Info("overlay down", "reason", s.reason)
+}
+
+// session is one "up" period: everything apply created, so teardown can
+// undo it in reverse order.
+type session struct {
+	n       *Node
+	ctx     context.Context
+	cancel  context.CancelFunc
+	profile *profile.Profile
+	self    registry.Node
+	pool    netip.Prefix
+	isHub   bool
+
+	dev    tun.Device
+	ifname string
+	dp     *dataplane
+	srv    *transport.Server
+	spoke  *spokeManager
+
+	mu        sync.Mutex
+	bypass    map[netip.Addr]bool
+	peerRoute map[netip.Prefix]int // hub: kernel routes for peer prefixes
+	poolRoute bool
+	nat       bool
+
+	since  time.Time
+	done   chan struct{}
+	once   sync.Once
+	reason string
+}
+
+func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *session {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &session{
+		n: n, ctx: ctx, cancel: cancel, profile: prof, self: snap.Self, pool: snap.Pool.Masked(),
+		isHub: snap.Self.IsHub() || registry.HasRole(snap.Self.Roles, registry.RoleHub),
+		bypass: make(map[netip.Addr]bool), peerRoute: make(map[netip.Prefix]int), done: make(chan struct{}),
+	}
+}
+
+func (s *session) apply(ctx context.Context) error {
+	n := s.n
+	if err := s.addBypassHost(ctx, n.cfg.ControlAddr); err != nil {
+		return err
+	}
+	dev, ifname, err := n.net.CreateTUN(n.cfg.TUNName, n.cfg.MTU)
+	if err != nil {
+		return err
+	}
+	s.dev, s.ifname = dev, ifname
+	bits := 32
+	if s.isHub {
+		bits = s.pool.Bits() // the whole pool is "on link" for a hub
+	}
+	if err := n.net.SetAddress(ctx, ifname, netip.PrefixFrom(s.self.OverlayIP, bits), n.cfg.MTU); err != nil {
+		return err
+	}
+	if !s.isHub {
+		if err := n.net.AddRoute(ctx, s.pool, ifname); err != nil {
+			return err
+		}
+		s.poolRoute = true
+	}
+	forwards := s.isHub || registry.HasRole(s.self.Roles, registry.RoleSubnetRouter) || registry.HasRole(s.self.Roles, registry.RoleExitNode)
+	if forwards {
+		if err := n.net.EnableForwarding(ctx); err != nil {
+			return err
+		}
+	}
+	if err := s.applyNAT(ctx); err != nil {
+		return err
+	}
+	s.dp = newDataplane(dev, ifname, n.log)
+
+	if s.isHub {
+		srv, err := transport.NewServer(transport.ServerConfig{
+			Addr:        n.cfg.Listen,
+			TLS:         transport.ServerTLSConfig(n.cert, n.holder),
+			Lookup:      n.holder,
+			Template:    transport.HubTemplate,
+			IdleTimeout: 30 * time.Second,
+			KeepAlive:   10 * time.Second,
+			Logger:      n.log,
+		}, &hubService{s: s})
+		if err != nil {
+			return err
+		}
+		if err := srv.Listen(); err != nil {
+			return err
+		}
+		s.srv = srv
+		go func() {
+			if err := srv.Serve(s.ctx); err != nil {
+				n.log.Error("hub listener failed", "err", err)
+				s.close("hub listener failed: " + err.Error())
+			}
+		}()
+		n.log.Info("hub listening", "udp", srv.LocalAddr().String(), "overlay_ip", s.self.OverlayIP, "public_addr", n.cfg.PublicAddr)
+	}
+	hubs := n.holder.Load().Hubs()
+	if !s.isHub {
+		s.spoke = newSpokeManager(s)
+		s.spoke.sync(hubs)
+		if len(hubs) == 0 {
+			n.log.Warn("registry lists no hubs; waiting for one to be approved")
+		}
+	}
+	go func() {
+		if err := s.dp.RunTUNReader(s.ctx); err != nil {
+			n.log.Error("tun reader failed", "err", err)
+			s.close("tun reader failed: " + err.Error())
+		}
+	}()
+	s.since = time.Now()
+	n.log.Info("overlay up", "profile", s.profile.Name, "overlay_ip", s.self.OverlayIP, "roles", s.self.Roles, "hub", s.isHub, "hubs", len(hubs))
+	return nil
+}
+
+// applyNAT installs masquerade rules for the node's snat prefixes.
+func (s *session) applyNAT(ctx context.Context) error {
+	var dsts []netip.Prefix
+	for _, p := range s.self.Prefixes {
+		if p.Mode == registry.ModeSNAT {
+			dsts = append(dsts, p.Prefix)
+		}
+	}
+	if len(dsts) == 0 && !s.nat {
+		return nil
+	}
+	if err := s.n.net.SetNAT(ctx, s.pool, dsts, s.ifname); err != nil {
+		return err
+	}
+	s.nat = len(dsts) > 0
+	return nil
+}
+
+// applyDiff reacts to a new snapshot while up.
+func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
+	n := s.n
+	if snap.Self.ID == "" {
+		s.close("node no longer approved by the control plane")
+		return
+	}
+	if s.srv != nil {
+		for _, id := range diff.RemovedPeers {
+			if c := s.srv.CloseDevice(id, transport.ErrCodeRevoked, "peer unenrolled or reconfigured"); c > 0 {
+				n.log.Info("peer tunnels closed", "node", id, "closed", c)
+			}
+		}
+	}
+	if diff.SelfChanged {
+		old := s.self
+		s.self = snap.Self
+		s.pool = snap.Pool.Masked()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := s.applyNAT(ctx); err != nil {
+			n.log.Error("reapply nat", "err", err)
+		}
+		cancel()
+		if old.OverlayIP != snap.Self.OverlayIP || !equalRoles(old.Roles, snap.Self.Roles) {
+			n.log.Warn("own overlay address or roles changed; restart the overlay (down/up) to apply", "old_ip", old.OverlayIP, "new_ip", snap.Self.OverlayIP)
+		}
+	}
+	if s.spoke != nil && diff.HubsChanged {
+		s.spoke.sync(snap.Hubs())
+	}
+	n.publishStatus()
+}
+
+func equalRoles(a, b []registry.Role) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	as, bs := make([]string, len(a)), make([]string, len(b))
+	for i := range a {
+		as[i], bs[i] = string(a[i]), string(b[i])
+	}
+	sort.Strings(as)
+	sort.Strings(bs)
+	for i := range as {
+		if as[i] != bs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// addBypassHost pins a host route for hostport's address outside the overlay.
+func (s *session) addBypassHost(ctx context.Context, hostport string) error {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+	ip, err := resolveHost(ctx, host)
+	if err != nil {
+		return err
+	}
+	return s.addBypass(ip)
+}
+
+// addBypass pins a host route (idempotent within the session).
+func (s *session) addBypass(ip netip.Addr) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bypass[ip] || s.pool.Contains(ip) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.n.net.AddBypass(ctx, ip); err != nil {
+		return err
+	}
+	s.bypass[ip] = true
+	return nil
+}
+
+// addPeerRoute installs a kernel route for a peer prefix via the TUN so the
+// hub's host stack (and its LAN) can reach it. Counted per announcer.
+func (s *session) addPeerRoute(p netip.Prefix) {
+	p = p.Masked()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.peerRoute[p]++
+	if s.peerRoute[p] > 1 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, q := range splitDefault(p) {
+		if err := s.n.net.AddRoute(ctx, q, s.ifname); err != nil {
+			s.n.log.Warn("peer route add", "prefix", q, "err", err)
+		}
+	}
+}
+
+func (s *session) delPeerRoute(p netip.Prefix) {
+	p = p.Masked()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.peerRoute[p]--
+	if s.peerRoute[p] > 0 {
+		return
+	}
+	delete(s.peerRoute, p)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, q := range splitDefault(p) {
+		_ = s.n.net.DelRoute(ctx, q, s.ifname)
+	}
+}
+
+func (s *session) close(reason string) {
+	s.once.Do(func() {
+		s.reason = reason
+		s.teardown()
+		close(s.done)
+	})
+}
+
+// teardown undoes everything apply did, in reverse order. Safe to call on a
+// partially built session.
+func (s *session) teardown() {
+	n := s.n
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.cancel() // stops the hub listener (closes tunnels), TUN reader and hub links
+	if s.spoke != nil {
+		s.spoke.stop()
+		s.spoke.mu.Lock()
+		for p := range s.spoke.installed {
+			_ = n.net.DelRoute(ctx, p, s.ifname)
+		}
+		s.spoke.installed = map[netip.Prefix]bool{}
+		s.spoke.mu.Unlock()
+	}
+	s.mu.Lock()
+	for p := range s.peerRoute {
+		for _, q := range splitDefault(p) {
+			_ = n.net.DelRoute(ctx, q, s.ifname)
+		}
+	}
+	s.peerRoute = map[netip.Prefix]int{}
+	if s.nat {
+		_ = n.net.SetNAT(ctx, s.pool, nil, s.ifname)
+		s.nat = false
+	}
+	if s.poolRoute {
+		_ = n.net.DelRoute(ctx, s.pool, s.ifname)
+		s.poolRoute = false
+	}
+	if s.dev != nil {
+		_ = s.dev.Close()
+		s.dev = nil
+	}
+	for ip := range s.bypass {
+		_ = n.net.DelBypass(ctx, ip)
+	}
+	s.bypass = map[netip.Addr]bool{}
+	s.mu.Unlock()
+}

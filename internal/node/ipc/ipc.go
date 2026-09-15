@@ -1,0 +1,209 @@
+// Package ipc is the local control channel between boundgatectl (or a GUI)
+// and the node daemon: HTTP over a Unix socket with a fixed, small set of
+// verbs. Nothing here can touch the device key, install arbitrary routes or
+// run commands; it can only ask the daemon to do the things it does anyway.
+package ipc
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
+)
+
+// UpRequest selects the routing profile ("" = default).
+type UpRequest struct {
+	Profile string `json:"profile"`
+}
+
+// EnrollRequest names the node for the admin.
+type EnrollRequest struct {
+	Name string `json:"name"`
+}
+
+// ErrorResponse is returned for failures.
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
+// Serve runs the IPC server until ctx ends. The socket is created with mode
+// 0660 so only root and the socket's group can talk to the daemon.
+func Serve(ctx context.Context, socketPath string, n *node.Node) error {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("ipc: listen %s: %w", socketPath, err)
+	}
+	if err := os.Chmod(socketPath, 0o660); err != nil {
+		ln.Close()
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, n.Status())
+	})
+	mux.HandleFunc("GET /v1/profiles", func(w http.ResponseWriter, r *http.Request) {
+		names, err := n.Profiles()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, names)
+	})
+	mux.HandleFunc("POST /v1/enroll", func(w http.ResponseWriter, r *http.Request) {
+		var req EnrollRequest
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{"invalid body"})
+				return
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		st, err := n.Enroll(ctx, req.Name)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+	})
+	mux.HandleFunc("POST /v1/up", func(w http.ResponseWriter, r *http.Request) {
+		var req UpRequest
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{"invalid body"})
+				return
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := n.Up(ctx, req.Profile); err != nil {
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, n.Status())
+	})
+	mux.HandleFunc("POST /v1/down", func(w http.ResponseWriter, r *http.Request) {
+		n.Down("down by user")
+		writeJSON(w, http.StatusOK, n.Status())
+	})
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		_ = os.Remove(socketPath)
+	}()
+	err = srv.Serve(ln)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// Client talks to the node socket.
+type Client struct {
+	Socket string
+	http   *http.Client
+}
+
+// NewClient returns a client for the socket path.
+func NewClient(socket string) *Client {
+	return &Client{Socket: socket, http: &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		}},
+	}}
+}
+
+func (c *Client) do(method, path string, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, "http://node"+path, body)
+	if err != nil {
+		return err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rsp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("node daemon not reachable at %s: %w", c.Socket, err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		var e ErrorResponse
+		_ = json.NewDecoder(rsp.Body).Decode(&e)
+		if e.Error == "" {
+			e.Error = rsp.Status
+		}
+		return errors.New(e.Error)
+	}
+	if out != nil {
+		return json.NewDecoder(rsp.Body).Decode(out)
+	}
+	return nil
+}
+
+// Status fetches the daemon status.
+func (c *Client) Status() (node.Status, error) {
+	var s node.Status
+	err := c.do(http.MethodGet, "/v1/status", nil, &s)
+	return s, err
+}
+
+// Profiles lists profile names.
+func (c *Client) Profiles() ([]string, error) {
+	var names []string
+	err := c.do(http.MethodGet, "/v1/profiles", nil, &names)
+	return names, err
+}
+
+// Enroll submits the enrollment request.
+func (c *Client) Enroll(name string) (api.EnrollStatus, error) {
+	var st api.EnrollStatus
+	err := c.do(http.MethodPost, "/v1/enroll", EnrollRequest{Name: name}, &st)
+	return st, err
+}
+
+// Up asks the daemon to bring the overlay up with a profile.
+func (c *Client) Up(profile string) (node.Status, error) {
+	var s node.Status
+	err := c.do(http.MethodPost, "/v1/up", UpRequest{Profile: profile}, &s)
+	return s, err
+}
+
+// Down asks the daemon to tear the overlay down.
+func (c *Client) Down() (node.Status, error) {
+	var s node.Status
+	err := c.do(http.MethodPost, "/v1/down", nil, &s)
+	return s, err
+}

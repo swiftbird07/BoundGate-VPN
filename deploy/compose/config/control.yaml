@@ -1,0 +1,14 @@
+listen: ":443"              # TCP (admin API, SPA) and UDP (HTTP/3 node channel)
+server_name: control        # admin name; published on 127.0.0.1:18443 on the Mac
+extra_names: [172.30.0.5, localhost, 127.0.0.1]
+node_server_name: nodes.control   # SNI nodes use on the same port
+tls_cert: /var/lib/boundgate/control.crt
+tls_key: /var/lib/boundgate/control.key
+node_cert: /var/lib/boundgate/nodes.crt    # long-lived node-channel identity; every node pins this key
+node_key: /var/lib/boundgate/nodes.key
+db_path: /var/lib/boundgate/control.db
+bootstrap_token_file: /var/lib/boundgate/bootstrap.token   # dev: read by setup-dev.sh
+pending_ttl: 24h
+log_retention: 2160h        # 90 days
+log_dir: /var/log/boundgate
+log_stdout: true

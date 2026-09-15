@@ -1,0 +1,20 @@
+name: hub1
+state_dir: /var/lib/boundgate
+key_kind: softkey
+control:
+  addr: control:443
+  server_name: nodes.control
+  # pin: <hex spki>              # optional; default: pinned on first use into state_dir/control.pin
+roles: [hub, subnet-router]                  # requested; an admin grants roles at approval
+prefixes:
+  - {prefix: 10.60.0.0/24, mode: snat}
+public_addr: "hub1:443"
+listen: ":443"               # hub tunnel listener (UDP)
+auto_up: true
+profile: full
+profiles_dir: /etc/boundgate/profiles
+socket: /run/boundgate/node.sock
+tun_name: bg0
+mtu: 1280
+log_dir: /var/log/boundgate
+log_stdout: true
