@@ -12,3 +12,9 @@ pending_ttl: 24h
 log_retention: 2160h        # 90 days
 log_dir: /var/log/boundgate
 log_stdout: true
+oidc:                       # user logins (M2); the lab uses the fake IdP service, see docs/OIDC.md for Authentik
+  issuer: http://idp:9000
+  client_id: boundgate
+  client_secret: dev-secret
+  redirect_url: https://127.0.0.1:18443/api/v1/oidc/callback   # what the user's browser reaches (the Mac)
+  session_lifetime: 8h

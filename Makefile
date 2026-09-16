@@ -1,7 +1,7 @@
 # All Go and Node commands run inside the `box` dev container (see docs/DEV.md).
 GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
-BINS = boundgate-control boundgate-node boundgatectl
+BINS = boundgate-control boundgate-node boundgatectl boundgate-fakeidp
 
 .PHONY: build-linux test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
@@ -26,6 +26,9 @@ fuzz:
 	box go test -run=^$$ -fuzz=FuzzParse -fuzztime=30s ./internal/netparse
 	box go test -run=^$$ -fuzz=FuzzParseSSHSIG -fuzztime=20s ./internal/binding
 	box go test -run=^$$ -fuzz=FuzzParseBinding -fuzztime=20s ./internal/binding
+	box go test -run=^$$ -fuzz=FuzzClientHelloSNI -fuzztime=20s ./internal/netparse
+	box go test -run=^$$ -fuzz=FuzzDNSQueryName -fuzztime=20s ./internal/netparse
+	box go test -run=^$$ -fuzz=FuzzTCPReset -fuzztime=20s ./internal/netparse
 
 cooldown:
 	box gocooldown check

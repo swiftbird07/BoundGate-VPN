@@ -211,6 +211,32 @@ func (c *Client) EnrollStatus(ctx context.Context) (api.EnrollStatus, error) {
 	return st, err
 }
 
+// LoginStart begins a user login; the returned URL is for the user's browser.
+func (c *Client) LoginStart(ctx context.Context) (api.LoginStart, error) {
+	var out api.LoginStart
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/node/login/start", map[string]any{}, &out, 30*time.Second)
+	return out, err
+}
+
+// LoginStatus polls a flow, waiting up to wait for a result.
+func (c *Client) LoginStatus(ctx context.Context, flowID string, wait time.Duration) (api.LoginStatus, error) {
+	var out api.LoginStatus
+	_, err := c.do(ctx, http.MethodGet, "/api/v1/node/login/"+flowID+"?wait="+wait.String(), nil, &out, wait+20*time.Second)
+	return out, err
+}
+
+// Logout ends the node's user session.
+func (c *Client) Logout(ctx context.Context) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/node/logout", map[string]any{}, nil, 20*time.Second)
+	return err
+}
+
+// ShipLogs sends a batch of flow records and tunnel reports.
+func (c *Client) ShipLogs(ctx context.Context, events []api.ShippedEvent) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/node/logs", api.ShipRequest{Events: events}, nil, 30*time.Second)
+	return err
+}
+
 // Heartbeat reports liveness.
 func (c *Client) Heartbeat(ctx context.Context, version uint64, tunnels int) error {
 	_, err := c.do(ctx, http.MethodPost, "/api/v1/node/heartbeat", map[string]any{"version": version, "active_tunnels": tunnels}, nil, 20*time.Second)

@@ -108,7 +108,7 @@ func (h *Handlers) currentBinding(w http.ResponseWriter, r *http.Request, t db.S
 }
 
 func nodeToRegistry(n db.Node) registry.Node {
-	return registry.Node{ID: transport.DeviceID(n.ID), Name: n.Name, SPKI: n.SPKI, KeyVersion: n.KeyVersion, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP}
+	return registry.Node{ID: transport.DeviceID(n.ID), Name: n.Name, SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP}
 }
 
 func (h *Handlers) activeSigners(r *http.Request) ([]db.Signer, binding.Signers, error) {

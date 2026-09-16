@@ -6,15 +6,20 @@
 //	boundgatectl profiles
 //	boundgatectl up [-profile NAME]
 //	boundgatectl down
+//	boundgatectl login [-timeout 10m]      prints the login URL, waits for the browser login
+//	boundgatectl logout
+//	boundgatectl flows                     tracked flows with their ACL decision
 //	boundgatectl admin sign --control URL --node ID --fingerprint FP --token T   (admin side, see adminsign.go)
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
@@ -24,7 +29,7 @@ func main() {
 	socket := flag.String("socket", "/run/boundgate/node.sock", "node daemon socket")
 	asJSON := flag.Bool("json", false, "print raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|enroll [-name NAME]|profiles|up [-profile NAME]|down\n"+
+		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|enroll [-name NAME]|profiles|up [-profile NAME]|down|login [-timeout D]|logout|flows\n"+
 			"       boundgatectl [-json] admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F|--agent-key S|--signature F|--out F]\n")
 		flag.PrintDefaults()
 	}
@@ -133,6 +138,80 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			return err
 		}
 		return printStatus(s, asJSON)
+	case "login":
+		fs := flag.NewFlagSet("login", flag.ContinueOnError)
+		timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for the browser login")
+		noWait := fs.Bool("no-wait", false, "print the URL and return; poll with `boundgatectl status`")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		st, err := c.Login()
+		if err != nil {
+			return err
+		}
+		if asJSON && *noWait {
+			return dump(st)
+		}
+		if !asJSON {
+			fmt.Printf("Open this URL in your browser and log in:\n\n  %s\n\n", st.URL)
+		}
+		if *noWait {
+			return nil
+		}
+		deadline := time.Now().Add(*timeout)
+		for time.Now().Before(deadline) {
+			res, err := c.LoginWait(st.FlowID, 25*time.Second)
+			if err != nil {
+				return err
+			}
+			switch res.Status {
+			case "done":
+				if asJSON {
+					return dump(res)
+				}
+				u := res.Session
+				who := u.Username
+				if who == "" {
+					who = u.Subject
+				}
+				fmt.Printf("logged in as %s (%s) groups %v until %s\n", who, u.Email, u.Groups, u.ExpiresAt.Local().Format("2006-01-02 15:04"))
+				return nil
+			case "failed":
+				return fmt.Errorf("login failed: %s", res.Error)
+			}
+		}
+		return errors.New("login timed out; run `boundgatectl login` again")
+	case "logout":
+		s, err := c.Logout()
+		if err != nil {
+			return err
+		}
+		return printStatus(s, asJSON)
+	case "flows":
+		fl, err := c.Flows()
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return dump(fl)
+		}
+		if len(fl) == 0 {
+			fmt.Println("no tracked flows")
+			return nil
+		}
+		fmt.Printf("%-8s %-6s %-22s %-22s %-5s %-8s %-16s %-14s %10s %10s  %s\n", "FLOW", "PROTO", "SOURCE", "DESTINATION", "DEC", "FROM", "USER", "NAME", "IN", "OUT", "POLICIES")
+		for _, f := range fl {
+			name := f.SNI
+			if name == "" {
+				name = f.DNSName
+			}
+			from := f.PrincipalName
+			if f.Local {
+				from = "local"
+			}
+			fmt.Printf("%-8s %-6s %-22s %-22s %-5s %-8.8s %-16.16s %-14.14s %10d %10d  %s\n", f.ID, f.Proto, f.Src, f.Dst, f.Decision, from, f.User, name, f.BytesIn, f.BytesOut, strings.Join(f.Policies, ","))
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -165,6 +244,7 @@ func printStatus(s node.Status, asJSON bool) error {
 		if s.Tunnels > 0 {
 			fmt.Printf("tunnels:      %d\n", s.Tunnels)
 		}
+		fmt.Printf("flows:        %d tracked, %d denied\n", s.Flows, s.FlowsDenied)
 		fmt.Printf("since:        %s\n", s.Since.Format("2006-01-02 15:04:05"))
 	}
 	if s.LastError != "" {
@@ -179,8 +259,30 @@ func printStatus(s node.Status, asJSON bool) error {
 	for _, p := range s.IgnoredPeers {
 		fmt.Printf("ignored peer: %s\n", p)
 	}
+	if s.Enrollment == "approved" {
+		fmt.Printf("policies:     %d", s.Policies)
+		if s.Policies == 0 {
+			fmt.Printf(" (nothing is permitted until an admin adds one)")
+		}
+		fmt.Println()
+	}
+	for _, p := range s.PolicyErrors {
+		fmt.Printf("policy error: %s\n", p)
+	}
 	if s.LastClose != "" {
 		fmt.Printf("last close:   %s\n", s.LastClose)
+	}
+	if s.User != nil {
+		who := s.User.Username
+		if who == "" {
+			who = s.User.Subject
+		}
+		fmt.Printf("user:         %s %v until %s\n", who, s.User.Groups, s.User.ExpiresAt.Local().Format("2006-01-02 15:04"))
+	} else if s.Kind == "interactive" && s.Enrollment == "approved" {
+		fmt.Printf("user:         not logged in (boundgatectl login)\n")
+	}
+	if s.LoginRequired {
+		fmt.Printf("LOGIN REQUIRED: a hub refused this node; run `boundgatectl login`\n")
 	}
 	fmt.Printf("enrollment:   %s", s.Enrollment)
 	if s.EnrollmentError != "" {

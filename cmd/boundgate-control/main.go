@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 )
 
@@ -33,6 +35,16 @@ type config struct {
 	LogRetention       string   `yaml:"log_retention"`
 	LogDir             string   `yaml:"log_dir"`
 	LogStdout          bool     `yaml:"log_stdout"`
+	OIDC               struct {
+		Issuer           string   `yaml:"issuer"`
+		ClientID         string   `yaml:"client_id"`
+		ClientSecret     string   `yaml:"client_secret"`
+		ClientSecretFile string   `yaml:"client_secret_file"`
+		RedirectURL      string   `yaml:"redirect_url"`
+		Scopes           []string `yaml:"scopes"`
+		GroupsClaim      string   `yaml:"groups_claim"`
+		SessionLifetime  string   `yaml:"session_lifetime"`
+	} `yaml:"oidc"`
 }
 
 func main() {
@@ -82,6 +94,20 @@ func run(cfgPath string) error {
 			return fmt.Errorf("config: log_retention: %w", err)
 		}
 	}
+	oc := oidc.Config{Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
+		RedirectURL: cfg.OIDC.RedirectURL, Scopes: cfg.OIDC.Scopes, GroupsClaim: cfg.OIDC.GroupsClaim}
+	if cfg.OIDC.ClientSecretFile != "" {
+		b, err := os.ReadFile(cfg.OIDC.ClientSecretFile)
+		if err != nil {
+			return fmt.Errorf("config: oidc.client_secret_file: %w", err)
+		}
+		oc.ClientSecret = strings.TrimSpace(string(b))
+	}
+	if cfg.OIDC.SessionLifetime != "" {
+		if oc.SessionLifetime, err = time.ParseDuration(cfg.OIDC.SessionLifetime); err != nil {
+			return fmt.Errorf("config: oidc.session_lifetime: %w", err)
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return control.Run(ctx, control.Config{
@@ -98,5 +124,6 @@ func run(cfgPath string) error {
 		PendingTTL:         pendingTTL,
 		LogRetention:       retention,
 		Logs:               logs,
+		OIDC:               oc,
 	})
 }

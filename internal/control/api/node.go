@@ -22,6 +22,10 @@ func (h *Handlers) NodeMux() http.Handler {
 	mux.HandleFunc("GET /api/v1/node/enroll/status", h.nodeEnrollStatus)
 	mux.HandleFunc("GET /api/v1/node/snapshot", h.nodeSnapshot)
 	mux.HandleFunc("POST /api/v1/node/heartbeat", h.nodeHeartbeat)
+	mux.HandleFunc("POST /api/v1/node/login/start", h.nodeLoginStart)
+	mux.HandleFunc("GET /api/v1/node/login/{flow}", h.nodeLoginStatus)
+	mux.HandleFunc("POST /api/v1/node/logout", h.nodeLogout)
+	mux.HandleFunc("POST /api/v1/node/logs", h.nodeShipLogs)
 	return mux
 }
 

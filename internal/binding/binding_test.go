@@ -26,13 +26,13 @@ import (
 //
 // The private key is a throwaway generated for this test only.
 const (
-	vectorMessage = `{"node_id":"n1","spki":"00ff","key_version":1,"roles":["endpoint"],"prefixes":[],"overlay_ip":"10.21.0.9"}`
+	vectorMessage = `{"node_id":"n1","spki":"00ff","key_version":1,"kind":"interactive","roles":["endpoint"],"prefixes":[],"overlay_ip":"10.21.0.9"}`
 	vectorPub     = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJsp33nEg7yhZQf+Y2JVioq0T/EWIJ6d5YhTrpLTDqFw test-admin"
 	vectorSig     = `-----BEGIN SSH SIGNATURE-----
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgmynfecSDvKFlB/5jYlWKirRP8R
 Ygnp3liFOuktMOoXAAAAARYm91bmRnYXRlLWJpbmRpbmcAAAAAAAAABnNoYTUxMgAAAFMA
-AAALc3NoLWVkMjU1MTkAAABA1MStFX1DAaeXEJiEb6wypMmsB55f7gecB+FZymnnlX15gD
-kzAuDNXT3aGZgDrWbBMmvrER00XtR2dPsu/UH/Aw==
+AAALc3NoLWVkMjU1MTkAAABA/d3/HSeuXrDdzcxWcCLYdUwD6lBxZ5PVom52fX5UchDEeQ
+XFVA2VsJR+fJxfbstUeOrI4CX8sPVz+tZUrNODDg==
 -----END SSH SIGNATURE-----
 `
 	vectorPriv = `-----BEGIN OPENSSH PRIVATE KEY-----
@@ -109,7 +109,7 @@ func TestCanonicalIsStable(t *testing.T) {
 	if string(ca) != string(cb) {
 		t.Fatalf("%s\n%s", ca, cb)
 	}
-	want := `{"node_id":"n","spki":"ab000000000000000000000000000000000000000000000000000000000000cd","key_version":1,"roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"routed"},{"prefix":"192.168.178.0/24","mode":"snat"}],"overlay_ip":"10.21.0.4"}`
+	want := `{"node_id":"n","spki":"ab000000000000000000000000000000000000000000000000000000000000cd","key_version":1,"kind":"interactive","roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"routed"},{"prefix":"192.168.178.0/24","mode":"snat"}],"overlay_ip":"10.21.0.4"}`
 	if string(ca) != want {
 		t.Fatalf("got %s", ca)
 	}
@@ -123,6 +123,7 @@ func TestCanonicalIsStable(t *testing.T) {
 		strings.Replace(string(ca), `"overlay_ip"`, `"public_addr":"x","overlay_ip"`, 1),
 		strings.Replace(string(ca), `["endpoint","subnet-router"]`, `["subnet-router","endpoint"]`, 1),
 		strings.Replace(string(ca), `["endpoint","subnet-router"]`, `[]`, 1),
+		strings.Replace(string(ca), `"kind":"interactive"`, `"kind":"root"`, 1),
 	} {
 		if _, err := Parse([]byte(bad)); err == nil {
 			t.Fatalf("accepted non-canonical %s", bad)
@@ -157,7 +158,7 @@ func newSigner(t *testing.T, kind string) ssh.Signer {
 func node(id string, roles ...registry.Role) registry.Node {
 	var spki devicekey.SPKIHash
 	copy(spki[:], id)
-	return registry.Node{ID: transport.DeviceID(id), Name: id, SPKI: spki, KeyVersion: 1, Roles: roles, OverlayIP: netip.MustParseAddr("10.21.0.1")}
+	return registry.Node{ID: transport.DeviceID(id), Name: id, SPKI: spki, KeyVersion: 1, Kind: registry.KindInteractive, Roles: roles, OverlayIP: netip.MustParseAddr("10.21.0.1")}
 }
 
 func sign(t *testing.T, n *registry.Node, s ssh.Signer) {
@@ -200,6 +201,10 @@ func TestVerifyNodeAndSnapshot(t *testing.T) {
 	widened.Prefixes = []registry.Prefix{{Prefix: netip.MustParsePrefix("10.1.0.0/24"), Mode: registry.ModeRouted}}
 	sign(t, &widened, admin1)
 	widened.Prefixes = append(widened.Prefixes, registry.Prefix{Prefix: netip.MustParsePrefix("0.0.0.0/0"), Mode: registry.ModeSNAT})
+	// signed as interactive, then the control plane makes it a workload (no login needed)
+	rekinded := node("rekinded", registry.RoleEndpoint)
+	sign(t, &rekinded, admin1)
+	rekinded.Kind = registry.KindWorkload
 	// signature copied from another node
 	copied := node("copied", registry.RoleEndpoint)
 	raw, _ := FromNode(copied).Canonical()
@@ -211,18 +216,18 @@ func TestVerifyNodeAndSnapshot(t *testing.T) {
 	if _, err := VerifyNode(hub, signers); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []registry.Node{unsigned, byStranger, promoted, swapped, widened, copied} {
+	for _, bad := range []registry.Node{unsigned, byStranger, promoted, swapped, widened, rekinded, copied} {
 		if _, err := VerifyNode(bad, signers); err == nil {
 			t.Fatalf("%s accepted", bad.ID)
 		}
 	}
 
-	snap := &registry.Snapshot{Self: self, Peers: []registry.Node{hub, unsigned, byStranger, promoted, swapped, widened, copied}, Pool: netip.MustParsePrefix("10.21.0.0/16")}
+	snap := &registry.Snapshot{Self: self, Peers: []registry.Node{hub, unsigned, byStranger, promoted, swapped, widened, rekinded, copied}, Pool: netip.MustParsePrefix("10.21.0.0/16")}
 	rejected, err := VerifySnapshot(snap, signers)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Peers) != 1 || snap.Peers[0].ID != "hub" || len(rejected) != 6 {
+	if len(snap.Peers) != 1 || snap.Peers[0].ID != "hub" || len(rejected) != 7 {
 		t.Fatalf("peers %+v rejected %+v", snap.Peers, rejected)
 	}
 	// own binding invalid: the node must not operate

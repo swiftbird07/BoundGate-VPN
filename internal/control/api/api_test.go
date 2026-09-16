@@ -22,6 +22,8 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc/oidctest"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicecert"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
@@ -40,6 +42,7 @@ type env struct {
 	node     *httptest.Server
 	roots    *x509.CertPool
 	handlers *api.Handlers
+	logs     *logging.Streams
 	signer   ssh.Signer // the registered admin key
 }
 
@@ -69,7 +72,7 @@ func newEnv(t *testing.T) *env {
 	roots := x509.NewCertPool()
 	roots.AddCert(cert.Leaf)
 
-	e := &env{t: t, store: store, boot: boot, roots: roots, handlers: h}
+	e := &env{t: t, store: store, boot: boot, roots: roots, handlers: h, logs: logs}
 	e.admin = httptest.NewServer(h.AdminMux())
 	e.node = httptest.NewUnstartedServer(h.NodeMux())
 	e.node.TLS = transport.ServerTLSConfigAnyDevice(cert)
@@ -504,5 +507,211 @@ func TestEnrollRateLimit(t *testing.T) {
 	}
 	if last != http.StatusTooManyRequests {
 		t.Fatalf("rate limit not applied: %d", last)
+	}
+}
+
+// withIdP attaches a fake identity provider to the env.
+func (e *env) withIdP(t *testing.T, lifetime time.Duration) *oidctest.Provider {
+	t.Helper()
+	fake := oidctest.New("", "bg", "secret", oidctest.User{Subject: "u1", Email: "martin@example.test", Username: "martin", Groups: []string{"vpn-users"}})
+	srv := httptest.NewServer(fake.Handler())
+	t.Cleanup(srv.Close)
+	fake.Issuer = srv.URL
+	e.handlers = api.New(api.Deps{DB: e.store, Snap: snapshot.New(e.store), Logs: e.logs,
+		OIDC: oidc.NewLazy(oidc.Config{Issuer: srv.URL, ClientID: "bg", ClientSecret: "secret", RedirectURL: e.admin.URL + "/api/v1/oidc/callback", SessionLifetime: lifetime})})
+	e.admin.Config.Handler = e.handlers.AdminMux()
+	e.node.Config.Handler = e.handlers.NodeMux()
+	return fake
+}
+
+// browser follows the IdP redirect and calls the control plane's callback.
+func (e *env) browser(t *testing.T, authURL string) (int, string) {
+	t.Helper()
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	rsp, err := c.Get(authURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsp.Body.Close()
+	loc := rsp.Header.Get("Location")
+	if rsp.StatusCode != http.StatusFound || !strings.HasPrefix(loc, e.admin.URL+"/api/v1/oidc/callback?") {
+		t.Fatalf("authorize: %d %s", rsp.StatusCode, loc)
+	}
+	rsp, err = http.Get(loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rsp.Body.Close()
+	b, _ := io.ReadAll(rsp.Body)
+	return rsp.StatusCode, string(b)
+}
+
+func TestUserLoginFlow(t *testing.T) {
+	e := newEnv(t)
+	e.withIdP(t, 2*time.Second)
+	e.registerSigner()
+	laptop := e.device("laptop")
+	hub := e.device("hub")
+	// login before approval: 403 like everything else
+	if code, _ := e.nodeCall(laptop, "POST", "/api/v1/node/login/start", "{}"); code != http.StatusForbidden {
+		t.Fatalf("login before approval: %d", code)
+	}
+	lst := e.enroll(laptop, `{"name":"laptop","roles":["endpoint"]}`)
+	e.approve(lst.NodeID, `{"roles":["endpoint"]}`) // interactive by default
+	hst := e.enroll(hub, `{"name":"hub","roles":["hub"],"public_addr":"hub:443"}`)
+	hv := e.approve(hst.NodeID, `{"kind":"workload","roles":["hub"]}`)
+	if hv.Kind != "workload" {
+		t.Fatalf("%+v", hv)
+	}
+	_, snap := e.snapshot(laptop, 0, "1s")
+	if snap.Self.Kind != registry.KindInteractive || !snap.Self.NeedsSession() || len(snap.Sessions) != 0 {
+		t.Fatalf("%+v", snap.Self)
+	}
+
+	// start a flow, "browser" completes it, node sees the session
+	code, b := e.nodeCall(laptop, "POST", "/api/v1/node/login/start", "{}")
+	if code != http.StatusOK {
+		t.Fatalf("login start: %d %s", code, b)
+	}
+	var ls api.LoginStart
+	_ = json.Unmarshal(b, &ls)
+	if ls.FlowID == "" || !strings.Contains(ls.URL, "/authorize?") {
+		t.Fatalf("%+v", ls)
+	}
+	code, b = e.nodeCall(laptop, "GET", "/api/v1/node/login/"+ls.FlowID+"?wait=0s", "")
+	var st api.LoginStatus
+	_ = json.Unmarshal(b, &st)
+	if code != http.StatusOK || st.Status != "pending" {
+		t.Fatalf("%d %+v", code, st)
+	}
+	// another node cannot read the flow
+	if code, _ := e.nodeCall(hub, "GET", "/api/v1/node/login/"+ls.FlowID, ""); code != http.StatusNotFound {
+		t.Fatalf("foreign flow readable: %d", code)
+	}
+	code, page := e.browser(t, ls.URL)
+	if code != http.StatusOK || !strings.Contains(page, "Logged in") || !strings.Contains(page, "martin") {
+		t.Fatalf("callback: %d %s", code, page)
+	}
+	code, b = e.nodeCall(laptop, "GET", "/api/v1/node/login/"+ls.FlowID+"?wait=0s", "")
+	_ = json.Unmarshal(b, &st)
+	if code != http.StatusOK || st.Status != "done" || st.Session == nil || st.Session.Subject != "u1" || st.Session.NodeID != lst.NodeID || len(st.Session.Groups) != 1 {
+		t.Fatalf("%d %+v", code, st)
+	}
+	// replaying the callback fails; the code was consumed and the flow is done
+	if code, _ := e.browser(t, ls.URL); code != http.StatusForbidden && code != http.StatusConflict {
+		t.Fatalf("callback replay: %d", code)
+	}
+	// the session is in the laptop's and the hub's snapshot, bound to the laptop
+	_, snap = e.snapshot(laptop, 0, "1s")
+	se, ok := snap.SessionFor(snap.Self.ID, time.Now())
+	if !ok || se.Subject != "u1" || se.Username != "martin" {
+		t.Fatalf("own session missing: %+v", snap.Sessions)
+	}
+	_, hs := e.snapshot(hub, 0, "1s")
+	if _, ok := hs.SessionFor(transport.DeviceID(lst.NodeID), time.Now()); !ok {
+		t.Fatalf("hub does not see the laptop's session: %+v", hs.Sessions)
+	}
+	if _, ok := hs.SessionFor(hs.Self.ID, time.Now()); ok {
+		t.Fatal("hub has a session")
+	}
+	// admin sees it and can revoke it: gone from snapshots at once
+	var sessions []api.SessionView
+	e.adminCall("GET", "/api/v1/admin/sessions", "", http.StatusOK, &sessions)
+	if len(sessions) != 1 || sessions[0].NodeName != "laptop" || sessions[0].Username != "martin" {
+		t.Fatalf("%+v", sessions)
+	}
+	before := hs.Version
+	e.adminCall("DELETE", "/api/v1/admin/sessions/"+sessions[0].ID, "", http.StatusNoContent, nil)
+	e.adminCall("DELETE", "/api/v1/admin/sessions/"+sessions[0].ID, "", http.StatusConflict, nil)
+	_, hs = e.snapshot(hub, before, "1s")
+	if hs == nil || len(hs.Sessions) != 0 {
+		t.Fatalf("revoked session still distributed: %+v", hs)
+	}
+	e.adminCall("GET", "/api/v1/admin/sessions?all=1", "", http.StatusOK, &sessions)
+	if len(sessions) != 1 || sessions[0].EndReason != "revoked" || sessions[0].EndedBy != "bootstrap" {
+		t.Fatalf("%+v", sessions)
+	}
+
+	// login again, then logout by the node; a second login replaces the first
+	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/login/start", "{}")
+	_ = json.Unmarshal(b, &ls)
+	e.browser(t, ls.URL)
+	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/login/start", "{}")
+	_ = json.Unmarshal(b, &ls)
+	e.browser(t, ls.URL)
+	e.adminCall("GET", "/api/v1/admin/sessions", "", http.StatusOK, &sessions)
+	if len(sessions) != 1 {
+		t.Fatalf("two active sessions for one node: %+v", sessions)
+	}
+	if code, _ := e.nodeCall(laptop, "POST", "/api/v1/node/logout", "{}"); code != http.StatusNoContent {
+		t.Fatalf("logout: %d", code)
+	}
+	e.adminCall("GET", "/api/v1/admin/sessions", "", http.StatusOK, &sessions)
+	if len(sessions) != 0 {
+		t.Fatalf("session after logout: %+v", sessions)
+	}
+
+	// expiry: a 2 s session disappears from the snapshot (SessionFor) and,
+	// after the sweep, from the database
+	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/login/start", "{}")
+	_ = json.Unmarshal(b, &ls)
+	e.browser(t, ls.URL)
+	_, snap = e.snapshot(laptop, 0, "1s")
+	if _, ok := snap.SessionFor(snap.Self.ID, time.Now().Add(3*time.Second)); ok {
+		t.Fatal("expired session accepted")
+	}
+	time.Sleep(2100 * time.Millisecond)
+	n, _, err := e.store.ExpireSessions(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("expire: %d %v", n, err)
+	}
+	e.adminCall("GET", "/api/v1/admin/sessions?all=1", "", http.StatusOK, &sessions)
+	if sessions[0].EndReason != "expired" {
+		t.Fatalf("%+v", sessions[0])
+	}
+
+	// refusal at the IdP and an unknown state
+	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/login/start", "{}")
+	_ = json.Unmarshal(b, &ls)
+	if code, page := e.browser(t, ls.URL+"&deny=1"); code != http.StatusForbidden || !strings.Contains(page, "refused") {
+		t.Fatalf("deny: %d %s", code, page)
+	}
+	code, b = e.nodeCall(laptop, "GET", "/api/v1/node/login/"+ls.FlowID+"?wait=0s", "")
+	_ = json.Unmarshal(b, &st)
+	if st.Status != "failed" || !strings.Contains(st.Error, "access_denied") {
+		t.Fatalf("%+v", st)
+	}
+	if rsp, _ := http.Get(e.admin.URL + "/api/v1/oidc/callback?state=nope&code=x"); rsp == nil || rsp.StatusCode != http.StatusBadRequest {
+		t.Fatal("unknown state accepted")
+	}
+
+	// a changed kind is a signed field: demotes and needs a new signature
+	var demoted api.ConfirmResponse
+	e.adminCall("PATCH", "/api/v1/admin/nodes/"+lst.NodeID, `{"kind":"workload"}`, http.StatusOK, &demoted)
+	if demoted.Status != "confirmed" || demoted.Kind != "workload" || demoted.SignToken == "" {
+		t.Fatalf("%+v", demoted)
+	}
+	// audit trail
+	var evs []db.LogEvent
+	e.adminCall("GET", "/api/v1/admin/logs?stream=user-auth&node="+lst.NodeID, "", http.StatusOK, &evs)
+	msgs := ""
+	for _, ev := range evs {
+		msgs += ev.Message + ","
+	}
+	for _, want := range []string{"login started", "login completed", "session revoked", "logout", "login failed"} {
+		if !strings.Contains(msgs, want) {
+			t.Fatalf("user-auth log lacks %q: %s", want, msgs)
+		}
+	}
+}
+
+func TestLoginDisabledWithoutIdP(t *testing.T) {
+	e := newEnv(t)
+	e.registerSigner()
+	d := e.device("x")
+	st := e.enroll(d, `{"roles":["endpoint"]}`)
+	e.approve(st.NodeID, `{"roles":["endpoint"]}`)
+	if code, b := e.nodeCall(d, "POST", "/api/v1/node/login/start", "{}"); code != http.StatusServiceUnavailable {
+		t.Fatalf("login without idp: %d %s", code, b)
 	}
 }

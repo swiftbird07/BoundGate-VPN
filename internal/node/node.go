@@ -14,22 +14,26 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/acl"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicecert"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/softkey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/controlclient"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/profile"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
@@ -67,6 +71,9 @@ type Config struct {
 	TUNName     string
 	MTU         int
 	Log         *slog.Logger
+	// FlowLog receives one record per flow open/deny/close (the "flow"
+	// stream); nil means the system log.
+	FlowLog *slog.Logger
 }
 
 // State of the overlay.
@@ -78,12 +85,26 @@ const (
 	StateUp       State = "up"
 )
 
+// UserStatus is the node's user session as the CLI shows it.
+type UserStatus struct {
+	Subject   string    `json:"subject"`
+	Username  string    `json:"username,omitempty"`
+	Email     string    `json:"email,omitempty"`
+	Groups    []string  `json:"groups"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // Status is what the CLI shows.
 type Status struct {
 	State           State           `json:"state"`
 	Profile         string          `json:"profile,omitempty"`
 	OverlayIP       string          `json:"overlay_ip,omitempty"`
+	Kind            registry.Kind   `json:"kind,omitempty"`
 	Roles           []registry.Role `json:"roles,omitempty"`
+	// User is the active user session bound to this node (interactive nodes).
+	User *UserStatus `json:"user,omitempty"`
+	// LoginRequired is set when a hub refused the node for lack of a session.
+	LoginRequired bool `json:"login_required,omitempty"`
 	Prefixes        []string        `json:"prefixes,omitempty"`
 	Hubs            []HubStatus     `json:"hubs,omitempty"`
 	Routes          []string        `json:"routes,omitempty"`
@@ -113,6 +134,13 @@ type Status struct {
 	// IgnoredPeers lists peers whose binding did not verify (name: reason).
 	IgnoredPeers    []string `json:"ignored_peers,omitempty"`
 	SnapshotVersion uint64   `json:"snapshot_version"`
+	// Policies is the number of compiled ACL statements; PolicyErrors lists
+	// policies that did not compile (skipped).
+	Policies     int      `json:"policies"`
+	PolicyErrors []string `json:"policy_errors,omitempty"`
+	// Flows is the number of tracked flows, FlowsDenied the denials since start.
+	Flows       int    `json:"flows"`
+	FlowsDenied uint64 `json:"flows_denied"`
 }
 
 // Node is the daemon state.
@@ -129,6 +157,11 @@ type Node struct {
 
 	keysMu    sync.Mutex
 	adminKeys binding.Signers
+
+	acl     atomic.Pointer[acl.Engine]
+	ship    *shipper
+	flowLog *slog.Logger
+	denied  atomic.Uint64
 
 	mu       sync.Mutex
 	status   Status
@@ -193,7 +226,10 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: netcfg.New(), holder: &registry.Holder{}}
+	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: netcfg.New(), holder: &registry.Holder{}, flowLog: cfg.FlowLog}
+	if n.flowLog == nil {
+		n.flowLog = cfg.Log
+	}
 	// control-plane pin: provisioned by config, else learned on first use
 	if cfg.ControlPin != "" {
 		pin, err := devicekey.ParseSPKIHash(cfg.ControlPin)
@@ -218,6 +254,7 @@ func New(cfg Config) (*Node, error) {
 		TLS:  transport.ClientTLSConfigControl(cert, cfg.ControlServerName, n.pins, onLearn),
 		Log:  cfg.Log, Verify: n.verifySnapshot, OnError: n.controlError,
 	})
+	n.ship = newShipper(n.control, cfg.Log)
 	n.status = Status{
 		State:         StateDown,
 		NodeName:      cfg.Name,
@@ -365,6 +402,7 @@ func (f *filePin) Learn(h devicekey.SPKIHash) error {
 // snapshots and heartbeats while approved. It returns when ctx is done.
 func (n *Node) Run(ctx context.Context) {
 	go n.heartbeats(ctx)
+	go n.ship.run(ctx)
 	for ctx.Err() == nil {
 		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		st, err := n.control.EnrollStatus(sctx)
@@ -400,9 +438,24 @@ func (n *Node) Run(ctx context.Context) {
 
 // onSnapshot reacts to a new registry version.
 func (n *Node) onSnapshot(diff registry.Diff, snap *registry.Snapshot) {
+	eng := acl.New(snap)
+	n.acl.Store(eng)
+	for _, pe := range eng.Errors() {
+		n.log.Error("policy skipped: does not compile", "policy", pe.Name, "id", pe.ID, "err", pe.Err)
+	}
 	n.mu.Lock()
+	n.status.Policies = eng.Policies()
+	n.status.PolicyErrors = nil
+	for _, pe := range eng.Errors() {
+		n.status.PolicyErrors = append(n.status.PolicyErrors, pe.Error())
+	}
 	n.status.SnapshotVersion = snap.Version
 	n.status.NodeID = string(snap.Self.ID)
+	n.status.Kind = snap.Self.Kind
+	n.status.User = nil
+	if se, ok := snap.SessionFor(snap.Self.ID, time.Now()); ok {
+		n.status.User = &UserStatus{Subject: se.Subject, Username: se.Username, Email: se.Email, Groups: se.Groups, ExpiresAt: se.ExpiresAt}
+	}
 	s := n.sess
 	auto := n.cfg.AutoUp && !n.autoDone && s == nil
 	if auto {
@@ -464,10 +517,11 @@ func (n *Node) publishStatus() {
 	if s == nil {
 		return
 	}
-	n.status.Hubs, n.status.Routes, n.status.Tunnels = nil, nil, 0
+	n.status.Hubs, n.status.Routes, n.status.Tunnels, n.status.LoginRequired = nil, nil, 0, false
 	if s.spoke != nil {
 		n.status.Hubs = s.spoke.hubs()
 		n.status.Routes = s.spoke.routes()
+		n.status.LoginRequired = s.spoke.loginRequired()
 	}
 	if s.srv != nil {
 		n.status.Tunnels = len(s.srv.ActiveDevices())
@@ -475,6 +529,25 @@ func (n *Node) publishStatus() {
 	if s.spoke != nil || s.srv != nil {
 		n.status.State = StateUp
 	}
+	n.status.Flows = s.flows.Len()
+	n.status.FlowsDenied = n.denied.Load()
+}
+
+// Flows lists the tracked flows of the running session.
+func (n *Node) Flows() []FlowView {
+	n.mu.Lock()
+	s := n.sess
+	n.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	snap := n.holder.Load()
+	entries := s.flows.Snapshot()
+	out := make([]FlowView, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, flowView(snap, e))
+	}
+	return out
 }
 
 // Enroll submits the enrollment request and returns the control plane's
@@ -503,6 +576,54 @@ func (n *Node) Enroll(ctx context.Context, name string) (api.EnrollStatus, error
 	n.applyEnrollStatus(st)
 	n.log.Info("enrollment", "status", st.Status, "node_id", st.NodeID, "fingerprint", st.Fingerprint)
 	return st, nil
+}
+
+// Login starts a user login and returns the URL for the browser. The IdP
+// host gets a bypass route while the overlay is up so a full-tunnel
+// profile does not swallow the login.
+func (n *Node) Login(ctx context.Context) (api.LoginStart, error) {
+	if err := n.waitReady(ctx); err != nil {
+		return api.LoginStart{}, err
+	}
+	st, err := n.control.LoginStart(ctx)
+	if err != nil {
+		return st, err
+	}
+	n.mu.Lock()
+	s := n.sess
+	n.mu.Unlock()
+	if s != nil {
+		if u, err := url.Parse(st.URL); err == nil && u.Hostname() != "" {
+			if err := s.addBypassHost(ctx, u.Host); err != nil {
+				n.log.Warn("bypass route for the identity provider", "host", u.Host, "err", err)
+			}
+		}
+	}
+	n.log.Info("login started", "flow", st.FlowID)
+	return st, nil
+}
+
+// LoginWait polls a flow once, waiting up to wait.
+func (n *Node) LoginWait(ctx context.Context, flowID string, wait time.Duration) (api.LoginStatus, error) {
+	st, err := n.control.LoginStatus(ctx, flowID, wait)
+	if err == nil && st.Status == "done" && st.Session != nil {
+		n.log.Info("login completed", "subject", st.Session.Subject, "username", st.Session.Username, "groups", st.Session.Groups, "expires_at", st.Session.ExpiresAt)
+		n.mu.Lock()
+		if s := n.sess; s != nil && s.spoke != nil {
+			s.spoke.retryNow()
+		}
+		n.mu.Unlock()
+	}
+	return st, err
+}
+
+// Logout ends the user session at the control plane.
+func (n *Node) Logout(ctx context.Context) error {
+	if err := n.control.Logout(ctx); err != nil {
+		return err
+	}
+	n.log.Info("logged out")
+	return nil
 }
 
 // Profiles lists the available profile names.
@@ -650,6 +771,9 @@ func (n *Node) Down(reason string) {
 // Close tears down on shutdown.
 func (n *Node) Close() {
 	n.Down("node shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	n.ship.flush(ctx)
+	cancel()
 	n.control.Close()
 }
 
@@ -682,6 +806,10 @@ type session struct {
 	dp     *dataplane
 	srv    *transport.Server
 	spoke  *spokeManager
+	flows  *flow.Table
+
+	tmu     sync.Mutex
+	tunnels map[string]*tunnelStats // hub: accepted tunnels, for reports
 
 	mu        sync.Mutex
 	bypass    map[netip.Addr]bool
@@ -697,11 +825,14 @@ type session struct {
 
 func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *session {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &session{
+	s := &session{
 		n: n, ctx: ctx, cancel: cancel, profile: prof, self: snap.Self, pool: snap.Pool.Masked(),
 		isHub: snap.Self.IsHub() || registry.HasRole(snap.Self.Roles, registry.RoleHub),
 		bypass: make(map[netip.Addr]bool), peerRoute: make(map[netip.Prefix]int), done: make(chan struct{}),
+		tunnels: make(map[string]*tunnelStats),
 	}
+	s.flows = flow.New(flow.Timeouts{}, s.onFlowEvent)
+	return s
 }
 
 func (s *session) apply(ctx context.Context) error {
@@ -737,6 +868,8 @@ func (s *session) apply(ctx context.Context) error {
 		return err
 	}
 	s.dp = newDataplane(dev, ifname, n.log)
+	s.dp.s = s
+	go s.flowSweeper()
 
 	if s.isHub {
 		srv, err := transport.NewServer(transport.ServerConfig{
@@ -755,6 +888,9 @@ func (s *session) apply(ctx context.Context) error {
 			return err
 		}
 		s.srv = srv
+		// tell the control plane that any tunnel it still lists for us is gone
+		n.ship.add(api.ShippedEvent{TS: time.Now(), Stream: api.ShipStreamTunnel, Message: "reset"})
+		go s.sessionWatch()
 		go func() {
 			if err := srv.Serve(s.ctx); err != nil {
 				n.log.Error("hub listener failed", "err", err)
@@ -814,6 +950,14 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 			}
 		}
 	}
+	for _, id := range diff.RemovedPeers {
+		s.flows.CloseWhere(func(e *flow.Entry) bool { return e.Origin.Principal == id }, "peer removed")
+	}
+	if diff.PoliciesChanged || diff.SessionsChanged || len(diff.RemovedPeers) > 0 {
+		if c := s.flows.Reevaluate(s.decide); c > 0 {
+			n.log.Info("flows closed by policy or session change", "closed", c)
+		}
+	}
 	if diff.SelfChanged {
 		old := s.self
 		s.self = snap.Self
@@ -830,7 +974,54 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 	if s.spoke != nil && diff.HubsChanged {
 		s.spoke.sync(snap.Hubs())
 	}
+	if s.spoke != nil && diff.SessionsChanged {
+		s.spoke.retryNow()
+	}
+	if s.srv != nil && diff.SessionsChanged {
+		s.enforceSessions(snap)
+	}
 	n.publishStatus()
+}
+
+// enforceSessions closes tunnels of interactive peers without a valid user
+// session (revoked, logged out, expired). Runs on every snapshot with
+// session changes and periodically, so expiry is enforced even without a
+// snapshot bump.
+func (s *session) enforceSessions(snap *registry.Snapshot) {
+	if s.srv == nil || snap == nil {
+		return
+	}
+	now := time.Now()
+	for _, id := range s.srv.ActiveDevices() {
+		p, ok := snap.Peer(id)
+		if !ok || !p.NeedsSession() {
+			continue
+		}
+		if _, ok := snap.SessionFor(id, now); !ok {
+			if c := s.srv.CloseDevice(id, transport.ErrCodeSessionExpired, "user session ended"); c > 0 {
+				s.n.log.Info("peer tunnels closed: no user session", "peer", p.Name, "node", id, "closed", c)
+			}
+		}
+	}
+}
+
+// sessionWatch enforces session expiry on a hub every 10 s and reports
+// tunnel counters to the control plane every 30 s.
+func (s *session) sessionWatch() {
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	tick := 0
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-t.C:
+			s.enforceSessions(s.n.holder.Load())
+			if tick++; tick%3 == 0 {
+				s.reportTunnels()
+			}
+		}
+	}
 }
 
 func equalRoles(a, b []registry.Role) bool {
@@ -930,6 +1121,7 @@ func (s *session) teardown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	s.cancel() // stops the hub listener (closes tunnels), TUN reader and hub links
+	s.flows.CloseWhere(func(*flow.Entry) bool { return true }, "overlay down")
 	if s.spoke != nil {
 		s.spoke.stop()
 		s.spoke.mu.Lock()

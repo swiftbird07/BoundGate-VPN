@@ -1,11 +1,13 @@
 # Runtime image for the control plane. boundgatectl (admin sign), ssh-keygen
-# (dev admin key) and sqlite (e2e tamper test) are dev conveniences; a
+# (dev admin key), sqlite (e2e tamper test) and boundgate-fakeidp (the lab's
+# identity provider, run as a separate service) are dev conveniences; a
 # production image needs only boundgate-control.
 FROM alpine:3.20
 ARG GOARCH=arm64
 RUN apk add --no-cache ca-certificates curl openssh-keygen sqlite
 COPY bin/linux_${GOARCH}/boundgate-control /usr/local/bin/boundgate-control
 COPY bin/linux_${GOARCH}/boundgatectl /usr/local/bin/boundgatectl
+COPY bin/linux_${GOARCH}/boundgate-fakeidp /usr/local/bin/boundgate-fakeidp
 RUN mkdir -p /var/lib/boundgate /var/log/boundgate /etc/boundgate
 ENTRYPOINT []
 CMD ["boundgate-control"]

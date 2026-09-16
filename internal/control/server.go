@@ -24,6 +24,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
@@ -56,6 +57,8 @@ type Config struct {
 	PendingTTL         time.Duration
 	LogRetention       time.Duration
 	Logs               *logging.Streams
+	// OIDC configures user logins; an empty issuer disables them.
+	OIDC oidc.Config
 }
 
 // TLSConfig builds the SNI-splitting server configuration. protos are the
@@ -141,7 +144,13 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	log.Info("node-channel key", "spki", nodeSPKI, "fingerprint", nodeSPKI.Fingerprint())
 	src := snapshot.New(store)
-	h := api.New(api.Deps{DB: store, Snap: src, Logs: cfg.Logs, PendingTTL: cfg.PendingTTL, ControlSPKI: nodeSPKI})
+	idp := oidc.NewLazy(cfg.OIDC)
+	if idp == nil {
+		log.Warn("no identity provider configured; user logins are disabled (interactive nodes cannot use hubs)")
+	} else {
+		log.Info("identity provider", "issuer", cfg.OIDC.Issuer, "client_id", cfg.OIDC.ClientID, "redirect_url", cfg.OIDC.RedirectURL)
+	}
+	h := api.New(api.Deps{DB: store, Snap: src, Logs: cfg.Logs, PendingTTL: cfg.PendingTTL, ControlSPKI: nodeSPKI, OIDC: idp})
 	root := h.Root(cfg.NodeServerName)
 
 	tcpSrv := &http.Server{
@@ -172,6 +181,7 @@ func Run(ctx context.Context, cfg Config) error {
 		errc <- udpSrv.ListenAndServe()
 	}()
 	go housekeeping(ctx, store, cfg, log)
+	go expireSessions(ctx, store, src, cfg.Logs)
 
 	select {
 	case <-ctx.Done():
@@ -189,11 +199,34 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
+// expireSessions ends user sessions past their lifetime and lets nodes
+// know through a snapshot bump. Hubs also enforce expiry locally.
+func expireSessions(ctx context.Context, store *db.DB, src *snapshot.Source, logs *logging.Streams) {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		n, version, err := store.ExpireSessions(ctx)
+		if err != nil {
+			logs.System.Error("expire sessions", "err", err)
+			continue
+		}
+		if n > 0 {
+			src.Notify(version)
+			logs.UserAuth.Info("sessions expired", "actor", "system", "count", n, "snapshot_version", version)
+		}
+	}
+}
+
 func housekeeping(ctx context.Context, store *db.DB, cfg Config, log interface {
 	Info(string, ...any)
 	Error(string, ...any)
 }) {
-	t := time.NewTicker(10 * time.Minute)
+	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
 		if n, err := store.ExpirePending(ctx, cfg.PendingTTL); err != nil {
@@ -208,6 +241,16 @@ func housekeeping(ctx context.Context, store *db.DB, cfg Config, log interface {
 			log.Error("prune logs", "err", err)
 		} else if n > 0 {
 			log.Info("pruned log events", "count", n)
+		}
+		// hubs report every tunnel at least every 30 s; a hub that fell
+		// silent for 3 min has lost them
+		if n, err := store.CloseStaleTunnels(ctx, 3*time.Minute); err != nil {
+			log.Error("close stale tunnels", "err", err)
+		} else if n > 0 {
+			log.Info("closed tunnels of silent hubs", "count", n)
+		}
+		if _, err := store.PruneTunnels(ctx, cfg.LogRetention); err != nil {
+			log.Error("prune tunnels", "err", err)
 		}
 		select {
 		case <-ctx.Done():

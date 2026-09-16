@@ -10,6 +10,7 @@ import (
 	connectip "github.com/quic-go/connect-ip-go"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/netparse"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/forward"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
@@ -33,8 +34,16 @@ func (h *hubService) Accept(_ context.Context, peer transport.AuthenticatedPeer)
 	if !ok {
 		return transport.TunnelConfig{}, http.StatusForbidden, nil
 	}
-	// M2: require a user session for endpoints here.
-	// M3: ACL decisions per flow in Serve.
+	// An interactive node needs a user session (OIDC login) that the
+	// control plane bound to this node id; workloads are admitted on their
+	// device identity alone. 403 tells the spoke "login required".
+	if p.NeedsSession() {
+		if _, ok := snap.SessionFor(p.ID, time.Now()); !ok {
+			n.log.Info("tunnel refused: no user session", "peer", p.Name, "node", p.ID)
+			return transport.TunnelConfig{}, http.StatusForbidden, nil
+		}
+	}
+	// Per-flow ACL decisions happen in Serve (flow table + Cedar).
 	//
 	// CONNECT-IP only lets a peer send from, and receive for, its assigned
 	// addresses. A subnet router therefore gets its announced prefixes
@@ -63,19 +72,22 @@ func (h *hubService) Serve(ctx context.Context, t *transport.Tunnel) {
 		return
 	}
 	dp := s.dp
-	dp.table.Attach(p.OverlayIP, t)
-	defer dp.table.Detach(p.OverlayIP, t)
+	ts := newTunnelStats(t, p)
+	dp.table.Attach(p.OverlayIP, ts)
+	defer dp.table.Detach(p.OverlayIP, ts)
 	for _, pf := range p.Prefixes {
-		dp.table.AttachPrefix(pf.Prefix, t)
+		dp.table.AttachPrefix(pf.Prefix, ts)
 		s.addPeerRoute(pf.Prefix)
 	}
 	defer func() {
 		for _, pf := range p.Prefixes {
-			if still := dp.table.DetachPrefix(pf.Prefix, t); !still {
+			if still := dp.table.DetachPrefix(pf.Prefix, ts); !still {
 				s.delPeerRoute(pf.Prefix)
 			}
 		}
 	}()
+	s.trackTunnel(ts)
+	defer s.untrackTunnel(ts)
 	s.n.log.Info("peer attached", "peer", p.Name, "node", p.ID, "overlay_ip", p.OverlayIP, "prefixes", len(p.Prefixes))
 
 	buf := make([]byte, forward.Offset+forward.MaxPacket)
@@ -85,6 +97,8 @@ func (h *hubService) Serve(ctx context.Context, t *transport.Tunnel) {
 		if err != nil {
 			return
 		}
+		ts.in.Add(uint64(n))
+		ts.inPkts.Add(1)
 		pkt := buf[forward.Offset : forward.Offset+n]
 		hdr, ok := netparse.Parse(pkt)
 		if !ok || !allowedSource(p, hdr.Src) {
@@ -95,7 +109,29 @@ func (h *hubService) Serve(ctx context.Context, t *transport.Tunnel) {
 			}
 			continue
 		}
-		dp.Route(buf[:forward.Offset+n], t)
+		// the ACL: this peer is the principal of every flow it starts
+		switch out, _ := s.admit(hdr, pkt, flow.Origin{Principal: p.ID}); out {
+		case flow.Drop:
+			continue
+		case flow.Reset:
+			s.reset(pkt, ts)
+			continue
+		}
+		dp.Route(buf[:forward.Offset+n], ts)
+	}
+}
+
+// reset aborts the TCP connection of pkt: one RST back to the sender
+// through its tunnel, one onwards to the destination.
+func (s *session) reset(pkt []byte, from forward.PacketWriter) {
+	toSender, toReceiver := netparse.TCPReset(pkt)
+	if toSender != nil {
+		_, _ = from.WritePacket(toSender)
+	}
+	if toReceiver != nil {
+		b := make([]byte, forward.Offset+len(toReceiver))
+		copy(b[forward.Offset:], toReceiver)
+		s.dp.Route(b, from)
 	}
 }
 

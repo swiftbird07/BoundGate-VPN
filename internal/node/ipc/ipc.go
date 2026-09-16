@@ -55,6 +55,13 @@ func Serve(ctx context.Context, socketPath string, n *node.Node) error {
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, n.Status())
 	})
+	mux.HandleFunc("GET /v1/flows", func(w http.ResponseWriter, r *http.Request) {
+		fl := n.Flows()
+		if fl == nil {
+			fl = []node.FlowView{}
+		}
+		writeJSON(w, http.StatusOK, fl)
+	})
 	mux.HandleFunc("GET /v1/profiles", func(w http.ResponseWriter, r *http.Request) {
 		names, err := n.Profiles()
 		if err != nil {
@@ -98,6 +105,39 @@ func Serve(ctx context.Context, socketPath string, n *node.Node) error {
 	})
 	mux.HandleFunc("POST /v1/down", func(w http.ResponseWriter, r *http.Request) {
 		n.Down("down by user")
+		writeJSON(w, http.StatusOK, n.Status())
+	})
+	mux.HandleFunc("POST /v1/login", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		defer cancel()
+		st, err := n.Login(ctx)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+	})
+	mux.HandleFunc("GET /v1/login/{flow}", func(w http.ResponseWriter, r *http.Request) {
+		wait := 25 * time.Second
+		if v := r.URL.Query().Get("wait"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= 0 && d <= 50*time.Second {
+				wait = d
+			}
+		}
+		st, err := n.LoginWait(r.Context(), r.PathValue("flow"), wait)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+	})
+	mux.HandleFunc("POST /v1/logout", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := n.Logout(ctx); err != nil {
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, n.Status())
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -180,6 +220,13 @@ func (c *Client) Status() (node.Status, error) {
 	return s, err
 }
 
+// Flows lists the tracked flows.
+func (c *Client) Flows() ([]node.FlowView, error) {
+	var fl []node.FlowView
+	err := c.do(http.MethodGet, "/v1/flows", nil, &fl)
+	return fl, err
+}
+
 // Profiles lists profile names.
 func (c *Client) Profiles() ([]string, error) {
 	var names []string
@@ -198,6 +245,27 @@ func (c *Client) Enroll(name string) (api.EnrollStatus, error) {
 func (c *Client) Up(profile string) (node.Status, error) {
 	var s node.Status
 	err := c.do(http.MethodPost, "/v1/up", UpRequest{Profile: profile}, &s)
+	return s, err
+}
+
+// Login starts a user login; the URL is for the user's browser.
+func (c *Client) Login() (api.LoginStart, error) {
+	var st api.LoginStart
+	err := c.do(http.MethodPost, "/v1/login", nil, &st)
+	return st, err
+}
+
+// LoginWait polls the login flow for up to wait.
+func (c *Client) LoginWait(flowID string, wait time.Duration) (api.LoginStatus, error) {
+	var st api.LoginStatus
+	err := c.do(http.MethodGet, "/v1/login/"+flowID+"?wait="+wait.String(), nil, &st)
+	return st, err
+}
+
+// Logout ends the user session.
+func (c *Client) Logout() (node.Status, error) {
+	var s node.Status
+	err := c.do(http.MethodPost, "/v1/logout", nil, &s)
 	return s, err
 }
 

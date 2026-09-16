@@ -7,6 +7,13 @@
 #   setup-dev.sh confirm SVC     enroll + confirm only (prints the sign command; the node stays "confirmed")
 #   setup-dev.sh sign SVC        sign a confirmed node (new token, then signature)
 #   setup-dev.sh revoke SVC      revoke SVC (closes its tunnels everywhere)
+#   setup-dev.sh login SVC       log the lab user in on SVC through the fake IdP (what a browser would do)
+#   setup-dev.sh policy NAME 'CEDAR' [NODE...]   create or replace a policy (optionally scoped to nodes by service name)
+#   setup-dev.sh policy-rm NAME  delete a policy
+#   setup-dev.sh policies        list policies
+#   setup-dev.sh eval SVC DST [PORT] [PROTO] [SNI]   dry-run the ACL for a flow
+#   setup-dev.sh flows [QUERY]   shipped flow records (e.g. 'decision=deny&limit=20')
+#   setup-dev.sh tunnels [QUERY] tunnel history (e.g. 'active=1')
 #   setup-dev.sh api GET /api/v1/admin/nodes      raw admin API call
 #
 # The dev admin key is a software ed25519 key created inside the control
@@ -61,14 +68,53 @@ set_network() {
   echo "network: overlay pool 10.21.0.0/16"
 }
 
+node_id_of() {  # node_id_of SVC -> node id (approved or confirmed)
+  spki=$($COMPOSE exec -T "$1" boundgatectl -json identity | jq -r .spki)
+  api GET /api/v1/admin/nodes | jq -r --arg s "$spki" '.[] | select(.spki == $s and .status != "revoked") | .id'
+}
+
+# set_policy NAME CEDAR [SVC...]: create or replace; scope = node ids of the services
+set_policy() {
+  name=$1; cedar=$2; shift 2
+  scope='[]'
+  for svc in "$@"; do
+    scope=$(printf '%s' "$scope" | jq -c --arg id "$(node_id_of "$svc")" '. + [$id]')
+  done
+  body=$(jq -cn --arg n "$name" --arg c "$cedar" --argjson s "$scope" '{name:$n, cedar:$c, scope:$s}')
+  id=$(api GET /api/v1/admin/policies | jq -r --arg n "$name" '.[] | select(.name == $n) | .id')
+  if [ -n "$id" ]; then
+    api PUT "/api/v1/admin/policies/$id" "$body" | jq -r '"policy: replaced \(.name) (scope \(.scope | length) nodes)"'
+  else
+    api POST /api/v1/admin/policies "$body" | jq -r '"policy: created \(.name) (scope \(.scope | length) nodes)"'
+  fi
+}
+
+rm_policy() {
+  id=$(api GET /api/v1/admin/policies | jq -r --arg n "$1" '.[] | select(.name == $n) | .id')
+  [ -n "$id" ] || { echo "policy: $1 does not exist"; return 0; }
+  api DELETE "/api/v1/admin/policies/$id"
+  echo "policy: deleted $1"
+}
+
+# The lab starts permissive; the e2e adds forbid policies on top and
+# switches to group-based permits. Without any policy nothing is reachable.
+default_policies() {
+  set_policy lab-allow-all 'permit(principal, action, resource);'
+}
+
+eval_acl() {  # eval SVC DST [PORT] [PROTO] [SNI]
+  body=$(jq -cn --arg n "$1" --arg d "$2" --argjson p "${3:-80}" --arg pr "${4:-tcp}" --arg s "${5:-}" '{node:$n, dst:$d, port:$p, proto:$pr, sni:$s}')
+  api POST /api/v1/admin/acl/evaluate "$body" | jq .
+}
+
 # The dev grant mirrors what each node requested. A real admin decides this
 # per node in the UI after comparing the fingerprint.
 grant_for() {
   case "$1" in
-    hub1)   echo '"roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"snat"}],"public_addr":"hub1:443"' ;;
-    hub2)   echo '"roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"snat"}],"public_addr":"hub2:443"' ;;
-    node-r) echo '"roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}]' ;;
-    node-a) echo '"roles":["endpoint"]' ;;
+    hub1)   echo '"kind":"workload","roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"snat"}],"public_addr":"hub1:443"' ;;
+    hub2)   echo '"kind":"workload","roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"snat"}],"public_addr":"hub2:443"' ;;
+    node-r) echo '"kind":"workload","roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}]' ;;
+    node-a) echo '"kind":"interactive","roles":["endpoint"]' ;;
     *) echo "unknown service $1" >&2; exit 2 ;;
   esac
 }
@@ -87,7 +133,7 @@ enroll_node() {  # prints the enroll status JSON
 sign_node() {
   $COMPOSE exec -T control boundgatectl -json admin sign --control https://localhost:443 --cacert /var/lib/boundgate/control.crt \
     --node "$2" --fingerprint "$3" --token "$4" --key "$SIGNER_KEY" \
-    | jq -r '"\(.name): approved as \(.roles | join("+")) with overlay ip \(.overlay_ip), signed by \(.signed_by)"'
+    | jq -r '"\(.name): approved as \(.kind) \(.roles | join("+")) with overlay ip \(.overlay_ip), signed by \(.signed_by)"'
 }
 
 confirm_node() {  # confirm_node SVC [sign]
@@ -116,6 +162,18 @@ confirm_node() {  # confirm_node SVC [sign]
   esac
 }
 
+# login SVC: drive the fake IdP for a node (what a browser would do)
+login_node() {
+  st=$($COMPOSE exec -T "$1" boundgatectl -json login -no-wait)
+  flow=$(printf '%s' "$st" | jq -r .flow_id)
+  url=$(printf '%s' "$st" | jq -r .url)
+  # the "browser": follow the IdP redirect (inside the lab network), then hit the callback on the Mac side
+  cb=$($COMPOSE exec -T control curl -s -o /dev/null -w '%{redirect_url}' "$url")
+  curl -sS -f --cacert "$CACERT" -o /dev/null "$cb"
+  $COMPOSE exec -T "$1" boundgatectl -json status | jq -r '"\(.node_name): logged in as \(.user.username // "?") \(.user.groups // [])"' 2>/dev/null || true
+  echo "$1: login flow $flow completed"
+}
+
 revoke_node() {
   spki=$($COMPOSE exec -T "$1" boundgatectl -json identity | jq -r .spki)
   id=$(api GET '/api/v1/admin/nodes?state=approved' | jq -r --arg s "$spki" '.[] | select(.spki == $s) | .id')
@@ -125,12 +183,19 @@ revoke_node() {
 }
 
 case "${1:-all}" in
-  all)     ensure_signer; set_network; for s in hub1 hub2 node-r node-a; do confirm_node "$s" sign; done ;;
+  all)     ensure_signer; set_network; default_policies; for s in hub1 hub2 node-r node-a; do confirm_node "$s" sign; done ;;
+  policy)  shift; set_policy "$@" ;;
+  policy-rm) rm_policy "$2" ;;
+  policies) api GET /api/v1/admin/policies | jq -r '.[] | "\(.name)\t\(if .enabled then "enabled" else "disabled" end)\tscope=\(.scope | length)\t\(.cedar | gsub("\n"; " "))"' ;;
+  eval)    shift; eval_acl "$@" ;;
+  flows)   api GET "/api/v1/admin/flows?${2:-limit=50}" | jq -r '.[] | "\(.ts)\t\(.attrs.node_name)\t\(.message)\t\(.attrs.principal_name // "local")\t\(.attrs.user // "-")\t\(.attrs.src):\(.attrs.sport) -> \(.attrs.dst):\(.attrs.dport)/\(.attrs.proto)\t\(.attrs.sni // .attrs.dns_name // "")\t\(.attrs.decision)\t\(.attrs.policies // [] | join(","))\t\(.attrs.bytes_in)/\(.attrs.bytes_out)"' ;;
+  tunnels) api GET "/api/v1/admin/tunnels?${2:-}" | jq -r '.[] | "\(.opened_at)\t\(.hub_name) <- \(.peer_name)\t\(if .closed_at then "closed \(.closed_at) (\(.close_reason))" else "open" end)\t\(.bytes_in)/\(.bytes_out)"' ;;
   signer)  ensure_signer ;;
   approve) ensure_signer; confirm_node "$2" sign ;;
   confirm) ensure_signer; confirm_node "$2" ;;
   sign)    confirm_node "$2" sign ;;
   revoke)  revoke_node "$2" ;;
+  login)   login_node "$2" ;;
   api)     shift; api "$@"; echo ;;
-  *)       echo "usage: $0 [all|signer|approve SVC|confirm SVC|sign SVC|revoke SVC|api METHOD PATH [JSON]]" >&2; exit 2 ;;
+  *)       echo "usage: $0 [all|signer|approve SVC|confirm SVC|sign SVC|revoke SVC|login SVC|policy NAME CEDAR [SVC...]|policy-rm NAME|policies|eval SVC DST [PORT] [PROTO] [SNI]|flows [QUERY]|tunnels [QUERY]|api METHOD PATH [JSON]]" >&2; exit 2 ;;
 esac

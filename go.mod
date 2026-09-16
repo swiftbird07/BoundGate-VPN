@@ -3,16 +3,20 @@ module gitlab.net407.com/SBH/BoundGate-VPN
 go 1.26.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.20.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/quic-go/connect-ip-go v0.2.0
 	github.com/quic-go/quic-go v0.62.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	golang.org/x/crypto v0.54.0
+	golang.org/x/oauth2 v0.37.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.57.0
 )
 
 require (
+	github.com/cedar-policy/cedar-go v1.8.0 // indirect
 	github.com/dunglas/httpsfv v1.0.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -20,6 +24,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect

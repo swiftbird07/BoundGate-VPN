@@ -6,11 +6,11 @@
 #   make setup-dev             # dev admin key, confirm + sign hub1, hub2, node-r, node-a
 #   docker compose -f deploy/compose/docker-compose.yml exec node-a boundgatectl up
 #   docker compose -f deploy/compose/docker-compose.yml exec node-a curl -s http://10.60.0.10
-#   make e2e                   # full M1.5/M1.6 check incl. HA, revocation, signed bindings
+#   make e2e                   # full M1.5..M3 check incl. HA, revocation, signed bindings, login, ACL
 #
 # Networks:
-#   public   172.30.0.0/24  control (.5), hub1 (.10), hub2 (.11), node-a (.20), node-r (.30)
-#   internal 10.60.0.0/24   hub1 (.2), hub2 (.3), target (.10)      "behind the hubs"
+#   public   172.30.0.0/24  control (.5), idp (.6), hub1 (.10), hub2 (.11), node-a (.20), node-r (.30)
+#   internal 10.60.0.0/24   hub1 (.2), hub2 (.3), target (.10), target-tls (.11)   "behind the hubs"
 #   lan      192.168.178.0/24 node-r (.30), target-lan (.10)        "Martin's home LAN"
 #   overlay  10.21.0.0/16   assigned by the control plane at approval
 
@@ -64,6 +64,20 @@ services:
       - ./state/control:/var/lib/boundgate
       - ./logs/control:/var/log/boundgate
     command: ["boundgate-control", "-config", "/etc/boundgate/control.yaml"]
+
+  # Fake OpenID Connect provider for the lab: logs "martin" in without
+  # asking. Production uses Authentik (docs/OIDC.md).
+  idp:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control
+      args:
+        GOARCH: ${GOARCH:-arm64}
+    networks:
+      public:
+        ipv4_address: 172.30.0.6
+    command: ["boundgate-fakeidp", "-listen", ":9000", "-issuer", "http://idp:9000", "-client-id", "boundgate", "-client-secret", "dev-secret",
+              "-user", "martin", "-email", "martin@example.test", "-groups", "vpn-users,admins"]
 
   hub1:
     <<: *node
@@ -121,6 +135,17 @@ services:
       internal:
         ipv4_address: 10.60.0.10
     command: ["--port", "80", "--name", "target"]
+
+  # TLS target for the SNI policy test: serves https on 443 with a
+  # self-generated certificate and echoes the request.
+  target-tls:
+    image: mendhak/http-https-echo:35
+    environment:
+      HTTP_PORT: "80"
+      HTTPS_PORT: "443"
+    networks:
+      internal:
+        ipv4_address: 10.60.0.11
 
   target-lan:
     image: traefik/whoami:v1.10.4

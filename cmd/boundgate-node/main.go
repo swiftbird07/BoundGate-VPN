@@ -96,6 +96,7 @@ func run(cfgPath string) error {
 		TUNName:           cfg.TUNName,
 		MTU:               cfg.MTU,
 		Log:               logs.System,
+		FlowLog:           logs.Flow,
 	})
 	if err != nil {
 		return err

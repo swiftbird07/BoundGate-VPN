@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"slices"
 	"sort"
 	"sync"
 	"time"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/acl"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/netparse"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/forward"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
@@ -33,11 +37,12 @@ type spokeManager struct {
 type hubLink struct {
 	hub        registry.Node
 	cancel     context.CancelFunc
-	state      string // connecting | connected | error
+	state      string // connecting | connected | error | login required
 	err        string
 	since      time.Time
 	tunnel     *transport.ClientTunnel
 	advertised []netip.Prefix
+	retry      chan struct{} // poke: retry now
 }
 
 // HubStatus is the CLI view of one hub link.
@@ -77,11 +82,39 @@ func (m *spokeManager) sync(hubs []registry.Node) {
 			continue
 		}
 		ctx, cancel := context.WithCancel(m.s.ctx)
-		l := &hubLink{hub: h, cancel: cancel, state: "connecting"}
+		l := &hubLink{hub: h, cancel: cancel, state: "connecting", retry: make(chan struct{}, 1)}
 		m.links[h.ID] = l
 		go m.run(ctx, l)
 	}
 	m.electLocked()
+}
+
+// retryNow makes every link that is waiting after a failure dial again
+// immediately (used when the own user session appears).
+func (m *spokeManager) retryNow() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, l := range m.links {
+		if l.tunnel == nil {
+			select {
+			case l.retry <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// loginRequired reports whether any hub refused the node for lack of a
+// user session.
+func (m *spokeManager) loginRequired() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, l := range m.links {
+		if l.state == "login required" {
+			return true
+		}
+	}
+	return false
 }
 
 // stop closes every link.
@@ -103,22 +136,37 @@ func (m *spokeManager) stop() {
 func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 	n := m.s.n
 	backoff := time.Second
+	fast := 0 // quick retries left after a poke (the hub may see the session a moment after we do)
 	for ctx.Err() == nil {
 		t, adv, err := m.dial(ctx, l.hub)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
+			state, msg := "error", err.Error()
+			var de *transport.DialError
+			if errors.As(err, &de) && de.Status == http.StatusForbidden {
+				state, msg = "login required", "hub refused the tunnel: user login required (boundgatectl login)"
+				if fast > 0 {
+					fast--
+					backoff = 2 * time.Second
+				} else {
+					backoff = max(backoff, 10*time.Second)
+				}
+			}
 			m.mu.Lock()
-			l.state, l.err, l.tunnel = "error", err.Error(), nil
+			l.state, l.err, l.tunnel = state, msg, nil
 			m.mu.Unlock()
 			n.log.Warn("hub connection failed", "hub", l.hub.Name, "addr", l.hub.PublicAddr, "err", err, "retry_in", backoff)
+			n.publishStatus()
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(backoff):
+				backoff = min(backoff*2, 30*time.Second)
+			case <-l.retry:
+				backoff, fast = time.Second, 3
 			}
-			backoff = min(backoff*2, 30*time.Second)
 			continue
 		}
 		backoff = time.Second
@@ -167,6 +215,11 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 			return
 		}
 		n.log.Warn("hub disconnected", "hub", l.hub.Name, "reason", reason)
+		if code, ok := transport.CloseCode(t.Err()); ok && code == transport.ErrCodeSessionExpired {
+			m.mu.Lock()
+			l.state = "login required"
+			m.mu.Unlock()
+		}
 		n.publishStatus()
 		if revoked {
 			// The hub knows better than our (possibly stale) snapshot; the
@@ -225,16 +278,43 @@ func (m *spokeManager) dial(ctx context.Context, hub registry.Node) (*transport.
 }
 
 // pump moves packets from a hub tunnel to the host stack. Every connected
-// hub may deliver return traffic, not only the primary.
+// hub may deliver return traffic, not only the primary. Packets that start
+// a flow are decided by the ACL with the owner of the source address as
+// principal: the hub already checked that the source belongs to that peer.
 func (m *spokeManager) pump(ctx context.Context, t *transport.ClientTunnel) {
+	s := m.s
 	buf := make([]byte, forward.Offset+forward.MaxPacket)
 	for ctx.Err() == nil {
 		n, err := t.ReadPacket(buf[forward.Offset:])
 		if err != nil {
 			return
 		}
-		if err := m.s.dp.WriteToTUN(buf[:forward.Offset+n]); err != nil {
-			m.s.n.log.Warn("tun write", "err", err)
+		pkt := buf[forward.Offset : forward.Offset+n]
+		h, ok := netparse.Parse(pkt)
+		if !ok {
+			continue
+		}
+		var origin flow.Origin
+		if owner, ok := acl.Owner(s.n.holder.Load(), h.Src); ok {
+			origin.Principal = owner.ID
+		}
+		switch out, _ := s.admit(h, pkt, origin); out {
+		case flow.Drop:
+			continue
+		case flow.Reset:
+			toSender, toReceiver := netparse.TCPReset(pkt)
+			if toSender != nil {
+				_, _ = t.WritePacket(toSender)
+			}
+			if toReceiver != nil {
+				b := make([]byte, forward.Offset+len(toReceiver))
+				copy(b[forward.Offset:], toReceiver)
+				_ = s.dp.WriteToTUN(b)
+			}
+			continue
+		}
+		if err := s.dp.WriteToTUN(buf[:forward.Offset+n]); err != nil {
+			s.n.log.Warn("tun write", "err", err)
 		}
 	}
 }

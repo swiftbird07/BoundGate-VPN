@@ -71,9 +71,21 @@ func (h *Handlers) AdminMux() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/admin/signers/{id}", h.adminRevokeSigner)
 	mux.HandleFunc("GET /api/v1/admin/settings/network", h.adminGetNetwork)
 	mux.HandleFunc("PUT /api/v1/admin/settings/network", h.adminPutNetwork)
+	mux.HandleFunc("GET /api/v1/admin/sessions", h.adminListSessions)
+	mux.HandleFunc("DELETE /api/v1/admin/sessions/{id}", h.adminRevokeSession)
+	mux.HandleFunc("GET /api/v1/admin/policies", h.adminListPolicies)
+	mux.HandleFunc("POST /api/v1/admin/policies", h.adminCreatePolicy)
+	mux.HandleFunc("POST /api/v1/admin/policies/validate", h.adminValidatePolicy)
+	mux.HandleFunc("GET /api/v1/admin/policies/{id}", h.adminGetPolicy)
+	mux.HandleFunc("PUT /api/v1/admin/policies/{id}", h.adminPutPolicy)
+	mux.HandleFunc("DELETE /api/v1/admin/policies/{id}", h.adminDeletePolicy)
+	mux.HandleFunc("POST /api/v1/admin/acl/evaluate", h.adminEvaluate)
+	mux.HandleFunc("GET /api/v1/admin/tunnels", h.adminListTunnels)
+	mux.HandleFunc("GET /api/v1/admin/flows", h.adminFlows)
 	mux.HandleFunc("GET /api/v1/admin/snapshot", h.adminSnapshot)
 	mux.HandleFunc("GET /api/v1/admin/logs", h.adminLogs)
 	outer := http.NewServeMux()
+	outer.HandleFunc("GET /api/v1/oidc/callback", h.oidcCallback)
 	outer.Handle("/api/v1/sign/", h.signMux())
 	outer.Handle("/", h.AdminAuth(mux))
 	return outer
@@ -90,6 +102,7 @@ type NodeView struct {
 	SPKI              string              `json:"spki"`
 	Fingerprint       string              `json:"fingerprint"`
 	Status            string              `json:"status"`
+	Kind              registry.Kind       `json:"kind"`
 	RequestedRoles    []registry.Role     `json:"requested_roles"`
 	RequestedPrefixes []registry.Prefix   `json:"requested_prefixes"`
 	Roles             []registry.Role     `json:"roles"`
@@ -118,7 +131,7 @@ func nodeView(n db.Node) NodeView {
 	v := NodeView{
 		ID: n.ID, Name: n.Name, Hostname: n.Hostname, Platform: n.Platform, KeyKind: n.KeyKind,
 		HardwareBound: n.HardwareBound, SPKI: n.SPKI.String(), Fingerprint: n.SPKI.Fingerprint(),
-		Status: n.Status, RequestedRoles: orEmptyRoles(n.RequestedRoles), RequestedPrefixes: orEmptyPrefixes(n.RequestedPrefixes),
+		Status: n.Status, Kind: n.Kind, RequestedRoles: orEmptyRoles(n.RequestedRoles), RequestedPrefixes: orEmptyPrefixes(n.RequestedPrefixes),
 		Roles: orEmptyRoles(n.Roles), Prefixes: orEmptyPrefixes(n.Prefixes), PublicAddr: n.PublicAddr,
 		RequestedAt: n.RequestedAt, RequestIP: n.RequestIP, ConfirmedBy: n.ConfirmedBy, ApprovedBy: n.ApprovedBy, RevokedBy: n.RevokedBy,
 		SnapshotVersion: n.LastSnapshotVersion, ActiveTunnels: n.ActiveTunnels, Attrs: n.Attrs,
@@ -200,6 +213,7 @@ type GrantBody struct {
 	// admin confirmed so a stale page cannot approve a different request.
 	Fingerprint string            `json:"fingerprint"`
 	Name        string            `json:"name"`
+	Kind        string            `json:"kind"` // interactive (needs a user login) | workload
 	Roles       []string          `json:"roles"`
 	Prefixes    []registry.Prefix `json:"prefixes"`
 	OverlayIP   string            `json:"overlay_ip"`
@@ -208,6 +222,13 @@ type GrantBody struct {
 
 func (b GrantBody) grant() (db.Grant, error) {
 	g := db.Grant{Name: strings.TrimSpace(b.Name), Prefixes: b.Prefixes, PublicAddr: strings.TrimSpace(b.PublicAddr)}
+	if b.Kind != "" {
+		k, err := registry.ParseKind(b.Kind)
+		if err != nil {
+			return g, err
+		}
+		g.Kind = k
+	}
 	if b.Roles != nil {
 		roles, err := registry.ParseRoles(b.Roles)
 		if err != nil {
@@ -318,7 +339,7 @@ func (h *Handlers) adminConfirmNode(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, a.Subject, "node confirmed", id,
 		map[string]any{"name": n.Name, "spki": n.SPKI.String(), "key_kind": n.KeyKind, "hardware_bound": n.HardwareBound,
-			"roles": n.Roles, "prefixes": n.Prefixes, "overlay_ip": n.OverlayIP.String(), "public_addr": n.PublicAddr, "sign_token_expires": out.SignExpiresAt})
+			"kind": n.Kind, "roles": n.Roles, "prefixes": n.Prefixes, "overlay_ip": n.OverlayIP.String(), "public_addr": n.PublicAddr, "sign_token_expires": out.SignExpiresAt})
 	writeJSON(w, http.StatusOK, out)
 }
 

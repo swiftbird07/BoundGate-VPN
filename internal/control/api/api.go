@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
@@ -38,6 +39,8 @@ type Deps struct {
 	// ControlSPKI is the hash of the node-channel key; it is told to nodes
 	// at enrollment so they can cross-check the key they pinned.
 	ControlSPKI devicekey.SPKIHash
+	// OIDC is the identity provider for user logins; nil disables logins.
+	OIDC *oidc.Lazy
 }
 
 // Handlers holds the muxes.

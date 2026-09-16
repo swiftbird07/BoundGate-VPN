@@ -42,8 +42,10 @@ type LogQuery struct {
 	Since    time.Time
 	Until    time.Time
 	Text     string
-	Before   int64 // cursor: return rows with id < Before
-	Limit    int
+	// Attrs filters on top-level attribute values (json_extract equality).
+	Attrs  map[string]string
+	Before int64 // cursor: return rows with id < Before
+	Limit  int
 }
 
 // ListLogs returns events newest first.
@@ -77,6 +79,13 @@ func (d *DB) ListLogs(ctx context.Context, q LogQuery) ([]LogEvent, error) {
 		sqlq += ` AND (message LIKE ? OR attrs_json LIKE ?)`
 		args = append(args, "%"+q.Text+"%", "%"+q.Text+"%")
 	}
+	for k, v := range q.Attrs {
+		if !validAttrKey(k) {
+			continue
+		}
+		sqlq += ` AND json_extract(attrs_json, '$.` + k + `') = ?`
+		args = append(args, v)
+	}
 	if q.Before > 0 {
 		sqlq += ` AND id < ?`
 		args = append(args, q.Before)
@@ -102,6 +111,41 @@ func (d *DB) ListLogs(ctx context.Context, q LogQuery) ([]LogEvent, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// InsertLogs stores a batch in one transaction (shipped node logs).
+func (d *DB) InsertLogs(ctx context.Context, evs []LogEvent) error {
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for _, e := range evs {
+		if e.TS.IsZero() {
+			e.TS = time.Now().UTC()
+		}
+		attrs, _ := json.Marshal(e.Attrs)
+		if e.Attrs == nil {
+			attrs = []byte("{}")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO log_events (ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.TS.UTC().Format(time.RFC3339Nano), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs)); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func validAttrKey(k string) bool {
+	if k == "" || len(k) > 32 {
+		return false
+	}
+	for _, c := range k {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // PruneLogs deletes events older than maxAge.

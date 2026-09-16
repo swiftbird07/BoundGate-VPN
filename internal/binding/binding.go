@@ -36,6 +36,7 @@ type Binding struct {
 	NodeID     string             `json:"node_id"`
 	SPKI       devicekey.SPKIHash `json:"spki"`
 	KeyVersion int                `json:"key_version"`
+	Kind       registry.Kind      `json:"kind"`
 	Roles      []registry.Role    `json:"roles"`
 	Prefixes   []registry.Prefix  `json:"prefixes"`
 	OverlayIP  netip.Addr         `json:"overlay_ip"`
@@ -43,7 +44,7 @@ type Binding struct {
 
 // FromNode builds the binding a node record must be signed for.
 func FromNode(n registry.Node) Binding {
-	return Binding{NodeID: string(n.ID), SPKI: n.SPKI, KeyVersion: n.KeyVersion, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP}
+	return Binding{NodeID: string(n.ID), SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP}
 }
 
 // Normalize sorts roles and prefixes and masks prefixes.
@@ -65,6 +66,9 @@ func (b Binding) Normalize() Binding {
 	if roles == nil {
 		roles = []registry.Role{}
 	}
+	if b.Kind == "" {
+		b.Kind = registry.KindInteractive
+	}
 	b.Roles, b.Prefixes = roles, prefixes
 	return b
 }
@@ -79,6 +83,9 @@ func (b Binding) Validate() error {
 	}
 	if b.KeyVersion <= 0 {
 		return errors.New("binding: key_version must be positive")
+	}
+	if _, err := registry.ParseKind(string(b.Kind)); err != nil {
+		return err
 	}
 	if len(b.Roles) == 0 {
 		return errors.New("binding: at least one role is required")
@@ -155,6 +162,8 @@ func (b Binding) Matches(n registry.Node) error {
 		return errors.New("binding: key does not match the record")
 	case b.KeyVersion != want.KeyVersion:
 		return fmt.Errorf("binding: key version %d, record says %d", b.KeyVersion, want.KeyVersion)
+	case b.Kind != want.Kind:
+		return fmt.Errorf("binding: kind %s, record says %s", b.Kind, want.Kind)
 	case !slices.Equal(b.Roles, want.Roles):
 		return fmt.Errorf("binding: roles %v, record says %v", b.Roles, want.Roles)
 	case !slices.Equal(b.Prefixes, want.Prefixes):

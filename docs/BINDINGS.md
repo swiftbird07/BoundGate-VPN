@@ -3,14 +3,15 @@
 A **binding** is the statement an administrator signs for every node:
 
 ```json
-{"node_id":"f11a…","spki":"cb0d…","key_version":1,
+{"node_id":"f11a…","spki":"cb0d…","key_version":1,"kind":"interactive",
  "roles":["endpoint","subnet-router"],
  "prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}],
  "overlay_ip":"10.21.0.4"}
 ```
 
-It says: *this node id and this device key hold these roles, may announce
-these prefixes, and own this overlay address*. Every node verifies the
+It says: *this node id and this device key are of this kind (interactive:
+a person must log in; workload: the key alone suffices), hold these roles,
+may announce these prefixes, and own this overlay address*. Every node verifies the
 bindings of its peers and of itself against the admin keys it pinned at
 its own enrollment. The control plane distributes bindings but cannot
 create or change one. A compromised control plane can therefore still
@@ -82,7 +83,7 @@ pending ──confirm──▶ confirmed ──sign──▶ approved ──revo
    409), marks the token used and moves the node to `approved` in the same
    transaction. Every node receives the record with `binding` and
    `signature` in its next snapshot.
-3. **PATCH** of roles, prefixes or overlay address on an approved node
+3. **PATCH** of kind, roles, prefixes or overlay address on an approved node
    drops the signature: the node goes back to `confirmed`, leaves every
    snapshot at once (hubs close its tunnels, its own poll gets 403), and
    the response carries a new sign command. A rename or a new public

@@ -18,7 +18,9 @@ Living document. Every milestone updates the register.
 | Threat | Defense |
 |---|---|
 | Copy of the node's state directory to another machine | Key is non-exportable (TPM/SE); with softkey this is **not** defended, softkey is dev-only and reported as `hardware_bound=false` for policy |
-| Stolen OIDC tokens or session cookies | Sessions are bound to the node's SPKI in the control plane and only ever travel inside snapshots; a hub accepts them together with the node's mTLS connection (M2) |
+| Stolen OIDC tokens | Tokens exist only for the duration of the code exchange inside the control plane; nothing token-like reaches a node. A session is a control-plane row bound to a node id and only ever travels inside snapshots; a hub honours it only on that node's mTLS connection |
+| Session replay from another device | Impossible by construction: the session names a node id, the tunnel proves the node's key |
+| Login started by one node, completed for another | `state` binds the callback to the flow's node; the flow id is readable only by that node; the code is single use with PKCE and nonce |
 | Unknown node connecting to a hub | Registry lookup inside the TLS handshake; nothing above TLS exists for unapproved keys |
 | Fake hub (anyone with the public address) | The spoke pins the hub's SPKI from the snapshot; a hub is a node whose key carries an admin-signed binding with the hub role |
 | Control plane promotes a node to hub or widens a router's prefixes (bug or compromise) | Roles, prefixes and overlay address are in the signed binding; a record that differs from its binding is ignored by every node (tested in the lab with a direct database edit) |
@@ -42,7 +44,7 @@ Living document. Every milestone updates the register.
 | Admin keys are fixed at enrollment | A key added later cannot sign for older nodes; a compromised admin key keeps verifying on nodes that pinned it. Both mean re-enrolling nodes. Chosen over an updatable list because an updatable list would again be something the control plane controls. |
 | Compromise of a hub | The hub terminates tunnels and sees overlay packets between spokes by design (M7 adds end-to-end paths). Its role is admin-granted. |
 | Compromise of a subnet router | Its LAN is exposed to the overlay as granted; the LAN itself is not BoundGate-authenticated (an Apple TV has no key). |
-| Compromise of the control plane | Can delete nodes (deny service), change unsigned fields (name, hub public address), policy (M3) and sessions (M2), and route traffic through a chosen *approved* hub. Cannot forge a device key, invent a node, change roles or prefixes, or move an overlay address: those are in the admin-signed binding that every node verifies against keys pinned at enrollment (`BINDINGS.md`). Cannot impersonate the control plane to enrolled nodes either (pinned key). |
+| Compromise of the control plane | Can delete nodes (deny service), change unsigned fields (name, hub public address), policy (M3) and **user sessions** (it can attach any user to any interactive node; the ACL then trusts that user), and route traffic through a chosen *approved* hub. It cannot make an interactive node a workload (kind is signed). Cannot forge a device key, invent a node, change roles or prefixes, or move an overlay address: those are in the admin-signed binding that every node verifies against keys pinned at enrollment (`BINDINGS.md`). Cannot impersonate the control plane to enrolled nodes either (pinned key). |
 | TPM firmware vulnerabilities | Out of scope; re-enroll all nodes if one becomes known. |
 
 ## Risk register
@@ -53,7 +55,7 @@ Living document. Every milestone updates the register.
 | R2 | http3 exposes the QUIC connection only via `ConnContext` | verified M0 | `ConnContext` runs after the handshake; `PeerFromTLSState` re-verifies per request |
 | R3 | Enroll endpoint is reachable without approval | mitigated M1 | Creates `pending` rows only; rate limit per source IP; expiry 24 h; fingerprint shown prominently |
 | R4 | Admin approves without comparing the fingerprint | partly M1 | API takes the confirmed fingerprint and refuses mismatches; UI (M4) will require it; procedure in ENROLLMENT.md |
-| R5 | Cedar schema validator is experimental | planned M3 | Validate = parse + dry-run; schema check advisory |
+| R5 | Cedar schema validation not used; attribute typos only show up at evaluation time | accepted M3 | Policies are parsed on save; `POST /admin/acl/evaluate` dry-runs on live state and returns evaluation errors; the flow log records them per flow |
 | R6 | MTU/fragmentation over QUIC datagrams | open | TUN MTU 1280 both ends; ICMP "packet too big" from `WritePacket` is forwarded back |
 | R7 | Colima kernel features (tun, nftables, ip_forward) | verified M0 | Works on kernel 6.8 in Colima |
 | R8 | Bypass routes go stale when hub/control/IdP IPs change | open | Re-resolved on every dial; DNS changes mid-session are not tracked |
@@ -86,3 +88,17 @@ Living document. Every milestone updates the register.
 | R35 | Dev tooling in the control image (`ssh-keygen`, `sqlite3`, `boundgatectl`) | dev only | Documented in `Dockerfile.control`; a production image carries only `boundgate-control` |
 | R36 | Node's own binding invalid → holder cleared → hub admits nobody | accepted (fail closed) | A hub whose record the control plane tampered with stops serving; the alternative (keep running on the old snapshot) would let a tampering control plane keep a node in a state it chose |
 | R37 | Node-channel key rotation means re-pinning every node | documented | Same for admin keys; deliberate, see `BINDINGS.md` |
+| R38 | OIDC callback is unauthenticated and on the public admin name | mitigated M2 | State (24 random bytes) binds it to a flow; flows expire in 10 min; code single use; PKCE + nonce; errors are generic; audited in `user-auth` |
+| R39 | Session lifetime is a fixed 10 h, no revocation on IdP side changes | accepted | The control plane never talks to the IdP after login; admins revoke sessions in BoundGate. Authentik logout/disable does not end a BoundGate session before its lifetime. Back-channel logout later |
+| R40 | Subnet routers cannot enforce sessions per peer | accepted | They see packets from the hub tunnel; the hub enforces before forwarding, the ACL (M3) decides per flow with the user |
+| R41 | Session expiry between snapshots | mitigated M2 | Hubs check `expires_at` every 10 s and at Accept; the control plane sweeps every 15 s and bumps; a stale snapshot admits nobody |
+| R42 | The fake IdP and its default secret in the lab | dev only | `boundgate-fakeidp` logs anyone in; only reachable on the compose network; production config uses Authentik with a secret file |
+| R43 | A router identifies the principal by source address, not by a handshake | accepted M3 | The hub verified that the source belongs to the peer (`allowedSource`) before forwarding, and the hub role is admin-signed; a compromised hub could already read and inject traffic (R21). The endpoint-side handshake comes with M7 |
+| R44 | SNI is only known after the TCP handshake; the first packets of a forbidden TLS connection have already been forwarded | accepted M3 | Only the SYN/ACK exchange passes; the ClientHello that reveals the name is dropped and both ends get RSTs; no application data reaches the server. ECH hides the name entirely (then only IP/port policies apply) |
+| R45 | Verdict cache: a flow allowed under an old policy or session keeps running | mitigated M3 | Every snapshot re-evaluates all open decided flows and closes the ones no longer permitted; a peer's removal closes its flows; hubs close the tunnel on session end |
+| R46 | Flow-table exhaustion by a peer opening many 5-tuples | mitigated M3 | Bounded table (65536), new flows dropped above it (fail closed) and counted; per-peer quotas are future work |
+| R47 | Shipped logs are self-reported by nodes | accepted M3 | The reporter is authenticated by mTLS and its id is stamped by the control plane; tunnel events are accepted from hubs only; batches are bounded (2000 events, 4 MB). A compromised node can lie about its own flows, not about others' |
+| R48 | Asymmetric hub paths see the responder as principal | open | Documented in ACL.md; permit both directions or keep both ends on one primary hub; M7 direct paths remove the hub from the middle |
+| R49 | A policy that does not compile on a node | mitigated M3 | The control plane refuses to store it; a node that still receives one (version skew) skips it, logs it and shows it in `boundgatectl status`; it never widens access |
+| R50 | Denied flows are logged once per 10 s per 5-tuple | accepted M3 | Prevents log floods from port scans; the counter of denied flows is in the node status |
+| R11 (update) | Authentik `groups` claim | documented M2 | Scope mapping in `OIDC.md`; missing groups mean an empty group list, never a failure |

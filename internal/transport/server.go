@@ -53,6 +53,11 @@ type Tunnel struct {
 	qconn  *quic.Conn
 	opened time.Time
 	once   sync.Once
+
+	mu        sync.Mutex
+	localCode quic.ApplicationErrorCode
+	localWhy  string
+	localSet  bool
 }
 
 // ID is a random per-tunnel identifier for logs.
@@ -77,13 +82,34 @@ func (t *Tunnel) WritePacket(b []byte) (icmp []byte, err error) { return t.conn.
 // Done is closed when the underlying QUIC connection ends.
 func (t *Tunnel) Done() <-chan struct{} { return t.qconn.Context().Done() }
 
+// Err returns why the connection ended, or nil while it is alive.
+func (t *Tunnel) Err() error {
+	select {
+	case <-t.qconn.Context().Done():
+		return context.Cause(t.qconn.Context())
+	default:
+		return nil
+	}
+}
+
 // Close ends the tunnel with an application error code.
 func (t *Tunnel) Close(code quic.ApplicationErrorCode, reason string) error {
 	var err error
 	t.once.Do(func() {
+		t.mu.Lock()
+		t.localCode, t.localWhy, t.localSet = code, reason, true
+		t.mu.Unlock()
 		err = t.qconn.CloseWithError(code, reason)
 	})
 	return err
+}
+
+// LocalClose reports the code and reason this side closed the tunnel with,
+// if it did.
+func (t *Tunnel) LocalClose() (quic.ApplicationErrorCode, string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.localCode, t.localWhy, t.localSet
 }
 
 // ServerConfig configures a gateway listener.

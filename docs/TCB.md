@@ -17,17 +17,30 @@ reviewed. Everything outside the TCB may have bugs that cause wrong
 | `internal/transport` | `parseDeviceCert`, `verifyDevice`, `verifyPinned` (spoke → hub), `serverKeyHash` + pin (node → control plane), `PeerFromTLSState`, `AuthenticatedPeer`, `CloseDevice` (revocation) |
 | `internal/registry` lookup path | `Holder.LookupSPKI` and `Holder.Stale`: a stale or wrong answer here admits a wrong node |
 | Node revocation path | snapshot diff → `Server.CloseDevice`; loss of own approval → `Holder.Clear` + teardown |
-| `internal/node/hub.go` `Accept`/`Serve` + `internal/node/forward` | Packets enter the overlay only from here, after the source check (and the ACL from M3) |
+| `internal/node/hub.go` `Accept`/`Serve`, `enforceSessions` + `internal/node/forward` | Packets enter the overlay only from here, after the session check for interactive peers and the source check (and the ACL from M3) |
+| `registry.Snapshot.SessionFor` | Answers "does this node have a valid user session"; wrong answer = interactive node admitted without a person |
 | `internal/node/ipc` verb set | The local attack surface of the privileged daemon |
 | `internal/binding` (+ `golang.org/x/crypto/ssh`) | Canonical binding bytes, SSHSIG framing, signature verification against the pinned admin keys; `VerifySnapshot` decides which records a node believes |
 | Node snapshot intake | `controlclient.Run` → `Node.verifySnapshot` → `Holder.Store`: nothing reaches the holder unverified; own-binding failure clears the holder |
 | Pinned files in the node state directory | `admin_keys` and `control.pin` (written once, root-only); replacing them re-roots the node's trust |
 
+* `internal/acl` (M3): builds the Cedar entities from the snapshot and is
+  the only caller of the authorizer. A bug that attaches the wrong parents
+  (user, group, owner) to an entity changes decisions silently.
+* `internal/node/flow` (M3): the verdict cache. A bug here can let a
+  packet pass without a decision (wrong key normalization, ICMP-related
+  lookup) or keep a flow open after its permit went away.
+* `internal/netparse` SNI/DNS parsers (M3): fuzzed; a wrong name only
+  affects policies that use names.
+* cedar-go (v1.8.0, pinned): the policy language and authorizer.
+
 ## Explicitly outside the TCB
 
 Control-plane SPA and admin API (including confirm, sign tokens and signer
 registration: they gate who *may* sign, the nodes decide what *was* signed),
-the control plane's database, OIDC handling, Cedar policies and the ACL
+the control plane's database, OIDC handling (`internal/control/oidc`: a bug
+creates a wrong user session for a node whose key is still real), Cedar
+policies and the ACL
 engine, logs, profile files, the `boundgatectl` CLI (`admin sign` produces
 a signature; a wrong one is simply refused), route installation (`netcfg`).
 A compromise there can deny access or grant more network reach than

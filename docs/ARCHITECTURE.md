@@ -14,9 +14,9 @@ dependency: policy can narrow what identity granted, never widen it.
 
 | Binary | Runs where | Role |
 |---|---|---|
-| `boundgate-control` | Server, port 443 | Admin API (SPA from M4), SQLite, node approval, per-node registry snapshots, OIDC (M2) |
+| `boundgate-control` | Server, port 443 | Admin API (SPA from M4), SQLite, node approval, per-node registry snapshots, OIDC logins and user sessions |
 | `boundgate-node` | Every participant, as root/daemon | Owns the device key, keeps the control channel, and depending on its granted roles accepts tunnels (hub), dials hubs, announces prefixes (subnet router, exit node), configures TUN/routes/NAT |
-| `boundgatectl` | Every participant, as user; admins for `admin sign` | Thin CLI over the node's Unix socket (status, identity, enroll, up, down); `admin sign` talks to the control plane directly and signs bindings with the admin's SSH key |
+| `boundgatectl` | Every participant, as user; admins for `admin sign` | Thin CLI over the node's Unix socket (status, identity, enroll, up, down, login, logout); `admin sign` talks to the control plane directly and signs bindings with the admin's SSH key |
 
 There is no separate agent or gateway. One binary, roles per node:
 
@@ -29,7 +29,11 @@ There is no separate agent or gateway. One binary, roles per node:
 
 Roles combine (a Hetzner box is `hub + subnet-router`, a Raspberry Pi at
 home is `subnet-router`, a laptop is `endpoint`). Roles and prefixes are
-**granted by an admin**; a node can only request them.
+**granted by an admin**; a node can only request them. Orthogonal to the
+roles is the **kind**: an `interactive` node is used by a person and needs
+a user session (OIDC login) before hubs admit it; a `workload` (server,
+router, hub) is admitted on its device key alone. Kind, roles, prefixes
+and overlay address are in the admin-signed binding.
 
 ```
               control plane (443)          decides: approvals, roles, sessions, ACL, snapshots
@@ -63,9 +67,15 @@ app / ssh / browser
         ↓                      the spoke pins the hub's key from the snapshot
       UDP/443  ─────────────►  hub
                                  ↓ source check (overlay address or announced prefix)
+                                 ↓ flow table: new flow? → Cedar decision (principal = peer, resource = destination); SNI/DNS inspection
                                  ↓ table: dst owned by another tunnel? → that tunnel (spoke ↔ spoke, LAN behind a router)
                                  ↓ else → TUN → kernel routing → nftables SNAT → hub's own networks
 ```
+
+On the receiving spoke the same flow table sits between the hub tunnel and
+the TUN: flows that arrive from a hub are decided with the owner of the
+source address as principal, flows the node starts itself are only tracked.
+See `ACL.md` for the entity model, the enforcement points and the flow log.
 
 * The hub **terminates** the tunnel and sees overlay packets. That is the
   same trust as any VPN concentrator and is acceptable because the hub role
@@ -104,7 +114,8 @@ registry lookup                approved peers only; miss = handshake failure
    ↓
 transport.AuthenticatedPeer    the only proof of "who is this node"
    ↓
-node.hubService.Accept         user session (M2), ACL (M3), addresses from the registry
+node.hubService.Accept         interactive peer: user session from the snapshot (OIDC login,
+                               bound to the node id, never a token); ACL (M3); addresses
    ↓
 Tunnel                         packets flow; return traffic routed by overlay address
 ```
@@ -120,7 +131,7 @@ One port, two audiences, told apart by the TLS server name:
 
 | SNI | Certificate | Client auth | Serves |
 |---|---|---|---|
-| `control.example` | WebPKI (dev: self-signed) | none | admin API, SPA (M4), browser callbacks (M2) |
+| `control.example` | WebPKI (dev: self-signed) | none | admin API, SPA (M4), the OIDC browser callback |
 | `nodes.control.example` | the control plane's own long-lived key | device certificate required | node API: enroll, snapshot long-poll, heartbeat |
 
 Nodes pin the node-channel key's SPKI (trust on first use into
@@ -131,8 +142,8 @@ The control plane keeps one `snapshot_version`; every approval, revocation,
 grant change and network-settings change bumps it in the same transaction.
 Each node long-polls `/api/v1/node/snapshot?since=N` and receives **its own
 view**: its record (`self`), the other approved nodes as `peers` (keys,
-roles, overlay addresses, prefixes; hubs with their public address),
-sessions (M2), policies (M3) and the pool. M3 narrows peers and policies to
+kind, roles, overlay addresses, prefixes; hubs with their public address),
+the user sessions of itself and its peers, policies (M3) and the pool. M3 narrows peers and policies to
 what the node may reach. Nodes react to the diff: removed or changed peers
 get their tunnels closed, changed hubs get redialed. A snapshot older than
 `max_age_seconds` (control plane unreachable) makes the node fail closed.
@@ -158,6 +169,17 @@ get their tunnels closed, changed hubs get redialed. A snapshot older than
 
 Details in `docs/ENROLLMENT.md`, `docs/BINDINGS.md` and `docs/API.md`.
 
+## User login
+
+`boundgatectl login` starts an OIDC authorization-code flow (PKCE, nonce)
+at the control plane and prints the IdP URL; the browser lands on the
+control plane's callback; the control plane verifies the ID token and
+stores a **session bound to the node** that started the flow; the session
+travels in snapshots. Hubs admit an interactive node only with a valid
+session, close its tunnels when the session ends (revoked, logout,
+expired) and enforce expiry locally. Nodes never hold tokens and never
+talk to the IdP. Details in `docs/OIDC.md`.
+
 ## Routing on a node
 
 * Overlay address: `/32` on the TUN plus a route for the whole pool through
@@ -167,32 +189,48 @@ Details in `docs/ENROLLMENT.md`, `docs/BINDINGS.md` and `docs/API.md`.
   prefixes. The profile chooses a subset (`include`) or everything
   (`full`). `0.0.0.0/0` is installed as two `/1` routes so the host's real
   default route is shadowed, never replaced.
-* Host routes for every hub and for the control plane (and, from M2, the
-  IdP) are pinned outside the overlay before any overlay route lands, so
-  control traffic and login always work, also in full-tunnel mode.
+* Host routes for every hub, for the control plane and, during a login,
+  for the IdP are pinned outside the overlay before any overlay route
+  lands, so control traffic and login always work, also in full-tunnel
+  mode.
 * Hubs install kernel routes for peer prefixes through the TUN so their own
   host stack and networks reach the LAN behind a router. Each hub's own
   overlay address is reached through that hub's link; hubs do not forward
   for each other yet.
 
+## Access control
+
+`internal/acl` turns a snapshot into Cedar entities (nodes with their roles
+and current user session, users with their groups, networks with their
+announcers) and decides `Node → Host` requests with the policies the control
+plane scoped to the node. `internal/node/flow` is the connection table that
+asks once per flow, inspects the first payload for a TLS server name or DNS
+question, caches verdicts, counts bytes and emits the flow log. Policies are
+edited and validated in the control plane and distributed in snapshots;
+`POST /admin/acl/evaluate` runs the same engine for dry runs.
+
 ## Logging
 
 All components write JSON Lines per stream under `log_dir` (and to stdout):
 `system`, `audit`, `admin-auth`, `user-auth`, `enrollment`, `flow`. Flow
-records (M3) carry session, user, groups, node, overlay source, destination,
-port, protocol, SNI or DNS name, ACL decision and policy id, bytes and
-duration. Nodes ship them to the control plane (M3).
+records carry session, user, groups, node, overlay source, destination,
+port, protocol, SNI or DNS name, ACL decision and policy names, bytes and
+duration. Nodes ship them (and hubs their tunnel open/update/close events)
+to the control plane in batches (`POST /node/logs`); the control plane keeps
+them in `log_events` and `tunnels` for the admin UI and the mesh view.
 
 ## Repository layout
 
 ```
-cmd/                    boundgate-control, boundgate-node, boundgatectl
+cmd/                    boundgate-control, boundgate-node, boundgatectl, boundgate-fakeidp (lab only)
 internal/devicekey      DeviceKey interface, SPKI hash; softkey/ (dev), tpm2key/ (M6)
+internal/acl            Cedar entities and decisions (nodes, users, groups, hosts, networks)
+internal/node/flow      flow table: verdict cache, SNI/DNS inspection, counters, events
 internal/devicecert     self-signed device certificate
 internal/binding        admin-signed node bindings: canonical JSON, SSHSIG, verification against pinned admin keys
 internal/transport      mTLS verification, AuthenticatedPeer, pinned hub client config, pinned control-plane client config, QUIC/CONNECT-IP server + client
 internal/registry       per-node Snapshot (self, peers, hubs, sessions, pool), Holder (stale = fail closed), Diff
-internal/control        control plane: db/ (SQLite + migrations), snapshot/ (per-node views), api/ (admin, node), SNI split
+internal/control        control plane: db/ (SQLite + migrations), snapshot/ (per-node views incl. sessions), api/ (admin, node, login, sign), oidc/ (code flow; oidctest/ fake IdP), SNI split
 internal/node           daemon: control loop, session (up/down), dataplane (TUN + table + uplink), hub service, spoke manager
 internal/node/forward   packet buffer conventions, destination table (hosts + longest prefix)
 internal/node/netcfg    TUN, addresses, routes, bypass routes, forwarding, nftables NAT (Linux; macOS in M5)
@@ -203,5 +241,5 @@ internal/netparse       allocation-free packet header parsing (fuzzed)
 internal/servercert     self-signed server certificate helper (control plane names)
 internal/logging        JSON Lines streams
 deploy/compose          local lab: control, hub1, hub2, node-a, node-r, two targets
-docs/                   this file, TCB.md, SECURITY.md, ENROLLMENT.md, BINDINGS.md, API.md, DEV.md
+docs/                   this file, TCB.md, SECURITY.md, ENROLLMENT.md, BINDINGS.md, OIDC.md, API.md, DEV.md
 ```

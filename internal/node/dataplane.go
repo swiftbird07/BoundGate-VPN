@@ -12,6 +12,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/netparse"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/forward"
 )
 
@@ -28,6 +29,8 @@ type dataplane struct {
 	table  *forward.Table
 	uplink atomic.Pointer[uplinkRef]
 	log    *slog.Logger
+	// s admits packets through the flow table (nil in tests).
+	s *session
 
 	wmu   sync.Mutex
 	wbufs [][]byte
@@ -123,6 +126,13 @@ func (d *dataplane) RunTUNReader(ctx context.Context) error {
 			h, ok := netparse.Parse(pkt)
 			if !ok {
 				continue
+			}
+			if d.s != nil {
+				// flows from the host stack are tracked so their return
+				// traffic is matched; the receiving node decides them
+				if out, _ := d.s.admit(h, pkt, flow.Origin{Local: true}); out != flow.Pass {
+					continue
+				}
 			}
 			pw, ok := d.table.Lookup(h.Dst)
 			if !ok {

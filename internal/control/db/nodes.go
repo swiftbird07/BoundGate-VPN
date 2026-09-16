@@ -37,6 +37,7 @@ type Node struct {
 	RequestedRoles    []registry.Role
 	RequestedPrefixes []registry.Prefix
 	// Granted by an admin.
+	Kind       registry.Kind
 	Roles      []registry.Role
 	Prefixes   []registry.Prefix
 	OverlayIP  netip.Addr
@@ -66,7 +67,7 @@ type Node struct {
 const nodeCols = `id, name, hostname, platform, key_kind, hardware_bound, spki_hash, cert_der, attrs_json,
 	requested_roles_json, requested_prefixes_json, roles_json, prefixes_json, overlay_ip, public_addr,
 	status, requested_at, request_ip, confirmed_at, confirmed_by, approved_at, approved_by, revoked_at, revoked_by,
-	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at`
+	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at, kind`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -78,7 +79,7 @@ func scanNode(s scanner) (Node, error) {
 	if err := s.Scan(&n.ID, &n.Name, &n.Hostname, &n.Platform, &n.KeyKind, &n.HardwareBound, &spki, &n.CertDER, &attrs,
 		&reqRoles, &reqPrefixes, &roles, &prefixes, &overlay, &n.PublicAddr,
 		&n.Status, &requestedAt, &n.RequestIP, &confirmedAt, &confirmedBy, &approvedAt, &approvedBy, &revokedAt, &revokedBy,
-		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt); err != nil {
+		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt, &n.Kind); err != nil {
 		return n, err
 	}
 	n.SignedAt = parseTime(signedAt)
@@ -217,7 +218,8 @@ func (d *DB) ApprovedNodes(ctx context.Context) ([]Node, error) {
 
 // Grant is what an admin decides about a node.
 type Grant struct {
-	Name       string // optional rename
+	Name       string        // optional rename
+	Kind       registry.Kind // "" keeps the current kind (new nodes: interactive)
 	Roles      []registry.Role
 	Prefixes   []registry.Prefix
 	OverlayIP  netip.Addr // zero = assign the next free address
@@ -228,6 +230,9 @@ type Grant struct {
 func (g Grant) Validate(pool netip.Prefix) error {
 	if len(g.Roles) == 0 {
 		return errors.New("at least one role is required")
+	}
+	if _, err := registry.ParseKind(string(g.Kind)); err != nil {
+		return err
 	}
 	for _, p := range g.Prefixes {
 		if err := p.Validate(); err != nil {
@@ -271,11 +276,18 @@ func (d *DB) ConfirmNode(ctx context.Context, id, by string, g Grant, pool netip
 				return err
 			}
 		}
+		kind := g.Kind
+		if kind == "" {
+			kind = cur.Kind
+		}
+		if kind == "" {
+			kind = registry.KindInteractive
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE nodes SET status = 'confirmed', confirmed_at = ?, confirmed_by = ?,
-			name = COALESCE(NULLIF(?, ''), name), roles_json = ?, prefixes_json = ?, overlay_ip = ?,
+			name = COALESCE(NULLIF(?, ''), name), kind = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?,
 			public_addr = COALESCE(NULLIF(?, ''), public_addr), binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL
 			WHERE id = ? AND status IN ('pending', 'confirmed')`,
-			now(), by, g.Name, jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), g.PublicAddr, id)
+			now(), by, g.Name, string(kind), jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), g.PublicAddr, id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, ip)
@@ -332,12 +344,15 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 	if g.PublicAddr == "" {
 		g.PublicAddr = cur.PublicAddr
 	}
+	if g.Kind == "" {
+		g.Kind = cur.Kind
+	}
 	if cur.Status == StatusApproved || cur.Status == StatusConfirmed {
 		if err := g.Validate(pool); err != nil {
 			return 0, false, fmt.Errorf("%w: %v", ErrConflict, err)
 		}
 	}
-	signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP
+	signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP || g.Kind != cur.Kind
 	demote := cur.Status == StatusApproved && signedChanged
 	bump := cur.Status == StatusApproved
 	version, err := d.tx(ctx, bump, func(tx *sql.Tx) error {
@@ -345,11 +360,11 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 		if g.OverlayIP.IsValid() {
 			overlay = g.OverlayIP.String()
 		}
-		q := `UPDATE nodes SET name = COALESCE(NULLIF(?, ''), name), roles_json = ?, prefixes_json = ?, overlay_ip = ?, public_addr = ?`
+		q := `UPDATE nodes SET name = COALESCE(NULLIF(?, ''), name), kind = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?, public_addr = ?`
 		if demote {
 			q += `, status = 'confirmed', binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL, approved_at = NULL, approved_by = NULL`
 		}
-		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, g.PublicAddr, id)
+		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, g.PublicAddr, id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, g.OverlayIP)
@@ -448,7 +463,12 @@ func (d *DB) RevokeNode(ctx context.Context, id, by string) (uint64, error) {
 		if err != nil {
 			return err
 		}
-		return affected(res)
+		if err := affected(res); err != nil {
+			return err
+		}
+		// a revoked node has no user any more
+		_, err = tx.ExecContext(ctx, `UPDATE user_sessions SET revoked_at = ?, revoked_by = ?, end_reason = 'node revoked' WHERE node_id = ? AND revoked_at IS NULL`, now(), by, id)
+		return err
 	})
 }
 

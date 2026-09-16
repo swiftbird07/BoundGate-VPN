@@ -24,10 +24,13 @@ is refused. `go mod tidy` is followed by a cooldown check.
 ```bash
 make compose-up         # builds Linux binaries in the box, builds images, starts everything
 make setup-dev          # dev admin key, overlay pool, enroll + confirm + sign hub1, hub2, node-r, node-a
-make e2e                # M1.5 + M1.6: up, reachability, HA failover, revocation, re-enrollment,
-                        # confirm/sign, token reuse, grant change, DB tampering, control-plane key change
+make e2e                # M1.5 + M1.6 + M2: up, login required, login, reachability, HA failover, session
+                        # revocation, logout, node revocation, re-enrollment, confirm/sign, token reuse,
+                        # grant change, DB tampering, control-plane key change
 cd deploy/compose
 docker compose exec node-a boundgatectl up            # endpoint: manual; hubs and node-r auto_up
+./setup-dev.sh login node-a                           # user login through the fake IdP (plays the browser)
+docker compose exec node-a boundgatectl logout
 docker compose exec node-a boundgatectl status        # hubs, primary, routes, binding state, ignored peers
 docker compose exec node-a boundgatectl identity      # fingerprint, pinned control key, pinned admin keys
 docker compose exec node-a curl http://10.60.0.10     # target behind hub1/hub2
@@ -57,10 +60,11 @@ Lab topology:
 | Service | Roles (granted) | public | internal | lan | overlay |
 |---|---|---|---|---|---|
 | control | | 172.30.0.5 | | | |
-| hub1 | hub, subnet-router (10.60.0.0/24 snat) | 172.30.0.10 | 10.60.0.2 | | 10.21.0.1 |
-| hub2 | hub, subnet-router (10.60.0.0/24 snat) | 172.30.0.11 | 10.60.0.3 | | 10.21.0.2 |
-| node-r | endpoint, subnet-router (192.168.178.0/24 snat) | 172.30.0.30 | | 192.168.178.30 | 10.21.0.3 |
-| node-a | endpoint, profile `lab` | 172.30.0.20 | | | 10.21.0.4 |
+| idp | fake OpenID provider (user `martin`, groups `vpn-users, admins`) | 172.30.0.6 | | | |
+| hub1 | workload: hub, subnet-router (10.60.0.0/24 snat) | 172.30.0.10 | 10.60.0.2 | | 10.21.0.1 |
+| hub2 | workload: hub, subnet-router (10.60.0.0/24 snat) | 172.30.0.11 | 10.60.0.3 | | 10.21.0.2 |
+| node-r | workload: endpoint, subnet-router (192.168.178.0/24 snat) | 172.30.0.30 | | 192.168.178.30 | 10.21.0.3 |
+| node-a | interactive: endpoint, profile `lab` (needs a login) | 172.30.0.20 | | | 10.21.0.4 |
 | target | whoami | | 10.60.0.10 | | |
 | target-lan | whoami | | | 192.168.178.10 | |
 
@@ -75,6 +79,27 @@ State and logs live under `deploy/compose/state/` and `deploy/compose/logs/`
 key, new admin key), so the simplest reset is `rm -rf deploy/compose/state`
 and `make setup-dev`. A node that refuses the control plane with "key does
 not match the pinned key" after such a reset is doing its job.
+
+## Policies in the lab
+
+`make setup-dev` creates the policy `lab-allow-all` (`permit(principal,
+action, resource);`). Without any policy nothing is reachable. To play:
+
+```
+deploy/compose/setup-dev.sh policies
+deploy/compose/setup-dev.sh policy no-lan 'forbid(principal, action, resource) when { resource.ip.isInRange(ip("192.168.178.0/24")) };'
+deploy/compose/setup-dev.sh policy hub-only 'permit(principal, action, resource);' hub1     # scoped to hub1
+deploy/compose/setup-dev.sh eval node-a 192.168.178.10 80
+deploy/compose/setup-dev.sh policy-rm no-lan
+docker compose -f deploy/compose/docker-compose.yml exec hub1 boundgatectl flows
+deploy/compose/setup-dev.sh flows 'decision=deny&limit=20'
+deploy/compose/setup-dev.sh tunnels active=1
+```
+
+`target-tls` (10.60.0.11) serves HTTPS with a self-signed certificate for
+SNI policies: `curl -k --resolve secret.lab:443:10.60.0.11 https://secret.lab/`
+from node-a. Flow records land in `logs/<node>/flow.jsonl` and in the
+control plane (`setup-dev.sh flows`).
 
 ## Routed versus snat prefixes
 

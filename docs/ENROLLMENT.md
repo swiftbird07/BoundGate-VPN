@@ -47,7 +47,9 @@ boundgatectl up               (hubs accept it, spokes dial it if it is a hub)
 * The **grant** is the admin's decision and is stored separately from the
   request. Roles are required; prefixes need the `subnet-router` or
   `exit-node` role; the overlay address is assigned automatically unless
-  given; `public_addr` is what spokes dial and only matters for hubs.
+  given; `public_addr` is what spokes dial and only matters for hubs. The
+  **kind** is `interactive` (default: a person must log in before hubs
+  admit the node, `docs/OIDC.md`) or `workload` (servers, routers, hubs).
 * The **binding** (`node_id, spki, key_version, roles, prefixes,
   overlay_ip`) is what gets signed. See `BINDINGS.md`.
 * A known key that enrolls again learns its current status instead of
@@ -70,7 +72,10 @@ boundgatectl up               (hubs accept it, spokes dial it if it is a hub)
 3. Check that the claimed platform and key kind make sense for the device
    in front of you. `hardware_bound: false` means a software key: approve it
    only for development or if policy allows it.
-4. Decide the grant. Roles: an `endpoint` reaches things; a
+4. Decide the grant. Kind: `interactive` for a laptop or desktop someone
+   logs in on, `workload` for machines nobody sits at (they never need a
+   user session; grant it only to machines you operate). Roles: an
+   `endpoint` reaches things; a
    `subnet-router` brings a network with it (grant only the prefixes you
    expect, with `routed` where the LAN can route back to the pool and
    `snat` otherwise); a `hub` sees the overlay traffic of everyone who uses
@@ -89,9 +94,9 @@ revocation.
 
 ## Changing a grant
 
-`PATCH /api/v1/admin/nodes/{id}` changes name, roles, prefixes, overlay
-address or public address. A change to a **signed** field (roles,
-prefixes, overlay address) invalidates the signature: the node goes back to
+`PATCH /api/v1/admin/nodes/{id}` changes name, kind, roles, prefixes,
+overlay address or public address. A change to a **signed** field (kind,
+roles, prefixes, overlay address) invalidates the signature: the node goes back to
 `confirmed`, every peer closes its tunnels with it at once, the node itself
 loses its snapshot and goes down, and the response carries a new sign
 command. After the signature it comes back (an `auto_up` node on its own,

@@ -289,3 +289,64 @@ func TestNetworkSettingsAndLogs(t *testing.T) {
 		t.Fatalf("%+v", evs)
 	}
 }
+
+func TestPoliciesAndTunnels(t *testing.T) {
+	d := open(t)
+	ctx := context.Background()
+	p, v1, err := d.CreatePolicy(ctx, Policy{Name: "all", Cedar: "permit(principal, action, resource);", Enabled: true}, "admin")
+	if err != nil || p.ID == "" || v1 == 0 {
+		t.Fatal(err, v1)
+	}
+	if _, _, err := d.CreatePolicy(ctx, Policy{Name: "all", Cedar: "x"}, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate name: %v", err)
+	}
+	q, _, err := d.CreatePolicy(ctx, Policy{Name: "scoped", Cedar: "forbid(principal, action, resource);", Enabled: false, Scope: []string{"n1"}}, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps, _ := d.EnabledPolicies(ctx); len(ps) != 1 || ps[0].ID != p.ID {
+		t.Fatalf("enabled: %+v", ps)
+	}
+	q.Enabled = true
+	if _, err := d.UpdatePolicy(ctx, q, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := d.EnabledPolicies(ctx)
+	if len(ps) != 2 || !ps[1].AppliesTo("n1") || ps[1].AppliesTo("n2") || !ps[0].AppliesTo("n2") {
+		t.Fatalf("scope: %+v", ps)
+	}
+	if _, err := d.DeletePolicy(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if _, err := d.DeletePolicy(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.PolicyByID(ctx, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatal("deleted policy still there")
+	}
+
+	opened := time.Now().Add(-time.Hour)
+	if err := d.UpsertTunnel(ctx, TunnelReport{ID: "t1", HubID: "h", PeerID: "p", OpenedAt: opened, BytesIn: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertTunnel(ctx, TunnelReport{ID: "t1", HubID: "h", PeerID: "p", OpenedAt: opened, BytesIn: 5, BytesOut: 7}); err != nil {
+		t.Fatal(err)
+	}
+	ts, err := d.ListTunnels(ctx, TunnelQuery{Active: true})
+	if err != nil || len(ts) != 1 || ts[0].BytesIn != 10 || ts[0].BytesOut != 7 {
+		t.Fatalf("%v %+v", err, ts)
+	}
+	if n, _ := d.CloseStaleTunnels(ctx, time.Hour); n != 0 {
+		t.Fatal("fresh tunnel closed as stale")
+	}
+	if n, _ := d.CloseStaleTunnels(ctx, -time.Second); n != 1 {
+		t.Fatal("stale tunnel not closed")
+	}
+	ts, _ = d.ListTunnels(ctx, TunnelQuery{})
+	if ts[0].ClosedAt == nil || ts[0].CloseReason != "hub stopped reporting" {
+		t.Fatalf("%+v", ts[0])
+	}
+	if n, _ := d.PruneTunnels(ctx, -time.Second); n != 1 {
+		t.Fatal("prune")
+	}
+}

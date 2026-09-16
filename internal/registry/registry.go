@@ -55,6 +55,32 @@ func ParseRoles(names []string) ([]Role, error) {
 // HasRole reports whether r is in roles.
 func HasRole(roles []Role, r Role) bool { return slices.Contains(roles, r) }
 
+// Kind is the identity kind of a node: an interactive node is used by a
+// person and needs a user session (OIDC login) before hubs admit it; a
+// workload (server, router, hub) is admitted on its device identity alone.
+// Kind is granted by an admin and part of the signed binding.
+type Kind string
+
+const (
+	KindInteractive Kind = "interactive"
+	KindWorkload    Kind = "workload"
+)
+
+// ParseKind validates a kind; empty means interactive.
+func ParseKind(s string) (Kind, error) {
+	switch Kind(s) {
+	case "", KindInteractive:
+		return KindInteractive, nil
+	case KindWorkload:
+		return KindWorkload, nil
+	default:
+		return "", fmt.Errorf("registry: unknown kind %q (interactive or workload)", s)
+	}
+}
+
+// NeedsSession reports whether hubs require a user session for the node.
+func (n Node) NeedsSession() bool { return n.Kind != KindWorkload }
+
 // PrefixMode says how a subnet router forwards traffic into a prefix.
 type PrefixMode string
 
@@ -93,6 +119,7 @@ type Node struct {
 	Platform      string             `json:"platform,omitempty"`
 	KeyKind       string             `json:"key_kind,omitempty"`
 	HardwareBound bool               `json:"hardware_bound"`
+	Kind          Kind               `json:"kind"`
 	Roles         []Role             `json:"roles"`
 	OverlayIP     netip.Addr         `json:"overlay_ip"`
 	Prefixes      []Prefix           `json:"prefixes,omitempty"`
@@ -243,6 +270,9 @@ type Diff struct {
 	AddedPeers   []transport.DeviceID
 	// RemovedSessions lists nodes whose session disappeared or changed.
 	RemovedSessions []transport.DeviceID
+	// SessionsChanged is true when any session (own or peer) was added,
+	// removed or replaced.
+	SessionsChanged bool
 	HubsChanged     bool
 	SelfChanged     bool
 	PoliciesChanged bool
@@ -301,6 +331,7 @@ func diff(old, cur *Snapshot) Diff {
 			d.AddedPeers = append(d.AddedPeers, n.ID)
 		}
 		d.HubsChanged, d.SelfChanged, d.PoliciesChanged, d.PoolChanged = true, true, true, true
+		d.SessionsChanged = len(cur.Sessions) > 0
 		return d
 	}
 	for id := range old.byID {
@@ -321,6 +352,12 @@ func diff(old, cur *Snapshot) Diff {
 		cs, ok := cur.sessBy[id]
 		if !ok || cs.ID != se.ID {
 			d.RemovedSessions = append(d.RemovedSessions, id)
+			d.SessionsChanged = true
+		}
+	}
+	for id, se := range cur.sessBy {
+		if os, ok := old.sessBy[id]; !ok || os.ID != se.ID || !os.ExpiresAt.Equal(se.ExpiresAt) {
+			d.SessionsChanged = true
 		}
 	}
 	d.HubsChanged = !slices.EqualFunc(old.Hubs(), cur.Hubs(), sameNode)
@@ -333,7 +370,7 @@ func diff(old, cur *Snapshot) Diff {
 // sameNode compares everything a peer relies on. A re-signature with the
 // same content is not a change.
 func sameNode(a, b Node) bool {
-	return a.ID == b.ID && a.SPKI == b.SPKI && a.KeyVersion == b.KeyVersion && a.OverlayIP == b.OverlayIP && a.PublicAddr == b.PublicAddr &&
+	return a.ID == b.ID && a.SPKI == b.SPKI && a.KeyVersion == b.KeyVersion && a.Kind == b.Kind && a.OverlayIP == b.OverlayIP && a.PublicAddr == b.PublicAddr &&
 		a.HardwareBound == b.HardwareBound && slices.Equal(a.Roles, b.Roles) && slices.Equal(a.Prefixes, b.Prefixes)
 }
 
