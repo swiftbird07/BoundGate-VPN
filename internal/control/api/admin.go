@@ -18,12 +18,6 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
 
-// Admin identity as established by the auth middleware.
-type Admin struct {
-	Subject string // "bootstrap" for the bootstrap token
-	Email   string
-}
-
 type adminKey struct{}
 
 // AdminFrom returns the admin identity of a request.
@@ -32,33 +26,24 @@ func AdminFrom(ctx context.Context) (Admin, bool) {
 	return a, ok
 }
 
-// AdminAuth authenticates admin requests. M1: the bootstrap token as a
-// bearer token. M4 adds cookie sessions (OIDC + passkey); the bootstrap
-// token stays as the break-glass path.
-func (h *Handlers) AdminAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") {
-			ok, err := h.d.DB.CheckBootstrapToken(r.Context(), strings.TrimPrefix(auth, "Bearer "))
-			if err != nil {
-				fail(w, err, h.d.Logs.System)
-				return
-			}
-			if ok {
-				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), adminKey{}, Admin{Subject: "bootstrap"})))
-				return
-			}
-			h.d.Logs.AdminAuth.Warn("admin auth failed", "src", remoteIP(r), "reason", "bad bootstrap token")
-		}
-		writeError(w, http.StatusUnauthorized, "admin authentication required")
-	})
-}
-
-// AdminMux returns the admin API routes (wrapped in AdminAuth) plus the
-// sign-token routes (their own auth, see sign.go).
+// AdminMux returns the admin API routes (wrapped in AdminAuth, see
+// adminauth.go) plus the routes with their own authentication: the OIDC
+// callback, the sign-token routes and the login entry points.
 func (h *Handlers) AdminMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/admin/me", h.adminMe)
+	mux.HandleFunc("POST /api/v1/admin/auth/logout", h.adminLogout)
+	mux.HandleFunc("POST /api/v1/admin/auth/passkey/register/begin", h.passkeyRegisterBegin)
+	mux.HandleFunc("POST /api/v1/admin/auth/passkey/register/finish", h.passkeyRegisterFinish)
+	mux.HandleFunc("POST /api/v1/admin/auth/passkey/login/begin", h.passkeyLoginBegin)
+	mux.HandleFunc("POST /api/v1/admin/auth/passkey/login/finish", h.passkeyLoginFinish)
+	mux.HandleFunc("GET /api/v1/admin/passkeys", h.adminListPasskeys)
+	mux.HandleFunc("POST /api/v1/admin/passkeys/{id}/approve", h.adminApprovePasskey)
+	mux.HandleFunc("DELETE /api/v1/admin/passkeys/{id}", h.adminRevokePasskey)
+	mux.HandleFunc("GET /api/v1/admin/tokens", h.adminListTokens)
+	mux.HandleFunc("POST /api/v1/admin/tokens", h.adminCreateToken)
+	mux.HandleFunc("DELETE /api/v1/admin/tokens/{id}", h.adminRevokeToken)
+	mux.HandleFunc("GET /api/v1/admin/overview", h.adminOverview)
 	mux.HandleFunc("GET /api/v1/admin/nodes", h.adminListNodes)
 	mux.HandleFunc("GET /api/v1/admin/nodes/{id}", h.adminGetNode)
 	mux.HandleFunc("POST /api/v1/admin/nodes/{id}/confirm", h.adminConfirmNode)
@@ -86,6 +71,8 @@ func (h *Handlers) AdminMux() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/logs", h.adminLogs)
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /api/v1/oidc/callback", h.oidcCallback)
+	outer.HandleFunc("GET /api/v1/admin/auth/login", h.adminLoginStart)
+	outer.HandleFunc("GET /api/v1/admin/auth/status", h.adminAuthStatus)
 	outer.Handle("/api/v1/sign/", h.signMux())
 	outer.Handle("/", h.AdminAuth(mux))
 	return outer
@@ -174,6 +161,7 @@ func orEmptyPrefixes(p []registry.Prefix) []registry.Prefix {
 
 func (h *Handlers) adminMe(w http.ResponseWriter, r *http.Request) {
 	a, _ := AdminFrom(r.Context())
+	a.SessionID = ""
 	writeJSON(w, http.StatusOK, a)
 }
 

@@ -1,9 +1,12 @@
 #!/bin/sh
-# End-to-end check of milestones M1.5, M1.6, M2 and M3 against the running
-# compose environment: node model with hubs, subnet router, HA, revocation,
-# re-enrollment, signed bindings, sign tokens, tampering, control-plane pin,
-# user login (OIDC) with session revocation, logout and expiry enforcement,
-# Cedar ACL with flow logs, SNI resets, dry runs and tunnel history.
+# End-to-end check of milestones M1.5, M1.6, M2, M3 and M4 against the
+# running compose environment: node model with hubs, subnet router, HA,
+# revocation, re-enrollment, signed bindings, sign tokens, tampering,
+# control-plane pin, user login (OIDC) with session revocation, logout and
+# expiry enforcement, Cedar ACL with flow logs, SNI resets, dry runs, tunnel
+# history, the embedded admin UI and admin authentication (OIDC session
+# levels, API tokens, bootstrap restriction). Passkey ceremonies need a
+# browser and are covered by the Go tests with a software authenticator.
 set -eu
 cd "$(dirname "$0")"
 COMPOSE="docker compose -f docker-compose.yml"
@@ -199,4 +202,42 @@ $S api GET '/api/v1/admin/logs?stream=user-auth' | jq -e '[.[].message] | index(
 $S api GET '/api/v1/admin/logs?stream=audit' | jq -e '[.[].message] | index("policy created") != null and index("policy updated") != null and index("policy deleted") != null' >/dev/null || fail "policy audit incomplete"
 $S api GET '/api/v1/admin/flows?event=close&limit=5' | jq -e 'length >= 1 and .[0].attrs.duration_ms != null' >/dev/null || fail "no closed flows shipped"
 
-echo "PASS: M1.5 + M1.6 + M2 + M3 end-to-end"
+echo "== 12. admin UI and admin auth: SPA served, status, API token, OIDC admin session stays oidc_only without a passkey"
+ADMIN=https://localhost:18443
+CA=state/control/control.crt
+curl -sf --cacert $CA "$ADMIN/" | grep -q '<title>BoundGate</title>' || fail "SPA not served at /"
+curl -sf --cacert $CA "$ADMIN/policies/new" | grep -q '<title>BoundGate</title>' || fail "SPA history fallback missing"
+curl -s --cacert $CA -o /dev/null -w '%{http_code}' "$ADMIN/api/v1/admin/nodes" | grep -q '^401$' || fail "admin API reachable without auth"
+curl -sf --cacert $CA "$ADMIN/api/v1/admin/auth/status" | jq -e '.level == "none" and .bootstrap_active == (.total_passkeys == 0) and .oidc_configured == true and .passkeys_enabled == true and .rp_id == "localhost"' >/dev/null || fail "auth status wrong"
+TOK=$($S api POST /api/v1/admin/tokens '{"name":"e2e","expires_in":"1h"}' | jq -r .token)
+echo "$TOK" | grep -q '^bgapi_' || fail "no api token minted"
+curl -sf --cacert $CA -H "Authorization: Bearer $TOK" "$ADMIN/api/v1/admin/overview" | jq -e '.nodes.approved >= 3 and .policies >= 1' >/dev/null || fail "overview via api token failed"
+TID=$($S api GET /api/v1/admin/tokens | jq -r '.[] | select(.name == "e2e" and .revoked_at == null) | .id')
+$S api DELETE "/api/v1/admin/tokens/$TID" >/dev/null
+curl -s --cacert $CA -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" "$ADMIN/api/v1/admin/overview" | grep -q '^401$' || fail "revoked api token still works"
+# draft evaluation for the policy editor's sanity check: the draft flips the decision without being stored
+$S api POST /api/v1/admin/acl/evaluate '{"node":"node-a","dst":"192.168.178.10","port":80,"draft":{"id":"d","name":"draft-forbid","cedar":"forbid(principal, action, resource) when { resource.port == 80 };"}}' | jq -e '.allow == false and (.policies | index("draft-forbid") != null)' >/dev/null || fail "draft evaluation ignored the draft"
+$S api POST /api/v1/admin/acl/evaluate '{"node":"node-a","dst":"192.168.178.10","port":80}' | jq -e '.allow == true' >/dev/null || fail "draft leaked into stored policies"
+# every Cedar text the policy builder can generate is accepted by the real parser
+(cd ../.. && box sh -c 'cd web && npm test --silent') > /tmp/bg-builder.$$ || fail "policy builder self-test"
+while IFS= read -r line; do
+  $S api POST /api/v1/admin/policies/validate "$line" | jq -e '.ok == true' >/dev/null || fail "builder generated invalid Cedar: $line"
+done < /tmp/bg-builder.$$
+rm -f /tmp/bg-builder.$$
+# the admin OIDC login in a "browser" (cookie jar): the session exists but stays oidc_only
+ADMIN=http://localhost:18080   # the browser's way in: the devproxy (same control plane, plain HTTP on localhost)
+curl -sf "$ADMIN/" | grep -q '<title>BoundGate</title>' || fail "SPA not served through the devproxy"
+JAR=$(mktemp)
+LOC=$(curl -s --cacert $CA -c "$JAR" -o /dev/null -w '%{redirect_url}' "$ADMIN/api/v1/admin/auth/login?next=/nodes")
+echo "$LOC" | grep -q '^http://idp.localhost:19000/' || fail "admin login did not redirect to the IdP: $LOC"
+CB=$(curl -s -o /dev/null -w '%{redirect_url}' "$LOC")
+curl -s --cacert $CA -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code} %{redirect_url}' "$CB" | grep -q '^302 .*/nodes$' || fail "admin callback did not create a session"
+curl -sf --cacert $CA -b "$JAR" "$ADMIN/api/v1/admin/auth/status" | jq -e '.level == "oidc_only" and .subject != "" and .via == "session"' >/dev/null || fail "admin session missing"
+curl -s --cacert $CA -b "$JAR" -o /dev/null -w '%{http_code}' "$ADMIN/api/v1/admin/nodes" | grep -q '^403$' || fail "oidc_only session reached the admin API"
+curl -s --cacert $CA -b "$JAR" -o /dev/null -w '%{http_code}' -X POST "$ADMIN/api/v1/admin/auth/logout" | grep -q '^403$' || fail "CSRF header not enforced"
+curl -s --cacert $CA -b "$JAR" -o /dev/null -w '%{http_code}' -X POST -H 'X-Requested-With: BoundGate' "$ADMIN/api/v1/admin/auth/logout" | grep -q '^204$' || fail "logout failed"
+curl -sf --cacert $CA -b "$JAR" "$ADMIN/api/v1/admin/auth/status" | jq -e '.level == "none"' >/dev/null || fail "session survived logout"
+rm -f "$JAR"
+$S api GET '/api/v1/admin/logs?stream=admin-auth' | jq -e '[.[].message] | index("admin login (oidc)") != null and index("admin logout") != null and index("api token created") != null and index("api token revoked") != null' >/dev/null || fail "admin-auth audit incomplete"
+
+echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 end-to-end"

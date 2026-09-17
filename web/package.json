@@ -1,0 +1,21 @@
+{
+  "name": "boundgate-admin",
+  "private": true,
+  "version": "0.0.4",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && touch ../internal/control/web/dist/.gitkeep",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "node scripts/cedar-selftest.ts",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6",
+    "@tsconfig/svelte": "^5",
+    "svelte": "^5",
+    "svelte-check": "^4",
+    "typescript": "^5",
+    "vite": "^7"
+  }
+}

@@ -19,6 +19,39 @@ make fuzz               # netparse fuzzing, 30 s
 days old and refuses younger explicit versions (`gocooldown`). `go get -u`
 is refused. `go mod tidy` is followed by a cooldown check.
 
+The admin UI lives in `web/` (Svelte 5, Vite, TypeScript; npm only inside
+the box, `min-release-age=14`):
+
+```bash
+make web                # npm ci + vite build -> internal/control/web/dist (embedded by go:embed)
+make web-check          # svelte-check
+box sh -c 'cd web && npm run dev'   # dev server on :5173, /api proxied to https://localhost:18443
+```
+
+`make build-linux` (and therefore `compose-up` / `e2e`) builds the SPA
+first. The `dist/` directory is git-ignored except for its placeholder.
+During initial development a 7-day cooldown is acceptable for a blocked
+package (`--min-release-age=7` on that one install); 14 days otherwise.
+
+## Admin UI in the lab
+
+Open **`http://localhost:18080`**: the `devproxy` service publishes the
+admin name as plain HTTP on loopback, because browsers refuse passkeys on a
+page with a certificate error and the lab certificate is self-signed
+(`https://localhost:18443` still serves the same UI and is what the scripts
+use with `--cacert`). Sign in with SSO: the fake IdP logs in
+`martin` with groups `vpn-users, admins`, which satisfies `admin.group`.
+Then register the first passkey with the token from
+`deploy/compose/state/control/bootstrap.token` (Touch ID or a YubiKey; the
+relying party id is `localhost`). After that the bootstrap token is dead
+and `setup-dev.sh` / `e2e.sh` need an API token instead: mint one under
+Admins → API tokens and save it as `deploy/compose/state/control/api.token`
+(the scripts prefer that file over `bootstrap.token`). To get the bootstrap token
+back, revoke every passkey or reset the state directory.
+
+Alternatively sign in with "Use an API token" using the bootstrap token
+itself (while it is alive) to look around without registering a passkey.
+
 ## Local lab
 
 ```bash

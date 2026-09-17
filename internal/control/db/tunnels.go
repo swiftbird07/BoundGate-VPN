@@ -42,6 +42,8 @@ type TunnelReport struct {
 
 // UpsertTunnel records or updates a tunnel. Counters only grow; a close
 // is final.
+// A tunnel that housekeeping closed because its hub fell silent (control
+// plane or VM paused) is reopened by the hub's next live report.
 func (d *DB) UpsertTunnel(ctx context.Context, r TunnelReport) error {
 	var closed any
 	if !r.ClosedAt.IsZero() {
@@ -51,8 +53,9 @@ func (d *DB) UpsertTunnel(ctx context.Context, r TunnelReport) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		  peer_addr = CASE WHEN excluded.peer_addr <> '' THEN excluded.peer_addr ELSE peer_addr END,
-		  closed_at = COALESCE(tunnels.closed_at, excluded.closed_at),
-		  close_reason = CASE WHEN tunnels.closed_at IS NULL THEN excluded.close_reason ELSE close_reason END,
+		  closed_at = CASE WHEN tunnels.close_reason = 'hub stopped reporting' AND excluded.closed_at IS NULL THEN NULL
+		                   ELSE COALESCE(tunnels.closed_at, excluded.closed_at) END,
+		  close_reason = CASE WHEN tunnels.closed_at IS NULL OR tunnels.close_reason = 'hub stopped reporting' THEN excluded.close_reason ELSE close_reason END,
 		  bytes_in = MAX(bytes_in, excluded.bytes_in), bytes_out = MAX(bytes_out, excluded.bytes_out),
 		  packets_in = MAX(packets_in, excluded.packets_in), packets_out = MAX(packets_out, excluded.packets_out),
 		  last_report_at = excluded.last_report_at`,

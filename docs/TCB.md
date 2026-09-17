@@ -33,6 +33,12 @@ reviewed. Everything outside the TCB may have bugs that cause wrong
 * `internal/netparse` SNI/DNS parsers (M3): fuzzed; a wrong name only
   affects policies that use names.
 * cedar-go (v1.8.0, pinned): the policy language and authorizer.
+* `internal/control/api/adminauth.go` + go-webauthn (M4): `resolveAdmin`
+  decides who is an admin and at which level; `levelOIDCAllowed` is the
+  allow-list for `oidc_only` sessions; the bootstrap-token gate
+  (`CountActivePasskeys`) and the passkey status rules (first / self /
+  pending) live there. The SPA is outside the TCB: it only talks to the
+  API with the same rights as its cookie.
 
 ## Explicitly outside the TCB
 

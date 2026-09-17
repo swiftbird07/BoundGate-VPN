@@ -85,13 +85,21 @@ M3, the ACL's, which gets the session's user and groups per flow).
 Claims used: `sub` (subject, the stable identity), `email`,
 `preferred_username` (fallback `name`), `groups`. Nothing else is stored.
 
+The same provider and redirect URI serve **admin logins** (M4): members of
+`admin.group` (default `admins`) get an admin session that still needs a
+passkey; see ADMIN-AUTH.md. Put the administrators into that Authentik
+group and let the application's access policy include it.
+
 ## Development lab
 
 `boundgate-fakeidp` (service `idp`, image of the control plane) is a tiny
 OpenID provider that logs in the configured user `martin` with groups
 `vpn-users, admins` without asking. `./setup-dev.sh login node-a` plays the
 browser: it follows the IdP redirect inside the lab network and calls the
-callback on the Mac side (`https://127.0.0.1:18443`). With a real browser
-on the Mac, `docker compose exec node-a boundgatectl login` prints a URL
-that points at `http://idp:9000`, which the Mac cannot resolve; the fake
-IdP exists for the e2e, not for clicking.
+callback on the Mac side (`http://localhost:18080`, the lab devproxy; see
+ADMIN-AUTH.md). The fake IdP's issuer is `http://idp.localhost:19000`: a
+Docker DNS alias inside the lab, and on the Mac the published loopback port
+(browsers and curl map `*.localhost` to loopback), so a real browser on
+the Mac can complete both user logins (`boundgatectl login` prints the URL)
+and admin logins (the UI's "Sign in with SSO") with one click and no
+password.

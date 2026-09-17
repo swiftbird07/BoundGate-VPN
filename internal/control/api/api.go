@@ -15,11 +15,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/go-webauthn/webauthn/webauthn"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
@@ -41,6 +44,10 @@ type Deps struct {
 	ControlSPKI devicekey.SPKIHash
 	// OIDC is the identity provider for user logins; nil disables logins.
 	OIDC *oidc.Lazy
+	// Admin configures browser logins (OIDC admin group + passkeys).
+	Admin AdminConfig
+	// SPA serves the admin UI for non-API paths on the admin name; nil = 404.
+	SPA http.Handler
 }
 
 // Handlers holds the muxes.
@@ -51,17 +58,33 @@ type Handlers struct {
 	lookup    transport.DeviceLookup
 	admin     http.Handler
 	node      http.Handler
+	wa        *webauthn.WebAuthn // nil: passkeys not configured
 }
 
-// New wires the handlers.
+// New wires the handlers; it panics on an invalid passkey configuration
+// (see NewWithError).
 func New(d Deps) *Handlers {
+	h, err := NewWithError(d)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// NewWithError is New with the configuration error surfaced.
+func NewWithError(d Deps) (*Handlers, error) {
 	if d.PendingTTL == 0 {
 		d.PendingTTL = 24 * time.Hour
 	}
 	h := &Handlers{d: d, limit: newRateLimiter(5, time.Minute), signLimit: newRateLimiter(30, time.Minute), lookup: dbLookup{d.DB}}
+	wa, err := h.newWebAuthn()
+	if err != nil {
+		return nil, fmt.Errorf("admin passkeys: %w", err)
+	}
+	h.wa = wa
 	h.admin = h.AdminMux()
 	h.node = h.NodeMux()
-	return h
+	return h, nil
 }
 
 // dbLookup answers registry lookups straight from the database: only
@@ -93,6 +116,10 @@ func (h *Handlers) Root(nodeServerName string) http.Handler {
 				return
 			}
 			h.node.ServeHTTP(w, r)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/api/") && h.d.SPA != nil {
+			h.d.SPA.ServeHTTP(w, r)
 			return
 		}
 		h.admin.ServeHTTP(w, r)

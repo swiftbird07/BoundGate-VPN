@@ -24,7 +24,11 @@ set -eu
 cd "$(dirname "$0")"
 COMPOSE="docker compose -f docker-compose.yml"
 ADMIN=${BOUNDGATE_ADMIN_URL:-https://127.0.0.1:18443}
+# The bearer for the admin API: the bootstrap token while no admin passkey
+# exists; afterwards an API token (Admins -> API tokens in the UI) saved as
+# state/control/api.token.
 TOKEN_FILE=state/control/bootstrap.token
+[ -s state/control/api.token ] && TOKEN_FILE=state/control/api.token
 CACERT=state/control/control.crt
 SIGNER_KEY=/var/lib/boundgate/admin_signer     # inside the control container = state/control/admin_signer
 
@@ -167,8 +171,8 @@ login_node() {
   st=$($COMPOSE exec -T "$1" boundgatectl -json login -no-wait)
   flow=$(printf '%s' "$st" | jq -r .flow_id)
   url=$(printf '%s' "$st" | jq -r .url)
-  # the "browser": follow the IdP redirect (inside the lab network), then hit the callback on the Mac side
-  cb=$($COMPOSE exec -T control curl -s -o /dev/null -w '%{redirect_url}' "$url")
+  # the "browser" on the Mac: follow the IdP redirect (published on loopback), then hit the callback (devproxy)
+  cb=$(curl -sS -o /dev/null -w '%{redirect_url}' "$url")
   curl -sS -f --cacert "$CACERT" -o /dev/null "$cb"
   $COMPOSE exec -T "$1" boundgatectl -json status | jq -r '"\(.node_name): logged in as \(.user.username // "?") \(.user.groups // [])"' 2>/dev/null || true
   echo "$1: login flow $flow completed"

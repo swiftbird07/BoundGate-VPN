@@ -351,3 +351,11 @@ Dream VPN Architektur.html
 /bin/
 /deploy/compose/state/
 /deploy/compose/logs/
+# Built admin SPA (embedded at build time; `make web`); the placeholder keeps
+# go:embed compiling on a fresh clone. The generic dist/ and lib/ rules above
+# (Node and Python templates) must not swallow these.
+!/internal/control/web/dist/
+/internal/control/web/dist/*
+!/internal/control/web/dist/.gitkeep
+!/web/src/lib/
+/web/node_modules/

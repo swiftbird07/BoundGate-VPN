@@ -346,6 +346,20 @@ func TestPoliciesAndTunnels(t *testing.T) {
 	if ts[0].ClosedAt == nil || ts[0].CloseReason != "hub stopped reporting" {
 		t.Fatalf("%+v", ts[0])
 	}
+	// the hub reports again (it was only silent): the tunnel is open again
+	if err := d.UpsertTunnel(ctx, TunnelReport{ID: "t1", HubID: "h", PeerID: "p", OpenedAt: opened, BytesIn: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if ts, _ = d.ListTunnels(ctx, TunnelQuery{Active: true}); len(ts) != 1 || ts[0].CloseReason != "" || ts[0].BytesIn != 20 {
+		t.Fatalf("not reopened: %+v", ts)
+	}
+	// a real close stays closed, whatever arrives later
+	closedAt := time.Now()
+	d.UpsertTunnel(ctx, TunnelReport{ID: "t1", HubID: "h", PeerID: "p", OpenedAt: opened, ClosedAt: closedAt, CloseReason: "closed by peer"})
+	d.UpsertTunnel(ctx, TunnelReport{ID: "t1", HubID: "h", PeerID: "p", OpenedAt: opened, BytesIn: 30})
+	if ts, _ = d.ListTunnels(ctx, TunnelQuery{}); ts[0].ClosedAt == nil || ts[0].CloseReason != "closed by peer" {
+		t.Fatalf("closed tunnel reopened: %+v", ts[0])
+	}
 	if n, _ := d.PruneTunnels(ctx, -time.Second); n != 1 {
 		t.Fatal("prune")
 	}

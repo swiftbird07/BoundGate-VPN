@@ -3,16 +3,28 @@ GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
 BINS = boundgate-control boundgate-node boundgatectl boundgate-fakeidp
 
-.PHONY: build-linux test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: web web-check web-test build-linux test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
-build-linux:
+# The admin SPA (web/) is built into internal/control/web/dist and embedded
+# into boundgate-control; build-linux depends on it so the lab image has it.
+web:
+	box sh -c 'cd web && npm ci --no-audit --no-fund && npm run build'
+
+web-check:
+	box sh -c 'cd web && npx svelte-check --tsconfig ./tsconfig.json'
+
+# policy builder: every generated rule parses back into the same model
+web-test:
+	box sh -c 'cd web && npm test --silent >/dev/null'
+
+build-linux: web
 	@mkdir -p bin/linux_$(GOARCH)
 	@for b in $(BINS); do \
 	  echo "building $$b for linux/$(GOARCH)"; \
 	  box env GOOS=linux GOARCH=$(GOARCH) go build -trimpath -o bin/linux_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
 	done
 
-test:
+test: web-test
 	box go vet ./...
 	box go test -count=1 ./...
 

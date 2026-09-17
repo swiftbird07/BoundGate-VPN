@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 )
@@ -45,6 +46,12 @@ type config struct {
 		GroupsClaim      string   `yaml:"groups_claim"`
 		SessionLifetime  string   `yaml:"session_lifetime"`
 	} `yaml:"oidc"`
+	Admin struct {
+		RPID            string   `yaml:"rp_id"`   // WebAuthn relying party id; default server_name
+		Origins         []string `yaml:"origins"` // browser origins; default https://<rp_id>
+		Group           string   `yaml:"group"`   // OIDC group of administrators; default admins
+		SessionLifetime string   `yaml:"session_lifetime"`
+	} `yaml:"admin"`
 }
 
 func main() {
@@ -108,6 +115,12 @@ func run(cfgPath string) error {
 			return fmt.Errorf("config: oidc.session_lifetime: %w", err)
 		}
 	}
+	adminCfg := api.AdminConfig{RPID: cfg.Admin.RPID, Origins: cfg.Admin.Origins, Group: cfg.Admin.Group}
+	if cfg.Admin.SessionLifetime != "" {
+		if adminCfg.SessionLifetime, err = time.ParseDuration(cfg.Admin.SessionLifetime); err != nil {
+			return fmt.Errorf("config: admin.session_lifetime: %w", err)
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return control.Run(ctx, control.Config{
@@ -125,5 +138,6 @@ func run(cfgPath string) error {
 		LogRetention:       retention,
 		Logs:               logs,
 		OIDC:               oc,
+		Admin:              adminCfg,
 	})
 }

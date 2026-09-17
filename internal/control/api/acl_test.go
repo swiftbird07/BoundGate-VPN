@@ -34,6 +34,17 @@ func TestPoliciesAndEvaluation(t *testing.T) {
 		t.Fatalf("%+v", ev)
 	}
 
+	// a draft from the editor decides without being stored; a broken one is refused
+	e.adminCall("POST", "/api/v1/admin/acl/evaluate", `{"node":"laptop","dst":"192.168.178.10","port":80,"draft":{"name":"try","cedar":"permit(principal, action, resource) when { resource.port == 80 };"}}`, http.StatusOK, &ev)
+	if !ev.Allow || len(ev.Policies) != 1 || ev.Policies[0] != "try" || ev.PolicyCount != 1 {
+		t.Fatalf("draft: %+v", ev)
+	}
+	e.adminCall("POST", "/api/v1/admin/acl/evaluate", `{"node":"laptop","dst":"192.168.178.10","port":80}`, http.StatusOK, &ev)
+	if ev.Allow || ev.PolicyCount != 0 {
+		t.Fatalf("draft was stored: %+v", ev)
+	}
+	e.adminCall("POST", "/api/v1/admin/acl/evaluate", `{"node":"laptop","dst":"192.168.178.10","port":80,"draft":{"cedar":"permit(nope);"}}`, http.StatusBadRequest, nil)
+
 	// validation
 	var vr api.ValidateResponse
 	e.adminCall("POST", "/api/v1/admin/policies/validate", `{"cedar":"permit(principal, action, resource) when { nope };"}`, http.StatusOK, &vr)

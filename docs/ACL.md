@@ -134,7 +134,10 @@ Hubs ship **tunnel events** on the same route: `reset` when the hub comes
 up (closes whatever the control plane still lists for it), `open` when a
 peer attaches, `update` with byte counters every 30 s, `close` with the reason (`closed by
 peer`, `idle timeout`, `peer revoked`, `user session ended`, …). The control
-plane keeps one row per tunnel (`GET /api/v1/admin/tunnels`, `?active=1`,
+plane corrects `closed by peer` to `peer revoked` when the peer is a revoked
+node (node and hub learn of a revocation at the same moment; whoever closes
+first, the cause is the same), reopens a row it had closed for silence when
+the hub reports the tunnel again, and keeps one row per tunnel (`GET /api/v1/admin/tunnels`, `?active=1`,
 `?node=`, `?since=`), closes tunnels of hubs that fell silent for 3 minutes
 and prunes closed ones with the log retention. This is the data behind the
 mesh view of M6.5.

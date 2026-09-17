@@ -92,9 +92,15 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 				rejected++
 				continue
 			}
-			if _, err := h.d.DB.NodeByID(r.Context(), rep.PeerID); err != nil {
+			peer, err := h.d.DB.NodeByID(r.Context(), rep.PeerID)
+			if err != nil {
 				rejected++
 				continue
+			}
+			// a revoked node and its hub both learn of the revocation from
+			// their snapshots; whichever closes first, the cause is the same
+			if ev.Message == "close" && rep.CloseReason == "closed by peer" && peer.Status == "revoked" {
+				rep.CloseReason = "peer revoked"
 			}
 			if err := h.d.DB.UpsertTunnel(r.Context(), rep); err != nil {
 				h.d.Logs.System.Warn("tunnel report", "err", err)

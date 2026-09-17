@@ -174,10 +174,18 @@ func (h *Handlers) nodeLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // oidcCallback is where the IdP sends the browser. No admin auth: the
-// state binds the request to a flow a node started.
+// state binds the request to a flow a node started (user login) or a
+// browser started (admin login).
 func (h *Handlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state := q.Get("state")
+	if af, err := h.d.DB.AdminLoginFlowByState(r.Context(), state); state != "" && err == nil {
+		h.adminCallback(w, r, af)
+		return
+	} else if errors.Is(err, db.ErrConflict) || errors.Is(err, db.ErrTokenExpired) {
+		loginPage(w, http.StatusGone, "Login expired", "This admin login was already used or took too long. <a href=\"/api/v1/admin/auth/login\">Start again</a>.")
+		return
+	}
 	flow, err := h.d.DB.LoginFlowByState(r.Context(), state)
 	switch {
 	case state == "" || errors.Is(err, db.ErrNotFound):

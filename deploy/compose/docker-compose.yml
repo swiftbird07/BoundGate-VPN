@@ -76,8 +76,24 @@ services:
     networks:
       public:
         ipv4_address: 172.30.0.6
-    command: ["boundgate-fakeidp", "-listen", ":9000", "-issuer", "http://idp:9000", "-client-id", "boundgate", "-client-secret", "dev-secret",
+        aliases: [idp.localhost]    # one issuer URL for both worlds: Docker DNS answers it in the lab, browsers map *.localhost to loopback on the Mac
+    ports:
+      - "127.0.0.1:19000:19000"
+    command: ["boundgate-fakeidp", "-listen", ":19000", "-issuer", "http://idp.localhost:19000", "-client-id", "boundgate", "-client-secret", "dev-secret",
               "-user", "martin", "-email", "martin@example.test", "-groups", "vpn-users,admins"]
+
+  # devproxy: plain-HTTP view of the admin name for browsers that refuse the
+  # self-signed dev certificate (http://localhost is a secure context, so
+  # passkeys work there too). Lab only; production speaks TLS only.
+  devproxy:
+    image: alpine/socat:1.8.0.0
+    networks:
+      public:
+        ipv4_address: 172.30.0.7
+    ports:
+      - "127.0.0.1:18080:8080"
+    command: ["TCP-LISTEN:8080,fork,reuseaddr", "OPENSSL:control:443,verify=0,snihost=control"]
+    depends_on: [control]
 
   hub1:
     <<: *node

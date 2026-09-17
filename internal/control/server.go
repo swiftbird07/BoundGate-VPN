@@ -25,6 +25,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/web"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
@@ -59,6 +60,10 @@ type Config struct {
 	Logs               *logging.Streams
 	// OIDC configures user logins; an empty issuer disables them.
 	OIDC oidc.Config
+	// Admin configures browser logins; RPID defaults to ServerName.
+	Admin api.AdminConfig
+	// NoSPA disables the embedded admin UI (tests).
+	NoSPA bool
 }
 
 // TLSConfig builds the SNI-splitting server configuration. protos are the
@@ -150,7 +155,18 @@ func Run(ctx context.Context, cfg Config) error {
 	} else {
 		log.Info("identity provider", "issuer", cfg.OIDC.Issuer, "client_id", cfg.OIDC.ClientID, "redirect_url", cfg.OIDC.RedirectURL)
 	}
-	h := api.New(api.Deps{DB: store, Snap: src, Logs: cfg.Logs, PendingTTL: cfg.PendingTTL, ControlSPKI: nodeSPKI, OIDC: idp})
+	if cfg.Admin.RPID == "" {
+		cfg.Admin.RPID = cfg.ServerName
+	}
+	var spa http.Handler
+	if !cfg.NoSPA {
+		spa = web.Handler()
+	}
+	h, err := api.NewWithError(api.Deps{DB: store, Snap: src, Logs: cfg.Logs, PendingTTL: cfg.PendingTTL, ControlSPKI: nodeSPKI, OIDC: idp, Admin: cfg.Admin, SPA: spa})
+	if err != nil {
+		return err
+	}
+	log.Info("admin logins", "rp_id", cfg.Admin.RPID, "origins", cfg.Admin.Origins, "group", cfg.Admin.Group)
 	root := h.Root(cfg.NodeServerName)
 
 	tcpSrv := &http.Server{

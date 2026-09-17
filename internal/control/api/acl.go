@@ -188,6 +188,18 @@ type EvaluateBody struct {
 	// Enforcer is the node whose policy view is used (id or name); empty
 	// means every enabled policy.
 	Enforcer string `json:"enforcer"`
+	// Draft is an unsaved policy from the editor: it replaces the stored
+	// policy with the same id (or is added) before evaluating. DraftOnly
+	// evaluates the draft alone.
+	Draft     *DraftPolicy `json:"draft,omitempty"`
+	DraftOnly bool         `json:"draft_only"`
+}
+
+// DraftPolicy is an unsaved policy for a dry run.
+type DraftPolicy struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Cedar string `json:"cedar"`
 }
 
 // EvaluateResponse is the decision with its reasons.
@@ -285,6 +297,28 @@ func (h *Handlers) adminEvaluate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
 		return
+	}
+	if body.Draft != nil {
+		if err := acl.Validate(body.Draft.Cedar); err != nil {
+			writeError(w, http.StatusBadRequest, "draft: "+err.Error())
+			return
+		}
+		draft := registry.Policy{ID: body.Draft.ID, Name: body.Draft.Name, Cedar: body.Draft.Cedar}
+		if draft.ID == "" {
+			draft.ID = "draft"
+		}
+		if draft.Name == "" {
+			draft.Name = "(draft)"
+		}
+		var kept []registry.Policy
+		if !body.DraftOnly {
+			for _, p := range snap.Policies {
+				if p.ID != draft.ID {
+					kept = append(kept, p)
+				}
+			}
+		}
+		snap.Policies = append(kept, draft)
 	}
 	eng := acl.New(snap)
 	d := eng.Evaluate(acl.Request{Principal: transport.DeviceID(src.ID), Dst: dst, Port: uint16(body.Port), Proto: proto, SNI: clip(body.SNI, 253), DNSName: clip(body.DNSName, 253)})

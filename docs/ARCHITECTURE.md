@@ -131,7 +131,7 @@ One port, two audiences, told apart by the TLS server name:
 
 | SNI | Certificate | Client auth | Serves |
 |---|---|---|---|
-| `control.example` | WebPKI (dev: self-signed) | none | admin API, SPA (M4), the OIDC browser callback |
+| `control.example` | WebPKI (dev: self-signed) | none | admin API (cookie sessions from OIDC + passkey, API tokens; ADMIN-AUTH.md), the embedded admin SPA, the OIDC browser callback |
 | `nodes.control.example` | the control plane's own long-lived key | device certificate required | node API: enroll, snapshot long-poll, heartbeat |
 
 Nodes pin the node-channel key's SPKI (trust on first use into
@@ -230,7 +230,8 @@ internal/devicecert     self-signed device certificate
 internal/binding        admin-signed node bindings: canonical JSON, SSHSIG, verification against pinned admin keys
 internal/transport      mTLS verification, AuthenticatedPeer, pinned hub client config, pinned control-plane client config, QUIC/CONNECT-IP server + client
 internal/registry       per-node Snapshot (self, peers, hubs, sessions, pool), Holder (stale = fail closed), Diff
-internal/control        control plane: db/ (SQLite + migrations), snapshot/ (per-node views incl. sessions), api/ (admin, node, login, sign), oidc/ (code flow; oidctest/ fake IdP), SNI split
+internal/control        control plane: db/ (SQLite + migrations), snapshot/ (per-node views incl. sessions), api/ (admin, adminauth, node, login, sign, acl, nodelogs), oidc/ (code flow; oidctest/ fake IdP), web/ (embedded SPA build), SNI split
+web/                    admin UI: Svelte 5 + Vite + TypeScript (policy builder, sanity check, nodes, sessions, logs, admins)
 internal/node           daemon: control loop, session (up/down), dataplane (TUN + table + uplink), hub service, spoke manager
 internal/node/forward   packet buffer conventions, destination table (hosts + longest prefix)
 internal/node/netcfg    TUN, addresses, routes, bypass routes, forwarding, nftables NAT (Linux; macOS in M5)
@@ -241,5 +242,5 @@ internal/netparse       allocation-free packet header parsing (fuzzed)
 internal/servercert     self-signed server certificate helper (control plane names)
 internal/logging        JSON Lines streams
 deploy/compose          local lab: control, hub1, hub2, node-a, node-r, two targets
-docs/                   this file, TCB.md, SECURITY.md, ENROLLMENT.md, BINDINGS.md, OIDC.md, API.md, DEV.md
+docs/                   this file, TCB.md, SECURITY.md, ENROLLMENT.md, BINDINGS.md, OIDC.md, ACL.md, ADMIN-AUTH.md, API.md, DEV.md
 ```

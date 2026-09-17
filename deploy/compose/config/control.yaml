@@ -13,8 +13,13 @@ log_retention: 2160h        # 90 days
 log_dir: /var/log/boundgate
 log_stdout: true
 oidc:                       # user logins (M2); the lab uses the fake IdP service, see docs/OIDC.md for Authentik
-  issuer: http://idp:9000
+  issuer: http://idp.localhost:19000   # the fake IdP under one URL: a Docker DNS alias inside the lab, loopback (published port) for the browser on the Mac
   client_id: boundgate
   client_secret: dev-secret
-  redirect_url: https://127.0.0.1:18443/api/v1/oidc/callback   # what the user's browser reaches (the Mac)
+  redirect_url: http://localhost:18080/api/v1/oidc/callback   # what the user's browser reaches on the Mac: the devproxy (plain HTTP on localhost is a secure context; browsers refuse passkeys behind a self-signed certificate)
   session_lifetime: 8h
+admin:                      # browser logins (M4): OIDC group + passkey
+  rp_id: localhost          # WebAuthn relying party = the name in the browser's address bar
+  origins: ["http://localhost:18080", "https://localhost:18443"]
+  group: admins
+  session_lifetime: 8h      # 1h in production
