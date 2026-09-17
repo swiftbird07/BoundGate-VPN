@@ -71,13 +71,13 @@
   {:else if withDraft}
     <div class="verdict {withDraft.allow ? 'allow' : 'deny'}">
       <span class="big">{withDraft.allow ? 'ALLOW' : 'DENY'}</span>
-      <span class="small" style="font-weight:500">with your {dirty ? 'unsaved draft' : 'policy'}{#if saved && saved.allow !== withDraft.allow} · <b>changes the outcome</b> (currently {saved.allow ? 'allowed' : 'denied'}){:else if saved} · same as today{/if}</span>
+      <span class="small" style="font-weight:500">with your {dirty ? 'unsaved draft' : 'policy'}{#if saved && saved.allow !== withDraft.allow}&nbsp;· <b>changes the outcome</b> (currently {saved.allow ? 'allowed' : 'denied'}){:else if saved} · same as today{/if}</span>
     </div>
     <dl class="kv small">
-      <dt>Principal</dt><dd>{nodes.find((n) => n.id === withDraft?.principal)?.name ?? withDraft.principal}{#if withDraft.user} · user <b>{withDraft.user}</b> in {withDraft.groups?.join(', ') || 'no groups'}{:else} · <span class="warn" style="color:var(--warn)">no user session</span>{/if}</dd>
-      <dt>Destination</dt><dd>{dst}:{port}/{proto}{#if withDraft.owner_name} · owned by <b>{withDraft.owner_name}</b>{:else} · not inside any announced prefix{/if}</dd>
+      <dt>Principal</dt><dd>{nodes.find((n) => n.id === withDraft?.principal)?.name ?? withDraft.principal}{#if withDraft.user}&nbsp;· user <b>{withDraft.user}</b> in {withDraft.groups?.join(', ') || 'no groups'}{:else}&nbsp;· <span class="warn" style="color:var(--warn)">no user session</span>{/if}</dd>
+      <dt>Destination</dt><dd>{dst}:{port}/{proto}{#if withDraft.owner_name}&nbsp;· owned by <b>{withDraft.owner_name}</b>{:else}&nbsp;· not inside any announced prefix{/if}</dd>
       <dt>Decided by</dt><dd>{#if withDraft.policies.length}{#each withDraft.policies as p}<span class="chip" class:mono={false}>{p}</span> {/each}{:else}<span class="muted">no policy matched → default deny</span>{/if}</dd>
-      <dt>Policies</dt><dd>{withDraft.policy_count} evaluated{#if withDraft.policy_errors?.length} · <span class="error">{withDraft.policy_errors.length} failed to compile</span>{/if}</dd>
+      <dt>Policies</dt><dd>{withDraft.policy_count} evaluated{#if withDraft.policy_errors?.length}&nbsp;· <span class="error">{withDraft.policy_errors.length} failed to compile</span>{/if}</dd>
       {#if withDraft.errors?.length}<dt>Errors</dt><dd class="error">{withDraft.errors.join('; ')}</dd>{/if}
     </dl>
     {#if withDraft.errors?.length}

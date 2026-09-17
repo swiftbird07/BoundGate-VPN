@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/logo.svg" width="96" height="96" alt="BoundGate"></p>
+
 # BoundGate
 
 Device-bound zero-trust remote access. A device gets in only with a key that
@@ -16,7 +18,7 @@ inspection and shipped flow and tunnel logs; an embedded admin UI (Svelte)
 behind OIDC + passkey admin logins, with a policy builder and a live
 sanity check; local compose lab). See `docs/ARCHITECTURE.md`,
 `docs/TCB.md`, `docs/SECURITY.md`, `docs/BINDINGS.md`, `docs/OIDC.md`,
-`docs/ACL.md`, `docs/ADMIN-AUTH.md`, `docs/MACOS.md` and `docs/DEV.md`.
+`docs/ACL.md`, `docs/ADMIN-AUTH.md`, `docs/MACOS.md`, `docs/DESIGN.md` and `docs/DEV.md`.
 
 ```bash
 make test

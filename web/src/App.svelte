@@ -5,6 +5,8 @@
   import { admin } from './lib/api';
   import type { Overview } from './lib/types';
   import Toasts from './lib/components/Toasts.svelte';
+  import Logo from './lib/components/Logo.svelte';
+  import Icon, { type IconName } from './lib/components/Icon.svelte';
   import Login from './pages/Login.svelte';
   import OverviewPage from './pages/Overview.svelte';
   import Nodes from './pages/Nodes.svelte';
@@ -38,15 +40,17 @@
   });
   $effect(() => { if (auth.status?.level === 'full') void loadCounts(); });
 
-  const nav = [
-    { href: '/', label: 'Overview', icon: '◈' },
-    { href: '/nodes', label: 'Nodes', icon: '⬡', badge: () => (counts?.nodes?.pending ?? 0) + (counts?.nodes?.confirmed ?? 0) },
-    { href: '/sessions', label: 'Sessions', icon: '◉' },
-    { href: '/policies', label: 'Policies', icon: '⛨' },
-    { href: '/logs', label: 'Logs', icon: '≡' },
-    { href: '/admins', label: 'Admins', icon: '⚿', badge: () => counts?.pending_passkeys ?? 0 },
-    { href: '/settings', label: 'Settings', icon: '⚙' },
+  const nav: { href: string; label: string; icon: IconName; badge?: () => number }[] = [
+    { href: '/', label: 'Overview', icon: 'overview' },
+    { href: '/nodes', label: 'Nodes', icon: 'nodes', badge: () => (counts?.nodes?.pending ?? 0) + (counts?.nodes?.confirmed ?? 0) },
+    { href: '/sessions', label: 'Sessions', icon: 'sessions' },
+    { href: '/policies', label: 'Policies', icon: 'policies' },
+    { href: '/logs', label: 'Logs', icon: 'logs' },
+    { href: '/admins', label: 'Admins', icon: 'admins', badge: () => counts?.pending_passkeys ?? 0 },
+    { href: '/settings', label: 'Settings', icon: 'settings' },
   ];
+  const who = $derived(auth.status?.name || auth.status?.email || auth.status?.subject || '');
+  const initials = $derived((who.match(/[\p{L}\p{N}]+/gu) ?? ['?']).slice(0, 2).map((w) => w[0]).join(''));
   const active = (href: string) => (href === '/' ? route.path === '/' : route.path.startsWith(href));
   const page = $derived.by(() => {
     const p = route.path;
@@ -64,34 +68,39 @@
 
 <Toasts />
 {#if auth.loading}
-  <div class="login-wrap"><div class="row"><span class="spinner"></span> <span class="muted">Connecting…</span></div></div>
+  <div class="login-wrap"><div class="splash"><Logo size={72} adaptive draw /><span>Connecting…</span></div></div>
 {:else if auth.status?.level !== 'full'}
   <Login />
 {:else}
   <div class="shell">
     <nav class="sidebar">
-      <a class="brand" href="/" style="color:inherit"><span class="logo">🛡</span> BoundGate</a>
+      <a class="brand" href="/"><span class="tile"><Logo size={34} adaptive title="BoundGate" /></span> BoundGate</a>
       <div class="nav col" style="gap:2px">
         {#each nav as n}
           <a href={n.href} class:active={active(n.href)}>
-            <span style="width:18px; text-align:center; opacity:.8">{n.icon}</span>{n.label}
+            <Icon name={n.icon} />{n.label}
             {#if n.badge && n.badge() > 0}<span class="cnt">{n.badge()}</span>{/if}
           </a>
         {/each}
       </div>
-      <div class="nav-foot col" style="gap:6px">
-        <div class="ellipsis" title={auth.status?.subject}><b>{auth.status?.name || auth.status?.email || auth.status?.subject}</b></div>
-        <div class="faint small">{auth.status?.via === 'session' ? 'OIDC + passkey' : auth.status?.via === 'token' ? 'API token' : 'bootstrap token'}</div>
-        <div class="row" style="gap:6px">
-          <button class="btn sm ghost" onclick={cycleTheme} title="Theme: {theme}">{theme === 'dark' ? '☾' : theme === 'light' ? '☀' : '◐'}</button>
-          <button class="btn sm ghost" onclick={() => logout()}>Sign out</button>
+      <div class="nav-foot col" style="gap:8px">
+        <div class="who">
+          <span class="avatar">{initials}</span>
+          <div class="grow">
+            <div class="ellipsis" title={auth.status?.subject}><b>{who}</b></div>
+            <div class="faint small">{auth.status?.via === 'session' ? 'SSO + passkey' : auth.status?.via === 'token' ? 'API token' : 'bootstrap token'}</div>
+          </div>
+        </div>
+        <div class="row" style="gap:4px">
+          <button class="btn sm ghost" onclick={cycleTheme} title="Theme: {theme} (click to change)" aria-label="Theme: {theme}"><Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} size={16} /></button>
+          <button class="btn sm ghost" onclick={() => logout()}><Icon name="logout" size={16} /> Sign out</button>
         </div>
       </div>
     </nav>
     <main class="main">
       {#key route.path}
         {@const Page = page}
-        <Page />
+        <div class="page"><Page /></div>
       {/key}
     </main>
   </div>

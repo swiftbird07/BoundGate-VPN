@@ -108,7 +108,7 @@
         <div class="hint" style="margin-top:6px">Compare with <code>boundgatectl identity</code> on the device before confirming.</div>
       </div>
       {#if signCmd}
-        <div class="card tight" style="border-color: rgba(79,140,255,.5); box-shadow: var(--glow)">
+        <div class="callout strong">
           <h3>Sign the binding</h3>
           <p class="small muted">Run this where the admin SSH key (YubiKey) is available. The token is single-use and expires {when(signCmd.expires)}.</p>
           <div class="cmd"><pre>{signCmd.cmd}</pre><Copy text={signCmd.cmd} /></div>

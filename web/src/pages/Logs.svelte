@@ -15,11 +15,11 @@
   let node = $state(route.query.get('node') || '');
   let stream = $state('audit');
   let text = $state('');
-  let decision = $state('');
+  let decision = $state(route.query.get('decision') || '');
   let dst = $state('');
   let sni = $state('');
   let user = $state('');
-  let activeOnly = $state(false);
+  let activeOnly = $state(route.query.get('active') === '1');
   let events = $state<LogEvent[]>([]);
   let tunnels = $state<Tunnel[]>([]);
   let live = $state(true);
@@ -92,7 +92,7 @@
             <td><Time at={e.ts} /></td>
             <td><Badge status={String(a.decision ?? e.message)} label={`${e.message}${a.reset ? ' + RST' : ''}`} /></td>
             <td>{a.node_name ?? nodeName(e.device_id)}</td>
-            <td>{a.principal_name ?? nodeName(String(a.principal ?? ''))}{#if a.username}<div class="faint small">{a.username}{#if Array.isArray(a.groups) && a.groups.length} · {a.groups.join(', ')}{/if}</div>{/if}</td>
+            <td>{a.principal_name ?? nodeName(String(a.principal ?? ''))}{#if a.username}<div class="faint small">{a.username}{#if Array.isArray(a.groups) && a.groups.length}&nbsp;· {a.groups.join(', ')}{/if}</div>{/if}</td>
             <td class="mono small">{a.src}:{a.sport} → {a.dst}:{a.dport} {a.proto}{#if a.sni}<div class="faint">sni {a.sni}</div>{/if}{#if a.dns_name}<div class="faint">dns {a.dns_name}</div>{/if}{#if a.owner_name}<div class="faint">owner {a.owner_name}</div>{/if}</td>
             <td>{#if Array.isArray(a.policies)}{#each a.policies as p}<span class="chip">{p}</span> {/each}{/if}{#if Array.isArray(a.errors) && a.errors.length}<div class="error small">{a.errors.join('; ')}</div>{/if}{#if a.reason}<div class="faint small">{a.reason}</div>{/if}</td>
             <td class="num">{bytes(Number(a.bytes_in ?? 0) + Number(a.bytes_out ?? 0))}</td>

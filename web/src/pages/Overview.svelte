@@ -6,6 +6,7 @@
   import Time from '../lib/components/Time.svelte';
   import { bytes } from '../lib/util';
   import { fail } from '../lib/toast.svelte';
+  import Icon from '../lib/components/Icon.svelte';
 
   let ov = $state<Overview | null>(null);
   let nodes = $state<Node[]>([]);
@@ -19,25 +20,26 @@
     } catch (e: any) { err = e.message; }
   }
   onMount(() => { void load(); const t = setInterval(load, 10000); return () => clearInterval(t); });
+  const waiting = $derived((ov?.nodes.pending ?? 0) + (ov?.nodes.confirmed ?? 0));
   const attention = $derived(nodes.filter((n) => n.status === 'pending' || n.status === 'confirmed'));
   const online = $derived(nodes.filter((n) => n.status === 'approved' && n.last_seen_at && Date.now() - new Date(n.last_seen_at).getTime() < 90000));
 </script>
 
 <div class="page-head">
-  <div><h1>Overview</h1><div class="sub">Live state of the overlay{#if ov} · snapshot v{ov.snapshot_version}{/if}</div></div>
-  <button class="btn sm" onclick={load}>Refresh</button>
+  <div><h1>Overview</h1><div class="sub">Live state of the overlay{#if ov}&nbsp;· snapshot v{ov.snapshot_version}{/if}</div></div>
+  <button class="btn sm" onclick={load}><Icon name="refresh" size={14} /> Refresh</button>
 </div>
 {#if err}<p class="error">{err}</p>{/if}
 {#if ov}
-  <div class="grid cols-4" style="margin-bottom:16px">
-    <div class="card stat"><span class="n">{ov.nodes.approved ?? 0}</span><span class="l">approved nodes · {online.length} seen in the last 90 s</span></div>
-    <div class="card stat"><span class="n">{ov.active_tunnels}</span><span class="l">active tunnels</span></div>
-    <div class="card stat"><span class="n">{ov.active_sessions}</span><span class="l">user sessions</span></div>
-    <div class="card stat"><span class="n">{ov.policies_enabled}<span class="faint" style="font-size:16px">/{ov.policies}</span></span><span class="l">policies enabled</span></div>
-    <div class="card stat"><span class="n" style="{ov.denied_last_24h ? '' : ''}">{ov.denied_last_24h}</span><span class="l">flows denied · 24 h</span></div>
-    <div class="card stat"><span class="n">{(ov.nodes.pending ?? 0) + (ov.nodes.confirmed ?? 0)}</span><span class="l">nodes awaiting approval</span></div>
-    <div class="card stat"><span class="n">{ov.pending_passkeys}</span><span class="l">passkeys awaiting approval</span></div>
-    <div class="card stat"><span class="n">{ov.signers}</span><span class="l">admin signing keys</span></div>
+  <div class="grid stats" style="margin-bottom:16px">
+    <a class="card stat" href="/nodes"><span class="n">{ov.nodes.approved ?? 0}</span><span class="l">approved nodes · {online.length} seen in the last 90 s</span></a>
+    <a class="card stat" href="/logs?tab=tunnels&active=1"><span class="n">{ov.active_tunnels}</span><span class="l">active tunnels</span></a>
+    <a class="card stat" href="/sessions"><span class="n">{ov.active_sessions}</span><span class="l">user sessions</span></a>
+    <a class="card stat" href="/policies"><span class="n">{ov.policies_enabled}<span class="faint" style="font-size:16px">/{ov.policies}</span></span><span class="l">policies enabled</span></a>
+    <a class="card stat" class:alarm={ov.denied_last_24h > 0} href="/logs?tab=flows&decision=deny"><span class="n">{ov.denied_last_24h}</span><span class="l">flows denied · 24 h</span></a>
+    <a class="card stat" class:attn={waiting > 0} href="/nodes"><span class="n">{waiting}</span><span class="l">nodes awaiting approval</span></a>
+    <a class="card stat" class:attn={ov.pending_passkeys > 0} href="/admins"><span class="n">{ov.pending_passkeys}</span><span class="l">passkeys awaiting approval</span></a>
+    <a class="card stat" class:alarm={ov.signers === 0} href="/admins"><span class="n">{ov.signers}</span><span class="l">admin signing keys</span></a>
   </div>
 {/if}
 <div class="grid cols-2">
@@ -70,7 +72,7 @@
     {#if audit.length === 0}<div class="empty">No audit events yet.</div>{:else}
       <div class="timeline">
         {#each audit as e (e.id)}
-          <div class="ev"><div><b>{e.message}</b> <span class="faint small">by {e.actor || '?'}</span></div><div class="faint small"><Time at={e.ts} />{#if e.attrs?.name} · {e.attrs.name}{/if}</div></div>
+          <div class="ev"><div><b>{e.message}</b> <span class="faint small">by {e.actor || '?'}</span></div><div class="faint small"><Time at={e.ts} />{#if e.attrs?.name}&nbsp;· {e.attrs.name}{/if}</div></div>
         {/each}
       </div>
     {/if}

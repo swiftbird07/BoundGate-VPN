@@ -82,7 +82,7 @@
 </script>
 
 <div class="page-head">
-  <div><h1>{isNew ? 'New policy' : name || 'Policy'}</h1><div class="sub"><a href="/policies">← all policies</a>{#if original} · updated by {original.updated_by || original.created_by} {/if}</div></div>
+  <div><h1>{isNew ? 'New policy' : name || 'Policy'}</h1><div class="sub"><a href="/policies">← all policies</a>{#if original}&nbsp;· updated by {original.updated_by || original.created_by} {/if}</div></div>
   <div class="row">
     {#if !isNew}<button class="btn danger" onclick={remove}>Delete</button>{/if}
     <button class="btn primary" disabled={busy || !dirty || validation?.ok === false} onclick={save}>{isNew ? 'Create policy' : 'Save changes'}</button>

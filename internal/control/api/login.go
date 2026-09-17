@@ -262,13 +262,31 @@ func (h *Handlers) auditSession(r *http.Request, stream interface{ Info(string, 
 	h.d.DB.InsertLog(r.Context(), db.LogEvent{Stream: logging.StreamUserAuth, Actor: actor, DeviceID: s.NodeID, SessionID: s.ID, Message: msg, Attrs: attrs})
 }
 
+// loginPageCSS styles the pages a person sees in the browser around a login
+// (result, expiry, errors). Self-contained: no script, no external resource.
+const loginPageCSS = `:root{color-scheme:dark light;--bg:#1d1d1d;--card:#2a2a2a;--line:rgba(255,255,255,.1);--text:#f5f2ea;--dim:#b9b4a8;--tile:#ffcc00;--mark:#2a2a2a;--link:#ffcc00;--code:#343434}
+@media(prefers-color-scheme:light){:root{--bg:#f4f2eb;--card:#fff;--line:rgba(42,42,42,.12);--text:#2a2a2a;--dim:#5d594f;--tile:#2a2a2a;--mark:#ffcc00;--link:#2a2a2a;--code:#f0ede4}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+main{width:min(440px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:30px 28px 26px;text-align:center;box-shadow:0 14px 36px rgba(0,0,0,.18)}
+svg{display:block;margin:0 auto 14px}.brand{font:750 13px/1 ui-rounded,"SF Pro Rounded",system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+h1{font:750 24px/1.2 ui-rounded,"SF Pro Rounded",system-ui,sans-serif;letter-spacing:-.02em;margin:10px 0 10px}h1.ok::before,h1.bad::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:10px;vertical-align:middle;position:relative;top:-2px}
+h1.ok::before{background:#5fd38d}h1.bad::before{background:#ff6b6b}p{margin:0;color:var(--dim)}b{color:var(--text)}
+a{color:var(--link);font-weight:600;text-decoration:underline;text-decoration-color:#ffcc00;text-decoration-thickness:2px;text-underline-offset:3px}code{font:13px ui-monospace,"SF Mono",Menlo,monospace;background:var(--code);padding:1px 6px;border-radius:6px;color:var(--text)}`
+
+// loginPage renders title and body (trusted HTML, callers escape) in the
+// BoundGate look.
 func loginPage(w http.ResponseWriter, status int, title, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><title>BoundGate: ` + html.EscapeString(title) + `</title>
-<style>body{font-family:system-ui,sans-serif;max-width:40em;margin:4em auto;padding:0 1em;color:#222}h1{font-size:1.4em}</style>
-<h1>BoundGate: ` + html.EscapeString(title) + `</h1><p>` + body + `</p>`))
+	tone := "bad"
+	if status < 300 {
+		tone = "ok"
+	}
+	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark light">
+<title>BoundGate: ` + html.EscapeString(title) + `</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><style>` + loginPageCSS + `</style>
+<main><svg width="64" height="64" viewBox="0 0 1024 1024" role="img" aria-label="BoundGate"><rect width="1024" height="1024" rx="232" fill="var(--tile)"/><g fill="none" stroke="var(--mark)" stroke-width="57" stroke-linecap="round" stroke-linejoin="round"><rect x="148" y="268" width="462" height="300" rx="76"/><rect x="414" y="456" width="462" height="300" rx="76"/></g></svg>
+<div class="brand">BoundGate</div><h1 class="` + tone + `">` + html.EscapeString(title) + `</h1><p>` + body + `</p></main></html>`))
 }
 
 // --- admin ---
