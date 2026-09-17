@@ -237,7 +237,13 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 
 func (m *spokeManager) dial(ctx context.Context, hub registry.Node) (*transport.ClientTunnel, []netip.Prefix, error) {
 	s := m.s
-	addr, err := resolveAddrPort(ctx, hub.PublicAddr)
+	target := hub.PublicAddr
+	if o, ok := s.n.cfg.HubAddrs[hub.Name]; ok {
+		target = o
+	} else if o, ok := s.n.cfg.HubAddrs[hub.PublicAddr]; ok {
+		target = o
+	}
+	addr, err := resolveAddrPort(ctx, target)
 	if err != nil {
 		return nil, nil, err
 	}

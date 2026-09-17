@@ -58,7 +58,8 @@ services:
       public:
         ipv4_address: 172.30.0.5
     ports:
-      - "127.0.0.1:18443:443"     # admin API over TLS (self-signed dev cert)
+      - "127.0.0.1:18443:443"     # admin API over TLS (self-signed dev cert); node channel fallback (TCP) for a node on the Mac (M5)
+      - "127.0.0.1:18443:443/udp" # node channel over HTTP/3 for a node on the Mac
     volumes:
       - ./config:/etc/boundgate:ro
       - ./state/control:/var/lib/boundgate
@@ -81,6 +82,22 @@ services:
       - "127.0.0.1:19000:19000"
     command: ["boundgate-fakeidp", "-listen", ":19000", "-issuer", "http://idp.localhost:19000", "-client-id", "boundgate", "-client-secret", "dev-secret",
               "-user", "martin", "-email", "martin@example.test", "-groups", "vpn-users,admins"]
+
+  # udpbridge: UDP-over-TCP into the lab for a node on the Mac host (M5).
+  # Colima's default port forwarder carries TCP only; see cmd/boundgate-udpbridge.
+  udpbridge:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.control
+      args:
+        GOARCH: ${GOARCH:-arm64}
+    networks:
+      public:
+        ipv4_address: 172.30.0.8
+    ports:
+      - "127.0.0.1:24431:24431"   # -> hub1 udp/443
+      - "127.0.0.1:24432:24432"   # -> hub2 udp/443
+    command: ["boundgate-udpbridge", "-server", ":24431=172.30.0.10:443,:24432=172.30.0.11:443"]
 
   # devproxy: plain-HTTP view of the admin name for browsers that refuse the
   # self-signed dev certificate (http://localhost is a secure context, so
@@ -106,6 +123,8 @@ services:
       - ./config:/etc/boundgate:ro
       - ./state/hub1:/var/lib/boundgate
       - ./logs/hub1:/var/log/boundgate
+    ports:
+      - "127.0.0.1:14431:443/udp" # tunnel listener for a node on the Mac host (M5, hub_addrs override)
     command: ["boundgate-node", "-config", "/etc/boundgate/hub1.yaml"]
 
   hub2:
@@ -119,6 +138,8 @@ services:
       - ./config:/etc/boundgate:ro
       - ./state/hub2:/var/lib/boundgate
       - ./logs/hub2:/var/log/boundgate
+    ports:
+      - "127.0.0.1:14432:443/udp"
     command: ["boundgate-node", "-config", "/etc/boundgate/hub2.yaml"]
 
   node-a:

@@ -31,7 +31,7 @@ func (d *DB) CreateLoginFlow(ctx context.Context, nodeID, state, nonce, verifier
 	f := LoginFlow{ID: NewID(), NodeID: nodeID, State: state, Nonce: nonce, PKCEVerifier: verifier,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(LoginFlowTTL), Status: "pending"}
 	_, err := d.sql.ExecContext(ctx, `INSERT INTO login_flows (id, node_id, state, nonce, pkce_verifier, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
-		f.ID, f.NodeID, f.State, f.Nonce, f.PKCEVerifier, f.CreatedAt.Format(time.RFC3339Nano), f.ExpiresAt.Format(time.RFC3339Nano))
+		f.ID, f.NodeID, f.State, f.Nonce, f.PKCEVerifier, f.CreatedAt.Format(timeFormat), f.ExpiresAt.Format(timeFormat))
 	return f, err
 }
 
@@ -134,7 +134,7 @@ func (d *DB) CompleteLoginFlow(ctx context.Context, flowID string, s Session) (S
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO user_sessions (`+sessionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '')`,
-			s.ID, s.NodeID, s.Subject, s.Email, s.Username, jsonOf(s.Groups), s.LoginIP, s.IssuedAt.Format(time.RFC3339Nano), s.ExpiresAt.UTC().Format(time.RFC3339Nano))
+			s.ID, s.NodeID, s.Subject, s.Email, s.Username, jsonOf(s.Groups), s.LoginIP, s.IssuedAt.Format(timeFormat), s.ExpiresAt.UTC().Format(timeFormat))
 		return err
 	})
 	return s, version, err
@@ -225,7 +225,7 @@ func (d *DB) ExpireSessions(ctx context.Context) (int64, uint64, error) {
 				return err
 			}
 		}
-		cutoff := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+		cutoff := time.Now().UTC().Add(-time.Hour).Format(timeFormat)
 		_, err = tx.ExecContext(ctx, `DELETE FROM login_flows WHERE expires_at < ? OR (status <> 'pending' AND created_at < ?)`, cutoff, cutoff)
 		return err
 	})

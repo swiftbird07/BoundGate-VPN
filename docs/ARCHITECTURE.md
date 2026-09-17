@@ -234,7 +234,9 @@ internal/control        control plane: db/ (SQLite + migrations), snapshot/ (per
 web/                    admin UI: Svelte 5 + Vite + TypeScript (policy builder, sanity check, nodes, sessions, logs, admins)
 internal/node           daemon: control loop, session (up/down), dataplane (TUN + table + uplink), hub service, spoke manager
 internal/node/forward   packet buffer conventions, destination table (hosts + longest prefix)
-internal/node/netcfg    TUN, addresses, routes, bypass routes, forwarding, nftables NAT (Linux; macOS in M5)
+internal/node/netcfg    TUN, addresses, routes, bypass routes, forwarding, nftables NAT (Linux); utun, ifconfig/route (macOS, endpoint only); crash-recovery journal
+cmd/boundgate-udpbridge lab only: UDP-over-TCP shim and QUIC reachability probe for a Mac node against the compose hubs
+deploy/macos            Mac lab runner (dev.sh, e2e.sh), LaunchDaemon plist and installer
 internal/node/profile   routing profiles (include / full)
 internal/node/ipc       Unix-socket API between boundgatectl and the daemon
 internal/node/controlclient  node API client (HTTP/3 with TCP fallback), snapshot long-poll loop
@@ -242,5 +244,5 @@ internal/netparse       allocation-free packet header parsing (fuzzed)
 internal/servercert     self-signed server certificate helper (control plane names)
 internal/logging        JSON Lines streams
 deploy/compose          local lab: control, hub1, hub2, node-a, node-r, two targets
-docs/                   this file, TCB.md, SECURITY.md, ENROLLMENT.md, BINDINGS.md, OIDC.md, ACL.md, ADMIN-AUTH.md, API.md, DEV.md
+docs/                   this file, TCB.md, SECURITY.md, ENROLLMENT.md, BINDINGS.md, OIDC.md, ACL.md, ADMIN-AUTH.md, MACOS.md, API.md, DEV.md
 ```

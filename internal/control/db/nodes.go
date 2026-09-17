@@ -485,7 +485,7 @@ func (d *DB) Heartbeat(ctx context.Context, id string, version uint64, tunnels i
 
 // ExpirePending deletes pending requests older than maxAge and returns how many.
 func (d *DB) ExpirePending(ctx context.Context, maxAge time.Duration) (int64, error) {
-	cutoff := time.Now().UTC().Add(-maxAge).Format(time.RFC3339Nano)
+	cutoff := time.Now().UTC().Add(-maxAge).Format(timeFormat)
 	res, err := d.sql.ExecContext(ctx, `DELETE FROM nodes WHERE status = 'pending' AND requested_at < ?`, cutoff)
 	if err != nil {
 		return 0, err

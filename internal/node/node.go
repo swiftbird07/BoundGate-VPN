@@ -70,6 +70,12 @@ type Config struct {
 	ProfilesDir string
 	TUNName     string
 	MTU         int
+	// HubAddrs overrides where a hub is dialed, keyed by hub name or by its
+	// advertised public_addr (both unsigned). For networks where the
+	// advertised address is not reachable as is: the compose lab from the
+	// Mac host, split-horizon DNS, port forwards. The hub is still
+	// authenticated by its pinned key, whatever address answers.
+	HubAddrs map[string]string
 	Log         *slog.Logger
 	// FlowLog receives one record per flow open/deny/close (the "flow"
 	// stream); nil means the system log.
@@ -226,7 +232,7 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: netcfg.New(), holder: &registry.Holder{}, flowLog: cfg.FlowLog}
+	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: netcfg.NewJournal(netcfg.New(), filepath.Join(cfg.StateDir, "netstate.json")), holder: &registry.Holder{}, flowLog: cfg.FlowLog}
 	if n.flowLog == nil {
 		n.flowLog = cfg.Log
 	}
@@ -401,6 +407,15 @@ func (f *filePin) Learn(h devicekey.SPKIHash) error {
 // Run drives the control channel until ctx ends: enrollment status, then
 // snapshots and heartbeats while approved. It returns when ctx is done.
 func (n *Node) Run(ctx context.Context) {
+	// a previous process that died without `down` may have left bypass
+	// routes (and on Linux NAT rules) behind
+	if j, ok := n.net.(*netcfg.Journal); ok {
+		rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		if c := j.Recover(rctx); c > 0 {
+			n.log.Warn("removed network leftovers of a previous run", "entries", c)
+		}
+		cancel()
+	}
 	go n.heartbeats(ctx)
 	go n.ship.run(ctx)
 	for ctx.Err() == nil {
@@ -1059,7 +1074,7 @@ func (s *session) addBypassHost(ctx context.Context, hostport string) error {
 func (s *session) addBypass(ip netip.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.bypass[ip] || s.pool.Contains(ip) {
+	if s.bypass[ip] || s.pool.Contains(ip) || ip.IsLoopback() {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

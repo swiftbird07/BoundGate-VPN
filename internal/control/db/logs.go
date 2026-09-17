@@ -31,7 +31,7 @@ func (d *DB) InsertLog(ctx context.Context, e LogEvent) {
 		attrs = []byte("{}")
 	}
 	_, _ = d.sql.ExecContext(ctx, `INSERT INTO log_events (ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.TS.Format(time.RFC3339Nano), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs))
+		e.TS.Format(timeFormat), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs))
 }
 
 // LogQuery filters ListLogs.
@@ -69,11 +69,11 @@ func (d *DB) ListLogs(ctx context.Context, q LogQuery) ([]LogEvent, error) {
 	}
 	if !q.Since.IsZero() {
 		sqlq += ` AND ts >= ?`
-		args = append(args, q.Since.UTC().Format(time.RFC3339Nano))
+		args = append(args, q.Since.UTC().Format(timeFormat))
 	}
 	if !q.Until.IsZero() {
 		sqlq += ` AND ts <= ?`
-		args = append(args, q.Until.UTC().Format(time.RFC3339Nano))
+		args = append(args, q.Until.UTC().Format(timeFormat))
 	}
 	if q.Text != "" {
 		sqlq += ` AND (message LIKE ? OR attrs_json LIKE ?)`
@@ -128,7 +128,7 @@ func (d *DB) InsertLogs(ctx context.Context, evs []LogEvent) error {
 			attrs = []byte("{}")
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO log_events (ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.TS.UTC().Format(time.RFC3339Nano), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs)); err != nil {
+			e.TS.UTC().Format(timeFormat), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs)); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -150,7 +150,7 @@ func validAttrKey(k string) bool {
 
 // PruneLogs deletes events older than maxAge.
 func (d *DB) PruneLogs(ctx context.Context, maxAge time.Duration) (int64, error) {
-	res, err := d.sql.ExecContext(ctx, `DELETE FROM log_events WHERE ts < ?`, time.Now().UTC().Add(-maxAge).Format(time.RFC3339Nano))
+	res, err := d.sql.ExecContext(ctx, `DELETE FROM log_events WHERE ts < ?`, time.Now().UTC().Add(-maxAge).Format(timeFormat))
 	if err != nil {
 		return 0, err
 	}

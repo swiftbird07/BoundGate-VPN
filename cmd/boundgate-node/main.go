@@ -40,6 +40,7 @@ type config struct {
 	ProfilesDir string            `yaml:"profiles_dir"`
 	Socket      string            `yaml:"socket"`
 	TUNName     string            `yaml:"tun_name"`
+	HubAddrs    map[string]string `yaml:"hub_addrs"` // dial override per hub name or public_addr
 	MTU         int               `yaml:"mtu"`
 	LogDir      string            `yaml:"log_dir"`
 	LogStdout   bool              `yaml:"log_stdout"`
@@ -94,6 +95,7 @@ func run(cfgPath string) error {
 		Profile:           cfg.Profile,
 		ProfilesDir:       cfg.ProfilesDir,
 		TUNName:           cfg.TUNName,
+		HubAddrs:          cfg.HubAddrs,
 		MTU:               cfg.MTU,
 		Log:               logs.System,
 		FlowLog:           logs.Flow,

@@ -1,9 +1,9 @@
 # All Go and Node commands run inside the `box` dev container (see docs/DEV.md).
 GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
-BINS = boundgate-control boundgate-node boundgatectl boundgate-fakeidp
+BINS = boundgate-control boundgate-node boundgatectl boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: web web-check web-test build-linux test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: web web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -22,6 +22,15 @@ build-linux: web
 	@for b in $(BINS); do \
 	  echo "building $$b for linux/$(GOARCH)"; \
 	  box env GOOS=linux GOARCH=$(GOARCH) go build -trimpath -o bin/linux_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
+	done
+
+# The macOS node (M5): cross-compiled in the box, run on the host with
+# deploy/macos/dev.sh. The control plane is not built for macOS.
+build-darwin:
+	@mkdir -p bin/darwin_$(GOARCH)
+	@for b in boundgate-node boundgatectl boundgate-udpbridge; do \
+	  echo "building $$b for darwin/$(GOARCH)"; \
+	  box env GOOS=darwin GOARCH=$(GOARCH) CGO_ENABLED=0 go build -trimpath -o bin/darwin_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
 	done
 
 test: web-test

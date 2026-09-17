@@ -73,7 +73,7 @@ set_network() {
 }
 
 node_id_of() {  # node_id_of SVC -> node id (approved or confirmed)
-  spki=$($COMPOSE exec -T "$1" boundgatectl -json identity | jq -r .spki)
+  spki=$(nodectl "$1" -json identity | jq -r .spki)
   api GET /api/v1/admin/nodes | jq -r --arg s "$spki" '.[] | select(.spki == $s and .status != "revoked") | .id'
 }
 
@@ -113,12 +113,18 @@ eval_acl() {  # eval SVC DST [PORT] [PROTO] [SNI]
 
 # The dev grant mirrors what each node requested. A real admin decides this
 # per node in the UI after comparing the fingerprint.
+# nodectl SVC ARGS...: boundgatectl of a compose node, or of the node on the
+# Mac host ("mac", see deploy/macos/dev.sh and docs/MACOS.md)
+nodectl() {
+  svc=$1; shift
+  if [ "$svc" = mac ]; then ../macos/dev.sh ctl "$@"; else $COMPOSE exec -T "$svc" boundgatectl "$@"; fi
+}
 grant_for() {
   case "$1" in
     hub1)   echo '"kind":"workload","roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"snat"}],"public_addr":"hub1:443"' ;;
     hub2)   echo '"kind":"workload","roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"snat"}],"public_addr":"hub2:443"' ;;
     node-r) echo '"kind":"workload","roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}]' ;;
-    node-a) echo '"kind":"interactive","roles":["endpoint"]' ;;
+    node-a|mac) echo '"kind":"interactive","roles":["endpoint"]' ;;
     *) echo "unknown service $1" >&2; exit 2 ;;
   esac
 }
@@ -126,7 +132,7 @@ grant_for() {
 enroll_node() {  # prints the enroll status JSON
   st=""
   for _ in $(seq 1 15); do
-    st=$($COMPOSE exec -T "$1" boundgatectl -json enroll 2>/dev/null) && break
+    st=$(nodectl "$1" -json enroll 2>/dev/null) && break
     sleep 1
   done
   [ -n "$st" ] || { echo "$1: node daemon not reachable" >&2; exit 1; }
@@ -168,13 +174,13 @@ confirm_node() {  # confirm_node SVC [sign]
 
 # login SVC: drive the fake IdP for a node (what a browser would do)
 login_node() {
-  st=$($COMPOSE exec -T "$1" boundgatectl -json login -no-wait)
+  st=$(nodectl "$1" -json login -no-wait)
   flow=$(printf '%s' "$st" | jq -r .flow_id)
   url=$(printf '%s' "$st" | jq -r .url)
   # the "browser" on the Mac: follow the IdP redirect (published on loopback), then hit the callback (devproxy)
   cb=$(curl -sS -o /dev/null -w '%{redirect_url}' "$url")
   curl -sS -f --cacert "$CACERT" -o /dev/null "$cb"
-  $COMPOSE exec -T "$1" boundgatectl -json status | jq -r '"\(.node_name): logged in as \(.user.username // "?") \(.user.groups // [])"' 2>/dev/null || true
+  nodectl "$1" -json status | jq -r '"\(.node_name): logged in as \(.user.username // "?") \(.user.groups // [])"' 2>/dev/null || true
   echo "$1: login flow $flow completed"
 }
 

@@ -39,7 +39,7 @@ func (d *DB) CreateAdminLoginFlow(ctx context.Context, state, nonce, verifier, n
 	f := AdminLoginFlow{ID: NewID(), State: state, Nonce: nonce, PKCEVerifier: verifier, Next: next,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(LoginFlowTTL), Status: "pending"}
 	_, err := d.sql.ExecContext(ctx, `INSERT INTO admin_login_flows (id, state, nonce, pkce_verifier, next, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
-		f.ID, f.State, f.Nonce, f.PKCEVerifier, f.Next, f.CreatedAt.Format(time.RFC3339Nano), f.ExpiresAt.Format(time.RFC3339Nano))
+		f.ID, f.State, f.Nonce, f.PKCEVerifier, f.Next, f.CreatedAt.Format(timeFormat), f.ExpiresAt.Format(timeFormat))
 	return f, err
 }
 
@@ -117,7 +117,7 @@ func (d *DB) CreateAdminSession(ctx context.Context, s AdminSession, lifetime ti
 	}
 	groups, _ := json.Marshal(s.Groups)
 	_, err := d.sql.ExecContext(ctx, `INSERT INTO admin_sessions (`+adminSessionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')`,
-		s.ID, s.Subject, s.Email, s.Name, string(groups), s.Level, s.LoginIP, now.Format(time.RFC3339Nano), s.ExpiresAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		s.ID, s.Subject, s.Email, s.Name, string(groups), s.Level, s.LoginIP, now.Format(timeFormat), s.ExpiresAt.Format(timeFormat), now.Format(timeFormat))
 	return s, err
 }
 
@@ -177,7 +177,7 @@ func (d *DB) ListAdminSessions(ctx context.Context) ([]AdminSession, error) {
 // ExpireAdminSessions deletes sessions that ended more than a day ago and
 // expired login flows.
 func (d *DB) ExpireAdminSessions(ctx context.Context) error {
-	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(timeFormat)
 	if _, err := d.sql.ExecContext(ctx, `DELETE FROM admin_sessions WHERE expires_at < ? OR revoked_at < ?`, cutoff, cutoff); err != nil {
 		return err
 	}
@@ -229,7 +229,7 @@ func (d *DB) AddPasskey(ctx context.Context, p Passkey, by string) (Passkey, err
 		p.ApprovedBy = by
 	}
 	_, err := d.sql.ExecContext(ctx, `INSERT INTO admin_passkeys (id, subject, email, label, credential_json, credential_id, status, created_at, approved_at, approved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Subject, p.Email, p.Label, string(p.Credential), p.CredentialID, p.Status, p.CreatedAt.Format(time.RFC3339Nano), approvedAt, approvedBy)
+		p.ID, p.Subject, p.Email, p.Label, string(p.Credential), p.CredentialID, p.Status, p.CreatedAt.Format(timeFormat), approvedAt, approvedBy)
 	if err != nil && isUnique(err) {
 		return p, ErrConflict
 	}
@@ -335,10 +335,10 @@ func (d *DB) CreateAPIToken(ctx context.Context, name, by string, expires time.T
 	t := APIToken{ID: NewID(), Name: name, CreatedBy: by, CreatedAt: time.Now().UTC(), ExpiresAt: expires}
 	var exp any
 	if !expires.IsZero() {
-		exp = expires.UTC().Format(time.RFC3339Nano)
+		exp = expires.UTC().Format(timeFormat)
 	}
 	_, err := d.sql.ExecContext(ctx, `INSERT INTO api_tokens (id, name, token_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, hash, by, t.CreatedAt.Format(time.RFC3339Nano), exp)
+		t.ID, t.Name, hash, by, t.CreatedAt.Format(timeFormat), exp)
 	return t, secret, err
 }
 

@@ -359,3 +359,4 @@ Dream VPN Architektur.html
 !/internal/control/web/dist/.gitkeep
 !/web/src/lib/
 /web/node_modules/
+/deploy/macos/state/

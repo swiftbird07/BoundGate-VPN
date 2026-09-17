@@ -5,7 +5,7 @@ cannot leave it (TPM 2.0, later Secure Enclave), a user only with OIDC, and
 every flow only if a Cedar policy says so. The tunnel is standard HTTP/3:
 CONNECT-IP (RFC 9484) over QUIC on UDP/443.
 
-Status: prototype, milestone M4 (node model: control plane on port 443,
+Status: prototype, milestone M5 (macOS endpoint, see `docs/MACOS.md`; node model: control plane on port 443,
 one `boundgate-node` binary with the roles endpoint / subnet-router / hub /
 exit-node, hub-and-spoke overlay with HA; enrollment with manual admin
 confirmation and an admin-signed binding (SSHSIG, YubiKey) that every node
@@ -16,7 +16,7 @@ inspection and shipped flow and tunnel logs; an embedded admin UI (Svelte)
 behind OIDC + passkey admin logins, with a policy builder and a live
 sanity check; local compose lab). See `docs/ARCHITECTURE.md`,
 `docs/TCB.md`, `docs/SECURITY.md`, `docs/BINDINGS.md`, `docs/OIDC.md`,
-`docs/ACL.md`, `docs/ADMIN-AUTH.md` and `docs/DEV.md`.
+`docs/ACL.md`, `docs/ADMIN-AUTH.md`, `docs/MACOS.md` and `docs/DEV.md`.
 
 ```bash
 make test

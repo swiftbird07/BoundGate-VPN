@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -26,7 +27,14 @@ import (
 )
 
 func main() {
-	socket := flag.String("socket", "/run/boundgate/node.sock", "node daemon socket")
+	defSocket := "/run/boundgate/node.sock"
+	if runtime.GOOS == "darwin" {
+		defSocket = "/var/run/boundgate/node.sock"
+	}
+	if v := os.Getenv("BOUNDGATE_SOCKET"); v != "" {
+		defSocket = v
+	}
+	socket := flag.String("socket", defSocket, "node daemon socket (or $BOUNDGATE_SOCKET)")
 	asJSON := flag.Bool("json", false, "print raw JSON")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|enroll [-name NAME]|profiles|up [-profile NAME]|down|login [-timeout D]|logout|flows\n"+
@@ -287,6 +295,8 @@ func printStatus(s node.Status, asJSON bool) error {
 	fmt.Printf("enrollment:   %s", s.Enrollment)
 	if s.EnrollmentError != "" {
 		fmt.Printf(" (%s)", s.EnrollmentError)
+	} else if s.Enrollment == "unknown" {
+		fmt.Printf(" (the control plane does not know this key: never enrolled, or the request was rejected; run `boundgatectl enroll`)")
 	}
 	fmt.Printf("\nnode:         %s (%s, hardware-bound: %v)\nfingerprint:  %s\nsnapshot:     v%d from %s\n", s.NodeName, s.KeyKind, s.HardwareBound, s.Fingerprint, s.SnapshotVersion, s.Control)
 	return nil

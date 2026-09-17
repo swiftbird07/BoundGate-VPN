@@ -102,7 +102,12 @@ var ErrNotFound = errors.New("db: not found")
 // ErrConflict is returned when a unique constraint or state check fails.
 var ErrConflict = errors.New("db: conflict")
 
-func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+// timeFormat is RFC 3339 with a fixed nine-digit fraction. Timestamps are
+// compared as strings in SQL (expiry, retention, cursors); time.RFC3339Nano
+// trims trailing zeros, which makes "…05.1Z" sort after "…05.15Z".
+const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
+func now() string { return time.Now().UTC().Format(timeFormat) }
 
 func parseTime(s sql.NullString) time.Time {
 	if !s.Valid || s.String == "" {

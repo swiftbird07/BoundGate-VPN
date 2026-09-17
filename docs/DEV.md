@@ -145,6 +145,13 @@ routing and the ACL should see real addresses; the lab uses `snat` because
 the whoami containers cannot hold routes. Overlapping home networks (several
 `192.168.178.0/24`) are not supported yet.
 
+## A node on the Mac host
+
+`make build-darwin`, then `deploy/macos/dev.sh run` (sudo) and
+`deploy/macos/e2e.sh`; details, the UDP bridge and the LaunchDaemon are in
+MACOS.md. `./setup-dev.sh approve mac` and `./setup-dev.sh login mac`
+treat that node like a compose service.
+
 ## Conventions
 
 * Package docs state whether a package is in the TCB (`docs/TCB.md`).

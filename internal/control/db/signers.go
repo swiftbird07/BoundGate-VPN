@@ -25,7 +25,9 @@ type Signer struct {
 
 // AuthorizedKey returns the key as an authorized_keys line with the name as
 // comment.
-func (s Signer) AuthorizedKey() string { return s.PublicKey + " " + strings.ReplaceAll(s.Name, " ", "_") }
+func (s Signer) AuthorizedKey() string {
+	return s.PublicKey + " " + strings.ReplaceAll(s.Name, " ", "_")
+}
 
 const signerCols = `id, subject, name, ssh_pubkey, key_type, hardware, fingerprint, created_at, revoked_at`
 
@@ -128,7 +130,7 @@ func (d *DB) CreateSignToken(ctx context.Context, nodeID string, spki devicekey.
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO sign_tokens (token_hash, node_id, spki_hash, admin, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			hash, nodeID, spki[:], admin, now(), expires.Format(time.RFC3339Nano))
+			hash, nodeID, spki[:], admin, now(), expires.Format(timeFormat))
 		return err
 	})
 	if err != nil {
@@ -175,7 +177,7 @@ func (d *DB) LookupSignToken(ctx context.Context, token string) (SignToken, erro
 
 // ExpireSignTokens deletes tokens that are expired or used for longer than a day.
 func (d *DB) ExpireSignTokens(ctx context.Context) (int64, error) {
-	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(timeFormat)
 	res, err := d.sql.ExecContext(ctx, `DELETE FROM sign_tokens WHERE expires_at < ? OR used_at < ?`, cutoff, cutoff)
 	if err != nil {
 		return 0, err

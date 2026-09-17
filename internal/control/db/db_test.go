@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/netip"
 	"path/filepath"
@@ -362,5 +363,20 @@ func TestPoliciesAndTunnels(t *testing.T) {
 	}
 	if n, _ := d.PruneTunnels(ctx, -time.Second); n != 1 {
 		t.Fatal("prune")
+	}
+}
+
+// Stored timestamps must sort as strings the way they sort as times.
+func TestTimeFormatSortsLexically(t *testing.T) {
+	base := time.Date(2026, 9, 17, 12, 0, 5, 0, time.UTC)
+	a, b := base.Add(100*time.Millisecond), base.Add(150*time.Millisecond)
+	if !(a.Format(timeFormat) < b.Format(timeFormat)) {
+		t.Fatalf("%s !< %s", a.Format(timeFormat), b.Format(timeFormat))
+	}
+	if a.Format(time.RFC3339Nano) < b.Format(time.RFC3339Nano) {
+		t.Fatal("RFC3339Nano sorts correctly now? revisit timeFormat")
+	}
+	if got := parseTime(sql.NullString{String: a.Format(timeFormat), Valid: true}); !got.Equal(a) {
+		t.Fatalf("round trip: %v", got)
 	}
 }

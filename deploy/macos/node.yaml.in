@@ -1,0 +1,21 @@
+# Lab configuration for a BoundGate node on the Mac host (M5). Generated into
+# deploy/macos/state/node.yaml by dev.sh with absolute paths; nothing is
+# installed outside the repository.
+name: @NAME@
+state_dir: @STATE@
+key_kind: softkey                  # Secure Enclave keys come later
+control:
+  addr: 127.0.0.1:18443            # the compose control plane, published on loopback (UDP for HTTP/3, TCP fallback)
+  server_name: nodes.control
+roles: [endpoint]                  # macOS nodes are endpoints
+hub_addrs:                         # the hubs advertise compose-internal names; dial loopback ports instead (@HUBNOTE@)
+  hub1: 127.0.0.1:@HUB1@
+  hub2: 127.0.0.1:@HUB2@
+auto_up: false
+profile: mac-lab
+profiles_dir: @REPO@/deploy/macos/profiles
+socket: @STATE@/node.sock
+tun_name: utun                     # next free utunN
+mtu: 1280
+log_dir: @STATE@/logs
+log_stdout: true

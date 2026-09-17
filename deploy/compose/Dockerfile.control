@@ -8,6 +8,7 @@ RUN apk add --no-cache ca-certificates curl openssh-keygen sqlite
 COPY bin/linux_${GOARCH}/boundgate-control /usr/local/bin/boundgate-control
 COPY bin/linux_${GOARCH}/boundgatectl /usr/local/bin/boundgatectl
 COPY bin/linux_${GOARCH}/boundgate-fakeidp /usr/local/bin/boundgate-fakeidp
+COPY bin/linux_${GOARCH}/boundgate-udpbridge /usr/local/bin/boundgate-udpbridge
 RUN mkdir -p /var/lib/boundgate /var/log/boundgate /etc/boundgate
 ENTRYPOINT []
 CMD ["boundgate-control"]

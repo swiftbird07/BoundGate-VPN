@@ -9,20 +9,20 @@ import (
 // Tunnel is a row of tunnels: one accepted tunnel between a hub and a peer,
 // as reported by the hub. Closed tunnels stay for the connection history.
 type Tunnel struct {
-	ID          string    `json:"id"`
-	HubID       string    `json:"hub_id"`
-	HubName     string    `json:"hub_name,omitempty"`
-	PeerID      string    `json:"peer_id"`
-	PeerName    string    `json:"peer_name,omitempty"`
-	PeerAddr    string    `json:"peer_addr,omitempty"`
-	OpenedAt    time.Time `json:"opened_at"`
+	ID          string     `json:"id"`
+	HubID       string     `json:"hub_id"`
+	HubName     string     `json:"hub_name,omitempty"`
+	PeerID      string     `json:"peer_id"`
+	PeerName    string     `json:"peer_name,omitempty"`
+	PeerAddr    string     `json:"peer_addr,omitempty"`
+	OpenedAt    time.Time  `json:"opened_at"`
 	ClosedAt    *time.Time `json:"closed_at,omitempty"`
-	CloseReason string    `json:"close_reason,omitempty"`
-	BytesIn     uint64    `json:"bytes_in"`
-	BytesOut    uint64    `json:"bytes_out"`
-	PacketsIn   uint64    `json:"packets_in"`
-	PacketsOut  uint64    `json:"packets_out"`
-	LastReport  time.Time `json:"last_report_at"`
+	CloseReason string     `json:"close_reason,omitempty"`
+	BytesIn     uint64     `json:"bytes_in"`
+	BytesOut    uint64     `json:"bytes_out"`
+	PacketsIn   uint64     `json:"packets_in"`
+	PacketsOut  uint64     `json:"packets_out"`
+	LastReport  time.Time  `json:"last_report_at"`
 }
 
 // TunnelReport is what a hub sends for one tunnel (open, update or close).
@@ -47,7 +47,7 @@ type TunnelReport struct {
 func (d *DB) UpsertTunnel(ctx context.Context, r TunnelReport) error {
 	var closed any
 	if !r.ClosedAt.IsZero() {
-		closed = r.ClosedAt.UTC().Format(time.RFC3339Nano)
+		closed = r.ClosedAt.UTC().Format(timeFormat)
 	}
 	_, err := d.sql.ExecContext(ctx, `INSERT INTO tunnels (id, hub_id, peer_id, peer_addr, opened_at, closed_at, close_reason, bytes_in, bytes_out, packets_in, packets_out, last_report_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -59,7 +59,7 @@ func (d *DB) UpsertTunnel(ctx context.Context, r TunnelReport) error {
 		  bytes_in = MAX(bytes_in, excluded.bytes_in), bytes_out = MAX(bytes_out, excluded.bytes_out),
 		  packets_in = MAX(packets_in, excluded.packets_in), packets_out = MAX(packets_out, excluded.packets_out),
 		  last_report_at = excluded.last_report_at`,
-		r.ID, r.HubID, r.PeerID, r.PeerAddr, r.OpenedAt.UTC().Format(time.RFC3339Nano), closed, r.CloseReason,
+		r.ID, r.HubID, r.PeerID, r.PeerAddr, r.OpenedAt.UTC().Format(timeFormat), closed, r.CloseReason,
 		r.BytesIn, r.BytesOut, r.PacketsIn, r.PacketsOut, now())
 	return err
 }
@@ -90,7 +90,7 @@ func (d *DB) ListTunnels(ctx context.Context, q TunnelQuery) ([]Tunnel, error) {
 	}
 	if !q.Since.IsZero() {
 		sqlq += ` AND (t.closed_at IS NULL OR t.closed_at >= ?)`
-		args = append(args, q.Since.UTC().Format(time.RFC3339Nano))
+		args = append(args, q.Since.UTC().Format(timeFormat))
 	}
 	sqlq += ` ORDER BY t.opened_at DESC LIMIT ?`
 	args = append(args, q.Limit)
@@ -134,7 +134,7 @@ func (d *DB) CloseHubTunnels(ctx context.Context, hubID, reason string) (int64, 
 // forever.
 func (d *DB) CloseStaleTunnels(ctx context.Context, maxSilence time.Duration) (int64, error) {
 	res, err := d.sql.ExecContext(ctx, `UPDATE tunnels SET closed_at = last_report_at, close_reason = 'hub stopped reporting' WHERE closed_at IS NULL AND last_report_at < ?`,
-		time.Now().UTC().Add(-maxSilence).Format(time.RFC3339Nano))
+		time.Now().UTC().Add(-maxSilence).Format(timeFormat))
 	if err != nil {
 		return 0, err
 	}
@@ -143,7 +143,7 @@ func (d *DB) CloseStaleTunnels(ctx context.Context, maxSilence time.Duration) (i
 
 // PruneTunnels deletes closed tunnels older than maxAge.
 func (d *DB) PruneTunnels(ctx context.Context, maxAge time.Duration) (int64, error) {
-	res, err := d.sql.ExecContext(ctx, `DELETE FROM tunnels WHERE closed_at IS NOT NULL AND closed_at < ?`, time.Now().UTC().Add(-maxAge).Format(time.RFC3339Nano))
+	res, err := d.sql.ExecContext(ctx, `DELETE FROM tunnels WHERE closed_at IS NOT NULL AND closed_at < ?`, time.Now().UTC().Add(-maxAge).Format(timeFormat))
 	if err != nil {
 		return 0, err
 	}

@@ -1,0 +1,8 @@
+name: mac-lab
+routing:
+  mode: include
+  networks:
+    - 10.60.0.0/24       # the lab network behind hub1 and hub2
+    # 192.168.178.0/24 (behind node-r) is deliberately left out: it is the
+    # default LAN of a Fritz!Box, and routing it into the lab would cut the
+    # Mac off from a real home network with that prefix.

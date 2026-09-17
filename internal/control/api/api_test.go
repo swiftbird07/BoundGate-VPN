@@ -655,15 +655,26 @@ func TestUserLoginFlow(t *testing.T) {
 	// after the sweep, from the database
 	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/login/start", "{}")
 	_ = json.Unmarshal(b, &ls)
-	e.browser(t, ls.URL)
+	if code, body := e.browser(t, ls.URL); code != http.StatusOK {
+		t.Fatalf("second login: %d %s (start: %s)", code, body, b)
+	}
 	_, snap = e.snapshot(laptop, 0, "1s")
 	if _, ok := snap.SessionFor(snap.Self.ID, time.Now().Add(3*time.Second)); ok {
 		t.Fatal("expired session accepted")
 	}
-	time.Sleep(2100 * time.Millisecond)
+	// wait on the wall clock, not on a sleep: expiry compares wall-clock
+	// timestamps and a VM's clock may be slewed while we sleep
+	if ss, err := e.store.ActiveSessions(context.Background()); err == nil && len(ss) == 1 {
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(ss[0].ExpiresAt.Add(20*time.Millisecond)) && time.Now().Before(deadline); {
+			time.Sleep(50 * time.Millisecond)
+		}
+	} else {
+		time.Sleep(2100 * time.Millisecond)
+	}
 	n, _, err := e.store.ExpireSessions(context.Background())
 	if err != nil || n != 1 {
-		t.Fatalf("expire: %d %v", n, err)
+		e.adminCall("GET", "/api/v1/admin/sessions?all=1", "", http.StatusOK, &sessions)
+		t.Fatalf("expire: %d %v at %s: %+v", n, err, time.Now().UTC().Format(time.RFC3339Nano), sessions)
 	}
 	e.adminCall("GET", "/api/v1/admin/sessions?all=1", "", http.StatusOK, &sessions)
 	if sessions[0].EndReason != "expired" {

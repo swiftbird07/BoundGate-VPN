@@ -35,12 +35,12 @@ import (
 
 // Admin identity as established by the auth middleware.
 type Admin struct {
-	Subject   string // "bootstrap", "token:<name>" or the OIDC subject
-	Email     string
-	Name      string
-	Level     db.AdminLevel
-	Via       string // bootstrap | token | session
-	SessionID string
+	Subject   string        `json:"subject"` // "bootstrap", "token:<name>" or the OIDC subject
+	Email     string        `json:"email,omitempty"`
+	Name      string        `json:"name,omitempty"`
+	Level     db.AdminLevel `json:"level"`
+	Via       string        `json:"via"` // bootstrap | token | session
+	SessionID string        `json:"-"`
 }
 
 // AdminConfig configures browser logins.
