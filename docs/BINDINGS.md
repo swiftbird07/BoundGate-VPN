@@ -11,7 +11,9 @@ A **binding** is the statement an administrator signs for every node:
 
 It says: *this node id and this device key are of this kind (interactive:
 a person must log in; workload: the key alone suffices), hold these roles,
-may announce these prefixes, and own this overlay address*. Every node verifies the
+may announce these prefixes, and own this overlay address*. A binding for a
+node whose key an admin accepted as living in a TPM ends with
+`,"hardware_bound":true}` (TPM.md). Every node verifies the
 bindings of its peers and of itself against the admin keys it pinned at
 its own enrollment. The control plane distributes bindings but cannot
 create or change one. A compromised control plane can therefore still
@@ -48,9 +50,15 @@ what it parsed and refuses anything that does not reproduce the bytes
 `binding.(Binding).Canonical` in `internal/binding` are the only
 implementations.
 
+`hardware_bound` is the last field and is **left out when false**. Bindings
+signed before the field existed therefore stay valid and mean what they
+meant: not hardware-bound. An explicit `"hardware_bound":false` is not
+canonical and is refused.
+
 Not signed: the name, the public address of a hub, platform, key kind and
-`hardware_bound`. A wrong public address only fails the pinned handshake;
-the others are claims shown to admins.
+what the node itself reported about its key (`hardware_claimed`). A wrong
+public address only fails the pinned handshake; the others are claims
+shown to admins.
 
 `key_version` counts re-keys of the same node id (always 1 for now); a
 future key rotation will sign a new binding with `key_version + 1`.

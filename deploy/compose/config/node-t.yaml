@@ -1,0 +1,19 @@
+name: node-t
+state_dir: /var/lib/boundgate
+key_kind: tpm2
+tpm_device: unix:/run/swtpm/tpm.sock   # a machine with a TPM chip or a vTPM: leave out (/dev/tpmrm0)
+control:
+  addr: control:443
+  server_name: nodes.control
+  # pin: <hex spki>              # optional; default: pinned on first use into state_dir/control.pin
+roles: [endpoint]                  # requested; an admin grants roles at approval
+public_addr: ""
+listen: ":443"               # hub tunnel listener (UDP)
+auto_up: false
+profile: lab
+profiles_dir: /etc/boundgate/profiles
+socket: /run/boundgate/node.sock
+tun_name: bg0
+mtu: 1280
+log_dir: /var/log/boundgate
+log_stdout: true

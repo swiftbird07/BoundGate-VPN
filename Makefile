@@ -76,7 +76,7 @@ cooldown:
 	box gocooldown check
 
 compose-up: build-linux
-	mkdir -p $(foreach s,control hub1 hub2 node-a node-r,deploy/compose/state/$(s) deploy/compose/logs/$(s))
+	mkdir -p $(foreach s,control hub1 hub2 node-a node-r node-t,deploy/compose/state/$(s) deploy/compose/logs/$(s))
 	GOARCH=$(GOARCH) $(COMPOSE) up -d --build
 
 compose-down:

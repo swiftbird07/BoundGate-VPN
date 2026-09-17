@@ -25,8 +25,8 @@ const nodes: T.Node[] = [
   node(3, 'node-r', 'approved', ['subnet-router'], { prefixes: [{ prefix: '192.168.178.0/24', mode: 'snat' }], active_tunnels: 2 }),
   node(4, 'node-a', 'approved', ['endpoint'], { kind: 'interactive', active_tunnels: 2 }),
   node(5, 'martins-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', active_tunnels: 2 }),
-  node(6, 'build-runner-07', 'confirmed', ['endpoint'], { key_kind: 'tpm2', hardware_bound: true, requested_at: ago(5400), confirmed_at: ago(1800) }),
-  node(7, 'lenas-thinkpad', 'pending', ['endpoint'], { kind: 'interactive', platform: 'linux/amd64', key_kind: 'tpm2', hardware_bound: true, requested_at: ago(420) }),
+  node(6, 'build-runner-07', 'confirmed', ['endpoint'], { key_kind: 'tpm2', hardware_bound: true, hardware_claimed: true, requested_at: ago(5400), confirmed_at: ago(1800) }),
+  node(7, 'lenas-thinkpad', 'pending', ['endpoint'], { kind: 'interactive', platform: 'linux/amd64', key_kind: 'tpm2', hardware_bound: false, hardware_claimed: true, requested_at: ago(420) }),
   node(8, 'old-laptop', 'revoked', ['endpoint'], { kind: 'interactive', revoked_at: ago(86400 * 9), revoked_by: 'martin', overlay_ip: '10.21.0.31' }),
 ];
 nodes[5].sign_command = `boundgatectl admin sign --control https://control.example.net --node ${nodes[5].id} --fingerprint ${nodes[5].fingerprint} --token st_4be1c0a97d`;

@@ -16,7 +16,7 @@
   let selected = $state<Node | null>(null);
   let signCmd = $state<{ cmd: string; expires: string } | null>(null);
   let confirm = $state<{ node: Node; edit: boolean } | null>(null);
-  let g = $state<Required<Pick<Grant, 'name' | 'kind' | 'roles' | 'prefixes' | 'overlay_ip' | 'public_addr'>> & { checked: boolean }>({ name: '', kind: 'interactive', roles: [], prefixes: [], overlay_ip: '', public_addr: '', checked: false });
+  let g = $state<Required<Pick<Grant, 'name' | 'kind' | 'roles' | 'prefixes' | 'overlay_ip' | 'public_addr'>> & { checked: boolean; hardware: boolean }>({ name: '', kind: 'interactive', roles: [], prefixes: [], overlay_ip: '', public_addr: '', checked: false, hardware: false });
   let busy = $state(false);
   const allRoles: Role[] = ['endpoint', 'subnet-router', 'hub', 'exit-node'];
 
@@ -36,7 +36,7 @@
   function openConfirm(n: Node, edit: boolean) {
     const roles = n.roles.length ? n.roles : n.requested_roles;
     const prefixes = n.prefixes.length ? n.prefixes : n.requested_prefixes;
-    g = { name: n.name, kind: n.kind || 'interactive', roles: [...roles], prefixes: prefixes.map((p) => ({ ...p })), overlay_ip: n.overlay_ip || '', public_addr: n.public_addr || '', checked: edit };
+    g = { name: n.name, kind: n.kind || 'interactive', roles: [...roles], prefixes: prefixes.map((p) => ({ ...p })), overlay_ip: n.overlay_ip || '', public_addr: n.public_addr || '', checked: edit, hardware: n.status === 'pending' ? !!n.hardware_claimed : n.hardware_bound };
     confirm = { node: n, edit };
   }
   function toggleRole(r: Role) { g.roles = g.roles.includes(r) ? g.roles.filter((x) => x !== r) : [...g.roles, r]; }
@@ -44,7 +44,7 @@
     if (!confirm) return;
     busy = true;
     try {
-      const body: Grant = { fingerprint: confirm.node.fingerprint, name: g.name, kind: g.kind, roles: g.roles, prefixes: g.prefixes.filter((p) => p.prefix.trim()), overlay_ip: g.overlay_ip || undefined, public_addr: g.public_addr || undefined };
+      const body: Grant = { fingerprint: confirm.node.fingerprint, name: g.name, kind: g.kind, roles: g.roles, prefixes: g.prefixes.filter((p) => p.prefix.trim()), overlay_ip: g.overlay_ip || undefined, public_addr: g.public_addr || undefined, hardware_bound: confirm.node.hardware_claimed ? g.hardware : undefined };
       const r = confirm.edit ? await admin.patchNode(confirm.node.id, body) : await admin.confirm(confirm.node.id, body);
       confirm = null;
       await load();
@@ -81,7 +81,7 @@
     <tbody>
       {#each shown as n (n.id)}
         <tr class="clickable" class:selected={selected?.id === n.id} onclick={() => select(n)}>
-          <td><b>{n.name}</b><div class="faint small">{n.hostname} · {n.platform} · {n.key_kind}{n.hardware_bound ? ' · hardware-bound' : ''}</div></td>
+          <td><b>{n.name}</b><div class="faint small">{n.hostname} · {n.platform} · {n.key_kind}{n.hardware_bound ? ' · hardware-bound' : n.hardware_claimed ? ' · reports a hardware key' : ''}</div></td>
           <td><Badge status={n.status} />{#if n.status === 'confirmed'}<div class="faint small">awaiting signature</div>{/if}</td>
           <td>{n.kind}</td>
           <td>{#each (n.roles.length ? n.roles : n.requested_roles) as r}<span class="chip">{r}</span> {/each}</td>
@@ -130,7 +130,7 @@
       <dl class="kv">
         <dt>Node id</dt><dd class="mono">{n.id}</dd>
         <dt>Host</dt><dd>{n.hostname} · {n.platform}</dd>
-        <dt>Key</dt><dd>{n.key_kind} v{n.key_version}{n.hardware_bound ? ' (hardware-bound)' : ''}</dd>
+        <dt>Key</dt><dd>{n.key_kind} v{n.key_version}{n.hardware_bound ? ' (hardware-bound, signed)' : n.hardware_claimed ? ' (reports a hardware key; not granted)' : ' (software key)'}</dd>
         <dt>SPKI</dt><dd class="mono small">{n.spki}</dd>
         <dt>Requested</dt><dd>{n.requested_roles.join(', ') || '–'} {#if n.requested_prefixes.length}· {n.requested_prefixes.map((p) => p.prefix).join(', ')}{/if} <span class="faint">from {n.request_ip} <Time at={n.requested_at} /></span></dd>
         <dt>Granted</dt><dd>{n.roles.join(', ') || '–'} {#if n.prefixes.length}· {n.prefixes.map((p) => `${p.prefix} (${p.mode})`).join(', ')}{/if}</dd>
@@ -154,12 +154,16 @@
         <div class="cmd"><pre>{confirm.node.fingerprint}</pre></div>
         <label class="check"><input type="checkbox" bind:checked={g.checked} /> I compared this fingerprint with the one the device shows</label>
       {:else}
-        <p class="hint">Changing a signed field (kind, roles, prefixes, overlay IP) demotes an approved node to <i>confirmed</i> until an admin signs the new binding.</p>
+        <p class="hint">Changing a signed field (kind, roles, prefixes, overlay IP, hardware-bound) demotes an approved node to <i>confirmed</i> until an admin signs the new binding.</p>
       {/if}
       <div class="grid cols-2">
         <label class="field">Name <input bind:value={g.name} /></label>
         <label class="field">Kind <select bind:value={g.kind}><option value="interactive">interactive (a user logs in)</option><option value="workload">workload (no user session)</option></select></label>
       </div>
+      {#if confirm.node.hardware_claimed}
+        <label class="check"><input type="checkbox" bind:checked={g.hardware} /> Hardware-bound: this machine keeps its key in a TPM ({confirm.node.key_kind})</label>
+        <p class="hint">The node says so; nothing proves it remotely. Tick it if you know the machine. It becomes part of the signed binding, and policies can require it (<code>principal.hardware_bound</code>).</p>
+      {/if}
       <div class="field"><span>Roles</span><div class="row">{#each allRoles as r}<label class="check"><input type="checkbox" checked={g.roles.includes(r)} onchange={() => toggleRole(r)} /> {r}</label>{/each}</div></div>
       <div class="grid cols-2">
         <label class="field">Overlay IP <input placeholder="next free address" bind:value={g.overlay_ip} /></label>

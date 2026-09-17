@@ -67,11 +67,14 @@ updated_at/by`.
   "roles": ["endpoint", "subnet-router"],
   "prefixes": [{"prefix": "192.168.178.0/24", "mode": "snat"}],   // routed | snat
   "overlay_ip": "10.21.0.7",            // optional, else the next free address
-  "public_addr": "hub1.example:443"     // hubs: what spokes dial (unsigned)
+  "public_addr": "hub1.example:443",    // hubs: what spokes dial (unsigned)
+  "hardware_bound": true                // optional. Omitted: what the node reported (confirm), unchanged (patch).
+                                        // false declines a reported hardware key; true without such a report is 409. Signed.
 }
 ```
 
-`NodeView`: `id, name, hostname, platform, key_kind, hardware_bound, spki,
+`NodeView`: `id, name, hostname, platform, key_kind, hardware_bound` (granted
+and signed)`, hardware_claimed` (reported by the node)`, spki,
 fingerprint, status, kind, requested_roles, requested_prefixes, roles, prefixes,
 overlay_ip, public_addr, key_version, signed, signed_by, signed_at,
 requested_at, request_ip, confirmed_at, confirmed_by, approved_at,

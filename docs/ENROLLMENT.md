@@ -70,8 +70,12 @@ boundgatectl up               (hubs accept it, spokes dial it if it is a hub)
    person, a video call, a signed message.
 2. Compare it with the fingerprint in the pending list. All 64 hex digits.
 3. Check that the claimed platform and key kind make sense for the device
-   in front of you. `hardware_bound: false` means a software key: approve it
-   only for development or if policy allows it.
+   in front of you. A software key (`softkey`) can be copied by whoever reads
+   the node's state directory: approve it only for development or if policy
+   allows it. A node that "reports a hardware key" (`tpm2`) gets
+   `hardware_bound` with your confirmation unless you untick it; the report
+   is not proven remotely, so grant it for machines you know, and think
+   twice for VMs on a hypervisor others administer (TPM.md).
 4. Decide the grant. Kind: `interactive` for a laptop or desktop someone
    logs in on, `workload` for machines nobody sits at (they never need a
    user session; grant it only to machines you operate). Roles: an

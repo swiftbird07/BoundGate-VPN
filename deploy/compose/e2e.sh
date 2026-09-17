@@ -36,11 +36,12 @@ if wait_for 15 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundg
 fi
 x node-a boundgatectl logout >/dev/null 2>&1 || true
 x node-a boundgatectl down >/dev/null 2>&1 || true
+x node-t boundgatectl down >/dev/null 2>&1 || true
 for sid in $($S api GET /api/v1/admin/sessions | jq -r '.[].id'); do $S api DELETE "/api/v1/admin/sessions/$sid" >/dev/null || true; done
 # an aborted run may have left test policies behind
 for p in $($S api GET /api/v1/admin/policies | jq -r '.[] | select(.name != "lab-allow-all") | .name'); do policy_rm "$p"; done
 
-echo "== 1. bootstrap: admin signing key, network, enroll + confirm + sign hub1, hub2, node-r, node-a"
+echo "== 1. bootstrap: admin signing key, network, enroll + confirm + sign hub1, hub2, node-r, node-a, node-t"
 $S all
 x node-a boundgatectl -json identity | jq -e '.control_pin != "" and (.admin_keys | length) == 1' >/dev/null || fail "node-a has no control pin / admin keys"
 
@@ -240,4 +241,29 @@ curl -sf --cacert $CA -b "$JAR" "$ADMIN/api/v1/admin/auth/status" | jq -e '.leve
 rm -f "$JAR"
 $S api GET '/api/v1/admin/logs?stream=admin-auth' | jq -e '[.[].message] | index("admin login (oidc)") != null and index("admin logout") != null and index("api token created") != null and index("api token revoked") != null' >/dev/null || fail "admin-auth audit incomplete"
 
-echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 end-to-end"
+echo "== 13. TPM: node-t keeps its key in a (software) TPM; hardware_bound is granted, signed and usable in policies"
+x node-t boundgatectl -json identity | jq -e '.key_kind == "tpm2" and .hardware_bound == true' >/dev/null || fail "node-t does not use a TPM key"
+[ -s state/node-t/device.tpm ] && [ ! -e state/node-t/device.key ] || fail "node-t: expected a wrapped TPM blob and no software key"
+$S api GET /api/v1/admin/nodes | jq -e '[.[] | select(.status == "approved")] | (map(select(.hardware_bound)) | map(.name)) == ["node-t"] and (map(select(.hardware_claimed)) | length) == 1' >/dev/null || fail "hardware_bound granted to the wrong set of nodes"
+$S api GET "/api/v1/admin/snapshot?node=$($S api GET /api/v1/admin/nodes | jq -r '.[] | select(.name == "hub1" and .status == "approved") | .id')" | jq -e '.peers[] | select(.name == "node-t") | .hardware_bound == true and (.binding | contains("\"hardware_bound\":true"))' >/dev/null || fail "hub1's snapshot does not carry the signed hardware_bound"
+x node-t boundgatectl up >/dev/null
+reach_t() { x node-t curl -sf --max-time 3 http://10.60.0.10 | grep -q '^Name: target'; }
+reach_r() { x node-r curl -sf --max-time 3 http://10.60.0.10 | grep -q '^Name: target'; }
+wait_for 20 reach_t || fail "node-t cannot reach the target (TLS client auth with the TPM key)"
+wait_for 10 reach_r || fail "node-r cannot reach the target before the policy change"
+policy lab-allow-all 'permit(principal, action, resource) when { principal.hardware_bound };'
+wait_for 15 sh -c '! docker compose -f docker-compose.yml exec -T node-r curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "software-key node still admitted by a hardware_bound policy"
+reach_t || fail "hardware-bound node refused by a hardware_bound policy"
+$S eval node-t 10.60.0.10 80 | jq -e '.allow == true' >/dev/null || fail "dry run disagrees (node-t)"
+$S eval node-r 10.60.0.10 80 | jq -e '.allow == false' >/dev/null || fail "dry run disagrees (node-r)"
+# a control plane that declares a software-key node hardware-bound: the signature no longer covers the record
+sql "UPDATE nodes SET hardware_bound = 1 WHERE name = 'node-r' AND status = 'approved'; UPDATE snapshot_version SET version = version + 1;"
+wait_for 45 status_is hub1 '.ignored_peers | length == 1 and (.[0] | test("node-r"))' || fail "hub1 accepted a forged hardware_bound"
+wait_for 45 status_is node-r '.binding == "invalid"' || fail "node-r accepted a forged hardware_bound for itself"
+sql "UPDATE nodes SET hardware_bound = 0 WHERE name = 'node-r' AND status = 'approved'; UPDATE snapshot_version SET version = version + 1;"
+wait_for 60 status_is node-r '.binding == "verified" and .state == "up"' || fail "node-r did not recover"
+policy lab-allow-all 'permit(principal, action, resource);'
+wait_for 20 reach_r || fail "node-r cannot reach the target after restoring allow-all"
+x node-t boundgatectl down >/dev/null
+
+echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 + M6 end-to-end"

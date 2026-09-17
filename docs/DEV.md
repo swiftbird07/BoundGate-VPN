@@ -12,6 +12,7 @@ box go version          # Go 1.26.x inside the box image
 box gocooldown check    # every module in go.mod is >= 14 days old
 make test               # vet + unit tests
 make test-race          # with the race detector (gcc lives in the box only for this)
+make test-tpm           # TPM device keys against a throwaway swtpm container (docs/TPM.md)
 make fuzz               # netparse fuzzing, 30 s
 ```
 
@@ -56,7 +57,7 @@ itself (while it is alive) to look around without registering a passkey.
 
 ```bash
 make compose-up         # builds Linux binaries in the box, builds images, starts everything
-make setup-dev          # dev admin key, overlay pool, enroll + confirm + sign hub1, hub2, node-r, node-a
+make setup-dev          # dev admin key, overlay pool, enroll + confirm + sign hub1, hub2, node-r, node-a, node-t
 make e2e                # M1.5 + M1.6 + M2: up, login required, login, reachability, HA failover, session
                         # revocation, logout, node revocation, re-enrollment, confirm/sign, token reuse,
                         # grant change, DB tampering, control-plane key change
@@ -97,6 +98,7 @@ Lab topology:
 | hub1 | workload: hub, subnet-router (10.60.0.0/24 snat) | 172.30.0.10 | 10.60.0.2 | | 10.21.0.1 |
 | hub2 | workload: hub, subnet-router (10.60.0.0/24 snat) | 172.30.0.11 | 10.60.0.3 | | 10.21.0.2 |
 | node-r | workload: endpoint, subnet-router (192.168.178.0/24 snat) | 172.30.0.30 | | 192.168.178.30 | 10.21.0.3 |
+| node-t | workload: endpoint with a TPM key (`swtpm` sidecar, TPM.md), `hardware_bound` | 172.30.0.40 | | | 10.21.0.6 |
 | node-a | interactive: endpoint, profile `lab` (needs a login) | 172.30.0.20 | | | 10.21.0.4 |
 | target | whoami | | 10.60.0.10 | | |
 | target-lan | whoami | | | 192.168.178.10 | |

@@ -125,6 +125,7 @@ grant_for() {
     hub2)   echo '"kind":"workload","roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"snat"}],"public_addr":"hub2:443"' ;;
     node-r) echo '"kind":"workload","roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}]' ;;
     node-a|mac) echo '"kind":"interactive","roles":["endpoint"]' ;;
+    node-t) echo '"kind":"workload","roles":["endpoint"]' ;;   # TPM key: hardware_bound follows the node's claim
     *) echo "unknown service $1" >&2; exit 2 ;;
   esac
 }
@@ -193,7 +194,7 @@ revoke_node() {
 }
 
 case "${1:-all}" in
-  all)     ensure_signer; set_network; default_policies; for s in hub1 hub2 node-r node-a; do confirm_node "$s" sign; done ;;
+  all)     ensure_signer; set_network; default_policies; for s in hub1 hub2 node-r node-a node-t; do confirm_node "$s" sign; done ;;
   policy)  shift; set_policy "$@" ;;
   policy-rm) rm_policy "$2" ;;
   policies) api GET /api/v1/admin/policies | jq -r '.[] | "\(.name)\t\(if .enabled then "enabled" else "disabled" end)\tscope=\(.scope | length)\t\(.cedar | gsub("\n"; " "))"' ;;
