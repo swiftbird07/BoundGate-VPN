@@ -360,3 +360,4 @@ Dream VPN Architektur.html
 !/web/src/lib/
 /web/node_modules/
 /deploy/macos/state/
+/deploy/macos/backups/

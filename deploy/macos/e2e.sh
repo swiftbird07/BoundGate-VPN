@@ -16,12 +16,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 wait_for() { n=$1; shift; while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && return 0; n=$((n-1)); sleep 1; done; return 1; }
 st() { $D ctl -json status | jq -e "$1" >/dev/null; }
 
-echo "== 0. sudo, a clean routing table snapshot, the daemon"
+echo "== 0. sudo, a backup of the Mac's network state, the daemon"
 sudo -v
-BEFORE=$(netstat -rn -f inet | grep -v '^Internet\|^Routing\|^Destination' | awk '{print $1, $2, $NF}' | sort)
+./netbackup.sh backup
+echo "   (if anything looks wrong afterwards: deploy/macos/netbackup.sh diff, then restore -y)"
+BEFORE=$(./netbackup.sh routes)
 $D run > /tmp/boundgate-mac-node.log 2>&1 &
 DAEMON=$!
-trap '$D ctl down >/dev/null 2>&1 || true; sudo pkill -f "darwin_.*/boundgate-node" 2>/dev/null || true; kill $DAEMON 2>/dev/null || true' EXIT
+trap '$D ctl down >/dev/null 2>&1 || true; $D ctl logout >/dev/null 2>&1 || true; sudo pkill -f "darwin_.*/boundgate-node" 2>/dev/null || true; kill $DAEMON 2>/dev/null || true' EXIT
 wait_for 15 $D ctl -json status || fail "daemon not reachable (see /tmp/boundgate-mac-node.log)"
 
 echo "== 1. the hubs answer over UDP through the bridge"
@@ -32,7 +34,8 @@ $S approve mac
 wait_for 20 st '.enrollment == "approved" and .binding == "verified"' || fail "not approved"
 
 echo "== 3. up: tunnel device and routes, but the hubs want a user login"
-$D ctl up >/dev/null
+$D ctl logout >/dev/null 2>&1 || true   # an aborted earlier run leaves its user session in the control plane
+$D ctl up >/dev/null || fail "up refused (an 'overlaps' message means another VPN on this Mac uses the lab's overlay range: disconnect it for the test, see docs/MACOS.md)"
 wait_for 20 st '.login_required == true' || fail "hubs did not ask for a login"
 if curl -sf --max-time 3 http://10.60.0.10 >/dev/null; then fail "target reachable without login"; fi
 
@@ -40,18 +43,22 @@ echo "== 4. login at the (fake) IdP, hubs admit the node"
 $S login mac >/dev/null
 wait_for 20 st '[.hubs[] | select(.state == "connected")] | length >= 1' || fail "no hub connected after login"
 ifconfig | grep -q 'inet 10\.21\.' || fail "no overlay address on a utun device"
-netstat -rn -f inet | grep -q '^10\.60\.0.*utun' || fail "no route for the lab network through utun"
+# netstat abbreviates (10.60/24); netbackup.sh prints full prefixes
+./netbackup.sh routes | grep -q '^inet 10\.60\.0\.0/24 .* utun[0-9]*$' || fail "no route for the lab network through utun"
+st '.profile == "mac-lab"' || fail "the configured profile was not applied"
+if ./netbackup.sh routes | grep -q '^inet 192\.168\.178\.0/24 .* utun'; then fail "the home LAN prefix was routed into the overlay"; fi
 
 echo "== 5. reach the target behind the hubs; the flow is decided and logged by a hub"
 wait_for 10 sh -c 'curl -sf --max-time 3 http://10.60.0.10 | grep -q "^Name: target"' || fail "target unreachable through the overlay"
-NAME=$($D ctl -json status | jq -r .node_name)
-wait_for 20 sh -c "$S flows 'dst=10.60.0.10&decision=allow' | grep -q '$NAME'" || fail "no flow record for the Mac node"
+# by overlay address: the name in the control plane is the admin's choice, not the local host name
+OIP=$($D ctl -json status | jq -r .overlay_ip)
+wait_for 20 sh -c "$S flows 'dst=10.60.0.10&decision=allow' | grep -qF '	$OIP:'" || fail "no flow record for the Mac node ($OIP)"
 
 echo "== 6. down: device, routes and journal are gone; the routing table is what it was"
 $D ctl down >/dev/null
 wait_for 10 st '.state == "down"' || fail "not down"
-AFTER=$(netstat -rn -f inet | grep -v '^Internet\|^Routing\|^Destination' | awk '{print $1, $2, $NF}' | sort)
-[ "$BEFORE" = "$AFTER" ] || { echo "$BEFORE" > /tmp/bg-routes.before; echo "$AFTER" > /tmp/bg-routes.after; fail "routing table differs (diff /tmp/bg-routes.before /tmp/bg-routes.after)"; }
+AFTER=$(./netbackup.sh routes)
+[ "$BEFORE" = "$AFTER" ] || { echo "$BEFORE" > /tmp/bg-routes.before; echo "$AFTER" > /tmp/bg-routes.after; fail "routing table differs (diff /tmp/bg-routes.before /tmp/bg-routes.after; repair: deploy/macos/netbackup.sh restore -y)"; }
 [ ! -e state/netstate.json ] || fail "journal not empty after down"
 
 echo "== 7. a killed daemon leaves no routes behind after the next start"
@@ -61,7 +68,7 @@ $D run >> /tmp/boundgate-mac-node.log 2>&1 &
 DAEMON=$!
 wait_for 15 $D ctl -json status || fail "daemon did not restart"
 grep -q "removed network leftovers" state/logs/system.jsonl /tmp/boundgate-mac-node.log 2>/dev/null || echo "   (nothing to recover: loopback hubs need no bypass routes)"
-AFTER=$(netstat -rn -f inet | grep -v '^Internet\|^Routing\|^Destination' | awk '{print $1, $2, $NF}' | sort)
-[ "$BEFORE" = "$AFTER" ] || fail "routes left behind after a crash"
+AFTER=$(./netbackup.sh routes)
+[ "$BEFORE" = "$AFTER" ] || fail "routes left behind after a crash (repair: deploy/macos/netbackup.sh restore -y)"
 
 echo "PASS: M5 macOS node"

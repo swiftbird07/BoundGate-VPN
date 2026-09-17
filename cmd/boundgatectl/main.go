@@ -249,6 +249,9 @@ func printStatus(s node.Status, asJSON bool) error {
 		if len(s.Routes) > 0 {
 			fmt.Printf("routes:       %s\n", strings.Join(s.Routes, ", "))
 		}
+		if len(s.SkippedRoutes) > 0 {
+			fmt.Printf("not routed:   %s\n", strings.Join(s.SkippedRoutes, "; "))
+		}
 		if s.Tunnels > 0 {
 			fmt.Printf("tunnels:      %d\n", s.Tunnels)
 		}

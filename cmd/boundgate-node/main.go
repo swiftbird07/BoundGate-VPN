@@ -31,19 +31,20 @@ type config struct {
 		// empty = trust on first use (stored in state_dir/control.pin).
 		Pin string `yaml:"pin"`
 	} `yaml:"control"`
-	Roles       []string          `yaml:"roles"`
-	Prefixes    []registry.Prefix `yaml:"prefixes"`
-	PublicAddr  string            `yaml:"public_addr"`
-	Listen      string            `yaml:"listen"`
-	AutoUp      bool              `yaml:"auto_up"`
-	Profile     string            `yaml:"profile"`
-	ProfilesDir string            `yaml:"profiles_dir"`
-	Socket      string            `yaml:"socket"`
-	TUNName     string            `yaml:"tun_name"`
-	HubAddrs    map[string]string `yaml:"hub_addrs"` // dial override per hub name or public_addr
-	MTU         int               `yaml:"mtu"`
-	LogDir      string            `yaml:"log_dir"`
-	LogStdout   bool              `yaml:"log_stdout"`
+	Roles        []string          `yaml:"roles"`
+	Prefixes     []registry.Prefix `yaml:"prefixes"`
+	PublicAddr   string            `yaml:"public_addr"`
+	Listen       string            `yaml:"listen"`
+	AutoUp       bool              `yaml:"auto_up"`
+	Profile      string            `yaml:"profile"`
+	ProfilesDir  string            `yaml:"profiles_dir"`
+	Socket       string            `yaml:"socket"`
+	TUNName      string            `yaml:"tun_name"`
+	HubAddrs     map[string]string `yaml:"hub_addrs"`     // dial override per hub name or public_addr
+	AllowOverlap bool              `yaml:"allow_overlap"` // route networks this machine already lives in (overlap guard off)
+	MTU          int               `yaml:"mtu"`
+	LogDir       string            `yaml:"log_dir"`
+	LogStdout    bool              `yaml:"log_stdout"`
 }
 
 func main() {
@@ -96,6 +97,7 @@ func run(cfgPath string) error {
 		ProfilesDir:       cfg.ProfilesDir,
 		TUNName:           cfg.TUNName,
 		HubAddrs:          cfg.HubAddrs,
+		AllowOverlap:      cfg.AllowOverlap,
 		MTU:               cfg.MTU,
 		Log:               logs.System,
 		FlowLog:           logs.Flow,

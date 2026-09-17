@@ -76,6 +76,9 @@ type Config struct {
 	// Mac host, split-horizon DNS, port forwards. The hub is still
 	// authenticated by its pinned key, whatever address answers.
 	HubAddrs map[string]string
+	// AllowOverlap disables the overlap guard: routes are installed even
+	// when this machine has an address inside them (see overlap.go).
+	AllowOverlap bool
 	Log         *slog.Logger
 	// FlowLog receives one record per flow open/deny/close (the "flow"
 	// stream); nil means the system log.
@@ -114,6 +117,9 @@ type Status struct {
 	Prefixes        []string        `json:"prefixes,omitempty"`
 	Hubs            []HubStatus     `json:"hubs,omitempty"`
 	Routes          []string        `json:"routes,omitempty"`
+	// SkippedRoutes are advertised networks the node refused to route
+	// because this machine already lives in them (overlap guard).
+	SkippedRoutes []string `json:"skipped_routes,omitempty"`
 	Tunnels         int             `json:"tunnels"` // accepted tunnels (hub role)
 	Since           time.Time       `json:"since,omitempty"`
 	LastError       string          `json:"last_error,omitempty"`
@@ -536,6 +542,7 @@ func (n *Node) publishStatus() {
 	if s.spoke != nil {
 		n.status.Hubs = s.spoke.hubs()
 		n.status.Routes = s.spoke.routes()
+		n.status.SkippedRoutes = s.spoke.skippedRoutes()
 		n.status.LoginRequired = s.spoke.loginRequired()
 	}
 	if s.srv != nil {
@@ -733,6 +740,9 @@ func (n *Node) Up(ctx context.Context, profileName string) error {
 		n.mu.Unlock()
 		return errors.New("node: no current registry snapshot; is the control plane reachable? try again in a moment")
 	}
+	if profileName == "" {
+		profileName = n.cfg.Profile // `up` without a profile means the configured one, not "full"
+	}
 	prof, err := n.loadProfile(profileName)
 	if err != nil {
 		n.mu.Unlock()
@@ -854,6 +864,11 @@ func (s *session) apply(ctx context.Context) error {
 	n := s.n
 	if err := s.addBypassHost(ctx, n.cfg.ControlAddr); err != nil {
 		return err
+	}
+	if !s.isHub && !n.cfg.AllowOverlap {
+		if l, bad := conflictWith(s.pool, localNets("")); bad && l.Prefix.Addr() != s.self.OverlayIP {
+			return fmt.Errorf("the overlay pool %s: another interface of this machine already uses that range (usually a second VPN); routing it would take over that traffic. Disconnect the other VPN, move the overlay pool, or set allow_overlap: true", describeConflict(s.pool, l))
+		}
 	}
 	dev, ifname, err := n.net.CreateTUN(n.cfg.TUNName, n.cfg.MTU)
 	if err != nil {

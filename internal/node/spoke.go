@@ -31,6 +31,7 @@ type spokeManager struct {
 	order     []transport.DeviceID
 	primary   *hubLink
 	installed map[netip.Prefix]bool
+	skipped   map[netip.Prefix]string // overlap guard: prefix -> why
 }
 
 // hubLink is the state of one hub connection.
@@ -357,14 +358,27 @@ func (m *spokeManager) applyRoutesLocked() {
 		}
 	}
 	want := make(map[netip.Prefix]bool)
+	skipped := make(map[netip.Prefix]string)
+	var locals []localNet
+	if !s.n.cfg.AllowOverlap {
+		locals = localNets(s.ifname)
+	}
 	for _, p := range s.profile.Effective(adv) {
 		if p == s.pool.Masked() {
 			continue // installed for the session's lifetime
+		}
+		if l, bad := conflictWith(p, locals); bad {
+			skipped[p] = describeConflict(p, l)
+			if _, known := m.skipped[p]; !known {
+				s.n.log.Warn("not routing an advertised network: this machine already lives in it", "prefix", p, "local", l.Prefix, "iface", l.Iface)
+			}
+			continue
 		}
 		for _, q := range splitDefault(p) {
 			want[q] = true
 		}
 	}
+	m.skipped = skipped
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for p := range m.installed {
@@ -393,6 +407,18 @@ func splitDefault(p netip.Prefix) []netip.Prefix {
 		return []netip.Prefix{netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1")}
 	}
 	return []netip.Prefix{p}
+}
+
+// skippedRoutes lists what the overlap guard refused, sorted.
+func (m *spokeManager) skippedRoutes() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.skipped))
+	for _, why := range m.skipped {
+		out = append(out, why)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // routes returns the installed routes, sorted.

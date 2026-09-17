@@ -5,6 +5,9 @@ stack and control channel as on Linux, with a macOS network backend. It is
 cross-compiled in the box (`make build-darwin`, no cgo) and is the one part
 of the prototype that deliberately runs on the Mac host.
 
+Accepted on 2026-09-17: `deploy/macos/e2e.sh` passes on macOS 26 (arm64)
+against the compose lab, including the `kill -9` recovery.
+
 ## What is different on macOS
 
 | Topic | macOS |
@@ -28,6 +31,58 @@ previous process died without cleaning up: it removes what is listed
 Routes through the tunnel device vanish with the device anyway; **bypass
 host routes do not**, and a stale one would pin a hub to the gateway of a
 network the Mac has left. The journal exists on Linux as well.
+
+## Overlap guard: a second VPN, an overlapping LAN
+
+Before the daemon touches anything it compares what it is about to route
+with the networks the machine already has (every interface except its own):
+
+* a prefix that is **contained in a local network**, or that **contains the
+  address of a point-to-point interface** (another VPN's `utun`), is a
+  conflict. `0.0.0.0/0` and the `/1` halves are exempt: a full-tunnel
+  profile is meant to cover everything;
+* if the **overlay pool** conflicts, `up` is refused before a tunnel device
+  exists: "the overlay pool 10.21.0.0/16 overlaps 10.21.0.9/32 on utun8 …".
+  Nothing was changed; disconnect the other VPN or move the pool;
+* a conflicting **announced prefix** is skipped, the rest comes up.
+  `boundgatectl status` lists it as `not routed: 192.168.178.0/24 (overlaps
+  192.168.178.0/24 on en0)`, JSON field `skipped_routes`;
+* `allow_overlap: true` in the node configuration turns the guard off for
+  people who know that the more specific route is what they want.
+
+The guard runs on Linux as well. It is a local safety net, not a security
+boundary: it keeps a node from silently hijacking the home LAN or another
+tunnel's address range (R25, R66).
+
+## Backup and repair of the Mac's network state
+
+A node changes exactly three things on a Mac: it creates one `utun` device,
+adds routes through it, and adds bypass host routes. It does **not** touch
+DNS, proxies, network services, the firewall or anything under
+`/Library/Preferences/SystemConfiguration`. All three kinds of change live
+in kernel memory only: the device and its routes disappear with the
+process, and a reboot clears everything.
+
+`deploy/macos/netbackup.sh` is there so that this claim can be checked
+rather than believed:
+
+```bash
+deploy/macos/netbackup.sh backup        # read-only snapshot, no sudo; deploy/macos/backups/<timestamp>/
+deploy/macos/netbackup.sh diff          # now against the latest backup: routes, interfaces, DNS, proxies, …
+deploy/macos/netbackup.sh restore       # dry run: prints what it would do
+deploy/macos/netbackup.sh restore -y    # stops the node, removes routes and host routes that were not
+                                        # there before, re-adds a missing default route (sudo)
+```
+
+The snapshot holds the routing table (raw, and normalised without the
+kernel's cloned and link-layer entries, which change by themselves),
+`ifconfig`, `scutil --dns/--proxy/--nwi`, the `networksetup` view of every
+service (addresses, DNS, proxies, order), forwarding sysctls, `/etc/hosts`,
+`/etc/resolver`, and copies of `preferences.plist` and
+`NetworkInterfaces.plist`. The backups are git-ignored: they describe your
+network. `e2e.sh` takes one at its start and compares the stable routes
+before and after. Last resorts, in this order: `restore -y`, Wi-Fi off and
+on (rebuilds the default route and DNS from DHCP), reboot.
 
 ## Hub address overrides
 
@@ -93,4 +148,4 @@ signature and notarization.
 
 ## Risks
 
-See SECURITY.md R61–R65.
+See SECURITY.md R61–R66.
