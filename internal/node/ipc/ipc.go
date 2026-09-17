@@ -13,8 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
@@ -36,22 +35,50 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// Options of the node socket.
+type Options struct {
+	// Group owns the socket next to root ("" = root's group).
+	Group string
+	// Reset, when set, makes the node forget its control plane (settings,
+	// pin, admin keys; not the device key). The node must be down. Serve
+	// returns ErrReset after answering.
+	Reset func() error
+}
+
+// ErrReset is returned by Serve after a successful reset.
+var ErrReset = errors.New("ipc: node was reset")
+
 // Serve runs the IPC server until ctx ends. The socket is created with mode
 // 0660 so only root and the socket's group can talk to the daemon.
-func Serve(ctx context.Context, socketPath string, n *node.Node) error {
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
-		return err
-	}
-	_ = os.Remove(socketPath)
-	ln, err := net.Listen("unix", socketPath)
+func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) error {
+	ln, err := listen(socketPath, opt.Group)
 	if err != nil {
-		return fmt.Errorf("ipc: listen %s: %w", socketPath, err)
-	}
-	if err := os.Chmod(socketPath, 0o660); err != nil {
-		ln.Close()
 		return err
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wasReset atomic.Bool
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/configure", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusConflict, ErrorResponse{"this node already has a control plane; `boundgatectl reset` forgets it"})
+	})
+	mux.HandleFunc("POST /v1/reset", func(w http.ResponseWriter, r *http.Request) {
+		if opt.Reset == nil {
+			writeJSON(w, http.StatusConflict, ErrorResponse{"the control plane of this node is set in its configuration file"})
+			return
+		}
+		if n.Status().State != node.StateDown {
+			writeJSON(w, http.StatusConflict, ErrorResponse{"disconnect first (boundgatectl down)"})
+			return
+		}
+		if err := opt.Reset(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{err.Error()})
+			return
+		}
+		wasReset.Store(true)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
+		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, n.Status())
 	})
@@ -140,19 +167,13 @@ func Serve(ctx context.Context, socketPath string, n *node.Node) error {
 		}
 		writeJSON(w, http.StatusOK, n.Status())
 	})
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-		_ = os.Remove(socketPath)
-	}()
-	err = srv.Serve(ln)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
+		return err
 	}
-	return err
+	if wasReset.Load() {
+		return ErrReset
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -267,6 +288,16 @@ func (c *Client) Logout() (node.Status, error) {
 	var s node.Status
 	err := c.do(http.MethodPost, "/v1/logout", nil, &s)
 	return s, err
+}
+
+// Configure tells a daemon in setup mode which control plane it belongs to.
+func (c *Client) Configure(s Settings) error {
+	return c.do(http.MethodPost, "/v1/configure", s, nil)
+}
+
+// Reset makes the daemon forget its control plane.
+func (c *Client) Reset() error {
+	return c.do(http.MethodPost, "/v1/reset", nil, nil)
 }
 
 // Down asks the daemon to tear the overlay down.

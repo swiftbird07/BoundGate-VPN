@@ -8,6 +8,9 @@ of the prototype that deliberately runs on the Mac host.
 Accepted on 2026-09-17: `deploy/macos/e2e.sh` passes on macOS 26 (arm64)
 against the compose lab, including the `kill -9` recovery.
 
+The app with a menu-bar UI on top of this daemon is described in
+MACOS-APP.md (M8).
+
 ## What is different on macOS
 
 | Topic | macOS |

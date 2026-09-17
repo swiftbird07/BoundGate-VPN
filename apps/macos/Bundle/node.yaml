@@ -1,0 +1,12 @@
+# Configuration of the daemon inside BoundGate.app. It is part of the signed
+# bundle and names no control plane: the user enters that in the app
+# (stored in state_dir/settings.json, see docs/MACOS-APP.md).
+state_dir: /var/db/boundgate
+socket: /var/run/boundgate/node.sock
+socket_group: admin            # members of "admin" may drive the daemon from the app without sudo
+log_dir: /var/log/boundgate
+profiles_dir: /Library/Application Support/BoundGate/profiles
+key_kind: softkey              # Secure Enclave key: M6.1
+roles: [endpoint]
+tun_name: utun
+mtu: 1280

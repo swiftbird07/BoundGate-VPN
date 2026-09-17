@@ -361,3 +361,4 @@ Dream VPN Architektur.html
 /web/node_modules/
 /deploy/macos/state/
 /deploy/macos/backups/
+/apps/macos/.build/

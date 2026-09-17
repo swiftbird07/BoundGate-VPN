@@ -2,6 +2,8 @@
 //
 //	boundgatectl status
 //	boundgatectl identity
+//	boundgatectl configure -control HOST[:PORT]   a node without a configured control plane (setup mode)
+//	boundgatectl reset                     forget the control plane (keeps the device key)
 //	boundgatectl enroll [-name NAME]
 //	boundgatectl profiles
 //	boundgatectl up [-profile NAME]
@@ -37,7 +39,7 @@ func main() {
 	socket := flag.String("socket", defSocket, "node daemon socket (or $BOUNDGATE_SOCKET)")
 	asJSON := flag.Bool("json", false, "print raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|enroll [-name NAME]|profiles|up [-profile NAME]|down|login [-timeout D]|logout|flows\n"+
+		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|up [-profile NAME]|down|login [-timeout D]|logout|flows\n"+
 			"       boundgatectl [-json] admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F|--agent-key S|--signature F|--out F]\n")
 		flag.PrintDefaults()
 	}
@@ -116,6 +118,25 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 		case "revoked":
 			fmt.Println("\nThis node key was revoked. Delete the node state to create a new key and enroll again.")
 		}
+		return nil
+	case "configure":
+		fs := flag.NewFlagSet("configure", flag.ContinueOnError)
+		control := fs.String("control", "", "control plane address, host[:port] (required)")
+		serverName := fs.String("server-name", "", "TLS name of its node channel (default: nodes.<host>)")
+		name := fs.String("name", "", "name of this node (default: host name)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if err := c.Configure(ipc.Settings{ControlAddr: *control, ControlServerName: *serverName, Name: *name}); err != nil {
+			return err
+		}
+		fmt.Println("configured. Next: `boundgatectl enroll`, and compare the control pin it shows with your administrator's.")
+		return nil
+	case "reset":
+		if err := c.Reset(); err != nil {
+			return err
+		}
+		fmt.Println("the node forgot its control plane (the device key is kept). Next: `boundgatectl configure -control HOST`.")
 		return nil
 	case "profiles":
 		names, err := c.Profiles()
@@ -230,6 +251,10 @@ func printStatus(s node.Status, asJSON bool) error {
 		return dump(s)
 	}
 	fmt.Printf("state:        %s\n", s.State)
+	if s.State == ipc.StateUnconfigured {
+		fmt.Println("no control plane yet: boundgatectl configure -control HOST[:PORT]")
+		return nil
+	}
 	if s.State != node.StateDown {
 		fmt.Printf("profile:      %s\noverlay ip:   %s\nroles:        %v\n", s.Profile, s.OverlayIP, s.Roles)
 		if len(s.Prefixes) > 0 {
