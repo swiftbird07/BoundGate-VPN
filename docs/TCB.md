@@ -48,7 +48,11 @@ the control plane's database, OIDC handling (`internal/control/oidc`: a bug
 creates a wrong user session for a node whose key is still real), Cedar
 policies and the ACL
 engine, logs, profile files, the `boundgatectl` CLI (`admin sign` produces
-a signature; a wrong one is simply refused), route installation (`netcfg`).
+a signature; a wrong one is simply refused), route installation (`netcfg`),
+`boundgate-mux` and `internal/mux` (no keys, no TLS termination: it chooses
+which server gets a packet, and the servers authenticate as if it were the
+network; what it adds is the client address it reports, which feeds logs
+and rate limits, never an identity decision).
 A compromise there can deny access or grant more network reach than
 intended (bounded by what hubs advertise and by the signed roles and
 prefixes), but cannot make an unapproved key pass the handshake or make a

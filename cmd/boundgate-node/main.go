@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
@@ -35,10 +36,14 @@ type config struct {
 		// empty = trust on first use (stored in state_dir/control.pin).
 		Pin string `yaml:"pin"`
 	} `yaml:"control"`
-	Roles        []string          `yaml:"roles"`
-	Prefixes     []registry.Prefix `yaml:"prefixes"`
-	PublicAddr   string            `yaml:"public_addr"`
-	Listen       string            `yaml:"listen"`
+	Roles      []string          `yaml:"roles"`
+	Prefixes   []registry.Prefix `yaml:"prefixes"`
+	PublicAddr string            `yaml:"public_addr"`
+	Listen     string            `yaml:"listen"`
+	BehindMux  *struct {
+		ID      int      `yaml:"id"`      // 1..255, first byte of this hub's QUIC connection IDs
+		Trusted []string `yaml:"trusted"` // where the mux delivers from, e.g. [127.0.0.1]
+	} `yaml:"behind_mux"`
 	AutoUp       bool              `yaml:"auto_up"`
 	Profile      string            `yaml:"profile"`
 	ProfilesDir  string            `yaml:"profiles_dir"`
@@ -140,6 +145,17 @@ func run(cfgPath string) error {
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.Streams, fromFile bool, settingsPath string) error {
+	var behindMux *node.BehindMux
+	if m := cfg.BehindMux; m != nil {
+		if m.ID < 1 || m.ID > 255 {
+			return errors.New("config: behind_mux.id must be 1..255")
+		}
+		trusted, err := mux.ParseTrusted(m.Trusted)
+		if err != nil || len(trusted) == 0 {
+			return fmt.Errorf("config: behind_mux.trusted: %v", err)
+		}
+		behindMux = &node.BehindMux{ID: byte(m.ID), Trusted: trusted}
+	}
 	n, err := node.New(node.Config{
 		Name:              local.Name,
 		StateDir:          cfg.StateDir,
@@ -152,6 +168,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		Prefixes:          cfg.Prefixes,
 		PublicAddr:        cfg.PublicAddr,
 		Listen:            cfg.Listen,
+		BehindMux:         behindMux,
 		AutoUp:            cfg.AutoUp,
 		Profile:           cfg.Profile,
 		ProfilesDir:       cfg.ProfilesDir,

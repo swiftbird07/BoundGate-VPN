@@ -16,6 +16,7 @@ dependency: policy can narrow what identity granted, never widen it.
 |---|---|---|
 | `boundgate-control` | Server, port 443 | Admin API (SPA from M4), SQLite, node approval, per-node registry snapshots, OIDC logins and user sessions |
 | `boundgate-node` | Every participant, as root/daemon | Owns the device key, keeps the control channel, and depending on its granted roles accepts tunnels (hub), dials hubs, announces prefixes (subnet router, exit node), configures TUN/routes/NAT |
+| `boundgate-mux` | Server, optional, owns port 443 | Lets control plane and hub share one address and port 443 (TCP and UDP): routes by TLS server name and QUIC connection ID, terminates nothing, holds no key (DEPLOY.md) |
 | `boundgatectl` | Every participant, as user; admins for `admin sign` | Thin CLI over the node's Unix socket (status, identity, enroll, up, down, login, logout); `admin sign` talks to the control plane directly and signs bindings with the admin's SSH key |
 
 There is no separate agent or gateway. One binary, roles per node:
@@ -94,7 +95,17 @@ See `ACL.md` for the entity model, the enforcement points and the flow log.
 * Only port 443. UDP/443 carries tunnels (hubs) and the HTTP/3 node channel
   (control plane); TCP/443 carries the admin API and, for nodes, the
   fallback when UDP is blocked. Tunnel fallback over TCP is not in the
-  prototype.
+  prototype (plan: M8.2).
+* One address is enough: where control plane and hub live on the same
+  server, `boundgate-mux` owns 443 and both listen on loopback
+  (`behind_mux`). TCP is routed by the ClientHello's server name. QUIC is
+  routed by the server name in the Initial packet, then by the first byte
+  of the connection ID, which each server sets to its id
+  (`transport.ServerConfig.ConnIDGenerator`). Datagrams between mux and
+  server carry the client's address in a 22-byte header, so the servers
+  see real peers and the mux needs no state for established connections.
+  Hubs answer to the fixed server name `hub.boundgate`; the control plane
+  to its admin name and `nodes.<admin name>`.
 
 ## Identity chain
 

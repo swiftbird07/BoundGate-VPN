@@ -27,6 +27,8 @@ import (
 
 	"golang.zx2c4.com/wireguard/tun"
 
+	"github.com/quic-go/quic-go"
+
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/acl"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
@@ -34,6 +36,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/softkey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/tpm2key"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/controlclient"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
@@ -69,6 +72,9 @@ type Config struct {
 	PublicAddr string
 	// Listen is the hub tunnel listener (UDP), default ":443".
 	Listen string
+	// BehindMux: the hub shares its public port with other servers behind a
+	// boundgate-mux. Listen is then the private address the mux delivers to.
+	BehindMux *BehindMux
 	// AutoUp brings the overlay up as soon as the first snapshot arrives
 	// (servers, hubs, routers). Interactive endpoints use `boundgatectl up`.
 	AutoUp bool
@@ -100,6 +106,15 @@ const (
 	StateStarting State = "starting"
 	StateUp       State = "up"
 )
+
+// BehindMux configures a server behind a front (internal/mux).
+type BehindMux struct {
+	// ID is the first byte of this server's QUIC connection IDs; the mux
+	// routes established connections by it. Unique per mux.
+	ID byte
+	// Trusted are the addresses the mux delivers from.
+	Trusted []netip.Prefix
+}
 
 // UserStatus is the node's user session as the CLI shows it.
 type UserStatus struct {
@@ -917,14 +932,26 @@ func (s *session) apply(ctx context.Context) error {
 	go s.flowSweeper()
 
 	if s.isHub {
+		var pc net.PacketConn
+		var gen quic.ConnectionIDGenerator
+		if m := n.cfg.BehindMux; m != nil {
+			bc, err := mux.ListenBackend(n.cfg.Listen, m.Trusted)
+			if err != nil {
+				return err
+			}
+			pc, gen = bc, mux.CIDGenerator{ID: m.ID}
+			n.log.Info("hub listens behind a mux", "addr", n.cfg.Listen, "id", m.ID, "trusted", m.Trusted)
+		}
 		srv, err := transport.NewServer(transport.ServerConfig{
-			Addr:        n.cfg.Listen,
-			TLS:         transport.ServerTLSConfig(n.cert, n.holder),
-			Lookup:      n.holder,
-			Template:    transport.HubTemplate,
-			IdleTimeout: 30 * time.Second,
-			KeepAlive:   10 * time.Second,
-			Logger:      n.log,
+			PacketConn:      pc,
+			ConnIDGenerator: gen,
+			Addr:            n.cfg.Listen,
+			TLS:             transport.ServerTLSConfig(n.cert, n.holder),
+			Lookup:          n.holder,
+			Template:        transport.HubTemplate,
+			IdleTimeout:     30 * time.Second,
+			KeepAlive:       10 * time.Second,
+			Logger:          n.log,
 		}, &hubService{s: s})
 		if err != nil {
 			return err

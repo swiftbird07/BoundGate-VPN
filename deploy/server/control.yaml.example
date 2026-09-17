@@ -1,9 +1,13 @@
 # Control plane. Replace bg.example.com (a DNS name that points at this server).
-listen: ":443"                     # TCP: admin UI and API, TCP fallback of the node channel. UDP: node channel (HTTP/3)
+listen: "127.0.0.1:8443"           # private, behind the mux. TCP: admin UI and API, TCP fallback of the node channel. UDP: node channel (HTTP/3)
+behind_mux:
+  id: 1                            # = the route's id in mux.yaml
+  trusted: [127.0.0.1]             # where the mux delivers from
+# Without a mux (this server has port 443 of its address to itself): listen: ":443" and no behind_mux.
 server_name: bg.example.com        # what admins type into the browser
 # node_server_name: nodes.bg.example.com   # default: nodes.<server_name>. Only a TLS name on the same port, needs no DNS record
 acme:
-  enabled: true                    # admin certificate from Let's Encrypt, validated on port 443 itself (TLS-ALPN-01)
+  enabled: true                    # admin certificate from Let's Encrypt, validated on port 443 itself (TLS-ALPN-01; passes through the mux)
   email: ""                        # optional: expiry mail from the CA
   # directory_url: https://acme-staging-v02.api.letsencrypt.org/directory   # try the setup without rate limits (browser will warn)
 node_cert: /var/lib/boundgate/nodes.crt   # long-lived identity of the node channel: every node pins this key. Back it up

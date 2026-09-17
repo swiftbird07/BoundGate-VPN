@@ -127,6 +127,12 @@ type ServerConfig struct {
 	// KeepAlive sends QUIC PINGs to keep NAT bindings alive. Default 20s.
 	KeepAlive time.Duration
 	Logger    *slog.Logger
+	// PacketConn, when set, is used instead of binding Addr, and
+	// ConnIDGenerator shapes the connection IDs this server issues. Both
+	// exist for servers that share a public port behind a front
+	// (internal/mux); neither touches authentication.
+	PacketConn      net.PacketConn
+	ConnIDGenerator quic.ConnectionIDGenerator
 }
 
 // Server terminates QUIC + mTLS + CONNECT-IP for approved devices.
@@ -137,6 +143,7 @@ type Server struct {
 	log     *slog.Logger
 	h3      *http3.Server
 	pconn   net.PacketConn
+	qt      *quic.Transport
 	mu      sync.Mutex
 	tunnels map[DeviceID]map[*Tunnel]struct{}
 }
@@ -195,6 +202,10 @@ func NewServer(cfg ServerConfig, h Handler) (*Server, error) {
 // Listen binds the UDP socket. It is separate from Serve so callers can learn
 // the bound address (tests use port 0).
 func (s *Server) Listen() error {
+	if s.cfg.PacketConn != nil {
+		s.pconn = s.cfg.PacketConn
+		return nil
+	}
 	pc, err := net.ListenPacket("udp", s.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("transport: listen %s: %w", s.cfg.Addr, err)
@@ -218,14 +229,20 @@ func (s *Server) Serve(ctx context.Context) error {
 			return err
 		}
 	}
+	s.qt = &quic.Transport{Conn: s.pconn, ConnectionIDGenerator: s.cfg.ConnIDGenerator}
+	ln, err := s.qt.ListenEarly(http3.ConfigureTLSConfig(s.cfg.TLS), s.h3.QUICConfig)
+	if err != nil {
+		return fmt.Errorf("transport: listen: %w", err)
+	}
 	errc := make(chan error, 1)
-	go func() { errc <- s.h3.Serve(s.pconn) }()
+	go func() { errc <- s.h3.ServeListener(ln) }()
 	select {
 	case <-ctx.Done():
 		s.closeAll(ErrCodeShutdown, "hub shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = s.h3.Shutdown(shutdownCtx)
+		_ = s.qt.Close()
 		_ = s.pconn.Close()
 		<-errc
 		return nil

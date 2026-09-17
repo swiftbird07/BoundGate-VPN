@@ -14,21 +14,25 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
-	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/web"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/web"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/servercert"
@@ -68,8 +72,24 @@ type Config struct {
 	// instead of TLSCert/TLSKey. The node channel is not affected: nodes pin
 	// its own long-lived key.
 	ACME ACMEConfig
+	// BehindMux: the control plane shares its public port with other servers
+	// (a hub, a web server) behind a boundgate-mux or a TCP reverse proxy in
+	// SNI-passthrough mode. Listen is then the private address.
+	BehindMux *BehindMux
 	// NoSPA disables the embedded admin UI (tests).
 	NoSPA bool
+}
+
+// BehindMux configures the listeners of a control plane behind a front.
+type BehindMux struct {
+	// ID is the first byte of the QUIC connection IDs issued here.
+	ID byte
+	// Trusted are the front's addresses: only they may deliver UDP, and TCP
+	// connections from them start with a PROXY protocol v2 header.
+	Trusted []netip.Prefix
+	// NoProxyProtocol: the TCP front sends no PROXY header (client addresses
+	// are lost for TCP: logs and rate limits see the front).
+	NoProxyProtocol bool
 }
 
 // ACMEConfig: certificates for the admin name by TLS-ALPN-01 on the TCP
@@ -247,13 +267,38 @@ func Run(ctx context.Context, cfg Config) error {
 		Logger: log,
 	}
 
+	tcpLn, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return err
+	}
+	var udpLn http3.QUICListener
+	if m := cfg.BehindMux; m != nil {
+		if !m.NoProxyProtocol {
+			tcpLn = &mux.ProxyListener{Listener: tcpLn, Trusted: m.Trusted}
+		}
+		pc, err := mux.ListenBackend(cfg.Listen, m.Trusted)
+		if err != nil {
+			return err
+		}
+		defer pc.Close()
+		qt := &quic.Transport{Conn: pc, ConnectionIDGenerator: mux.CIDGenerator{ID: m.ID}}
+		defer qt.Close()
+		if udpLn, err = qt.ListenEarly(http3.ConfigureTLSConfig(udpTLS), udpSrv.QUICConfig); err != nil {
+			return err
+		}
+		log.Info("behind a mux", "id", m.ID, "trusted", m.Trusted, "proxy_protocol", !m.NoProxyProtocol)
+	}
 	errc := make(chan error, 2)
 	go func() {
 		log.Info("listening", "tcp", cfg.Listen, "admin_name", cfg.ServerName, "node_name", cfg.NodeServerName)
-		errc <- tcpSrv.ListenAndServeTLS("", "")
+		errc <- tcpSrv.ServeTLS(tcpLn, "", "")
 	}()
 	go func() {
 		log.Info("listening", "udp", cfg.Listen, "proto", "h3")
+		if udpLn != nil {
+			errc <- udpSrv.ServeListener(udpLn)
+			return
+		}
 		errc <- udpSrv.ListenAndServe()
 	}()
 	go housekeeping(ctx, store, cfg, log)

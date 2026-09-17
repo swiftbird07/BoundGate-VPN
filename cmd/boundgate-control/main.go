@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
 )
 
 type config struct {
@@ -52,6 +54,11 @@ type config struct {
 		Group           string   `yaml:"group"`   // OIDC group of administrators; default admins
 		SessionLifetime string   `yaml:"session_lifetime"`
 	} `yaml:"admin"`
+	BehindMux *struct {
+		ID              int      `yaml:"id"`                // 1..255, first byte of this server's QUIC connection IDs
+		Trusted         []string `yaml:"trusted"`           // the front's addresses, e.g. [127.0.0.1]
+		NoProxyProtocol bool     `yaml:"no_proxy_protocol"` // the TCP front sends no PROXY v2 header
+	} `yaml:"behind_mux"`
 	ACME struct {
 		Enabled      bool   `yaml:"enabled"`       // admin certificate from Let's Encrypt (TLS-ALPN-01 on :443)
 		Email        string `yaml:"email"`         // optional contact for the CA
@@ -127,6 +134,17 @@ func run(cfgPath string) error {
 			return fmt.Errorf("config: admin.session_lifetime: %w", err)
 		}
 	}
+	var behindMux *control.BehindMux
+	if m := cfg.BehindMux; m != nil {
+		if m.ID < 1 || m.ID > 255 {
+			return errors.New("config: behind_mux.id must be 1..255")
+		}
+		trusted, err := mux.ParseTrusted(m.Trusted)
+		if err != nil || len(trusted) == 0 {
+			return fmt.Errorf("config: behind_mux.trusted: %v", err)
+		}
+		behindMux = &control.BehindMux{ID: byte(m.ID), Trusted: trusted, NoProxyProtocol: m.NoProxyProtocol}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return control.Run(ctx, control.Config{
@@ -145,6 +163,7 @@ func run(cfgPath string) error {
 		Logs:               logs,
 		OIDC:               oc,
 		Admin:              adminCfg,
+		BehindMux:          behindMux,
 		ACME:               control.ACMEConfig{Enabled: cfg.ACME.Enabled, Email: cfg.ACME.Email, CacheDir: cfg.ACME.CacheDir, DirectoryURL: cfg.ACME.DirectoryURL},
 	})
 }

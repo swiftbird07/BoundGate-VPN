@@ -1,9 +1,9 @@
 # All Go and Node commands run inside the `box` dev container (see docs/DEV.md).
 GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
-BINS = boundgate-control boundgate-node boundgatectl boundgate-fakeidp boundgate-udpbridge
+BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: server-bundle mac-app test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: rehearsal server-bundle mac-app test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -65,10 +65,15 @@ mac-app:
 # Everything a Linux server needs (docs/DEPLOY.md): make server-bundle GOARCH=amd64
 server-bundle: build-linux
 	rm -rf dist/boundgate-server && mkdir -p dist/boundgate-server/bin
-	cp bin/linux_$(GOARCH)/boundgate-control bin/linux_$(GOARCH)/boundgate-node bin/linux_$(GOARCH)/boundgatectl dist/boundgate-server/bin/
-	cp deploy/server/docker-compose.yml deploy/server/Dockerfile.control deploy/server/Dockerfile.node deploy/server/*.example dist/boundgate-server/
+	cp bin/linux_$(GOARCH)/boundgate-control bin/linux_$(GOARCH)/boundgate-node bin/linux_$(GOARCH)/boundgatectl bin/linux_$(GOARCH)/boundgate-mux dist/boundgate-server/bin/
+	cp deploy/server/docker-compose.yml deploy/server/Dockerfile.control deploy/server/Dockerfile.node deploy/server/Dockerfile.mux deploy/server/*.example dist/boundgate-server/
 	tar -C dist -czf dist/boundgate-server-linux-$(GOARCH).tar.gz boundgate-server
 	@echo "dist/boundgate-server-linux-$(GOARCH).tar.gz"
+
+# The server kit end to end in the local Docker VM (docs/DEPLOY.md)
+rehearsal:
+	$(MAKE) server-bundle GOARCH=$(GOARCH)
+	deploy/server/rehearsal.sh
 
 test-race:
 	box env CGO_ENABLED=1 go test -race -count=1 ./...

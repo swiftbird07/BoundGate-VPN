@@ -1,0 +1,4 @@
+FROM alpine:3.20
+COPY bin/boundgate-mux /usr/local/bin/boundgate-mux
+USER 65534:65534
+CMD ["boundgate-mux"]
