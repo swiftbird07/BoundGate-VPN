@@ -1,0 +1,25 @@
+# Control plane. Replace bg.example.com (a DNS name that points at this server).
+listen: ":443"                     # TCP: admin UI and API, TCP fallback of the node channel. UDP: node channel (HTTP/3)
+server_name: bg.example.com        # what admins type into the browser
+# node_server_name: nodes.bg.example.com   # default: nodes.<server_name>. Only a TLS name on the same port, needs no DNS record
+acme:
+  enabled: true                    # admin certificate from Let's Encrypt, validated on port 443 itself (TLS-ALPN-01)
+  email: ""                        # optional: expiry mail from the CA
+  # directory_url: https://acme-staging-v02.api.letsencrypt.org/directory   # try the setup without rate limits (browser will warn)
+node_cert: /var/lib/boundgate/nodes.crt   # long-lived identity of the node channel: every node pins this key. Back it up
+node_key: /var/lib/boundgate/nodes.key
+db_path: /var/lib/boundgate/control.db
+bootstrap_token_file: /var/lib/boundgate/bootstrap.token   # for the first admin passkey only
+pending_ttl: 24h
+log_retention: 2160h
+log_dir: /var/log/boundgate
+log_stdout: true
+oidc:                              # Authentik: docs/OIDC.md
+  issuer: https://auth.example.com/application/o/boundgate/
+  client_id: boundgate
+  client_secret_file: /var/lib/boundgate/oidc.secret     # 0600, one line
+  redirect_url: https://bg.example.com/api/v1/oidc/callback
+  session_lifetime: 12h            # user sessions of interactive nodes
+admin:
+  group: admins                    # OIDC group of administrators
+  session_lifetime: 1h

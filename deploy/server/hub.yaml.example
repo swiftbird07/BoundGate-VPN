@@ -1,0 +1,21 @@
+# Hub on the same server as the control plane.
+name: hub1
+state_dir: /var/lib/boundgate
+key_kind: softkey                  # tpm2 with a TPM or vTPM (docs/TPM.md)
+control:
+  addr: bg.example.com:443
+  server_name: nodes.bg.example.com
+roles: [hub]                       # requested; granted at approval. Add subnet-router / exit-node with prefixes to route beyond this host
+# prefixes:
+#   - {prefix: 10.0.0.0/24, mode: snat}     # e.g. a Hetzner private network behind this server
+# One IP address: the control plane owns UDP/443, the hub takes another UDP port.
+# Two IP addresses: give each its own (control.yaml `listen: "IP_A:443"`), and the hub gets 443 as well.
+listen: ":4433"
+public_addr: "bg.example.com:4433" # what spokes dial
+auto_up: true
+profile: full
+socket: /run/boundgate/node.sock
+tun_name: bg0
+mtu: 1280
+log_dir: /var/log/boundgate
+log_stdout: true

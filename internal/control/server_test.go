@@ -84,3 +84,40 @@ func TestSNISplit(t *testing.T) {
 		t.Fatalf("node name served %s", rsp.TLS.PeerCertificates[0].Subject)
 	}
 }
+
+// With ACME the admin certificate comes from a callback; the node name must
+// keep its own key and its client-certificate requirement.
+func TestSNISplitWithACMECallback(t *testing.T) {
+	dir := t.TempDir()
+	adminCert, _, _ := servercert.LoadOrCreate(filepath.Join(dir, "a.crt"), filepath.Join(dir, "a.key"), []string{"bg.example.com"})
+	nodeCert, _, _ := servercert.LoadOrCreate(filepath.Join(dir, "n.crt"), filepath.Join(dir, "n.key"), []string{"nodes.bg.example.com"})
+	asked := ""
+	get := func(h *tls.ClientHelloInfo) (*tls.Certificate, error) { asked = h.ServerName; return &adminCert, nil }
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	srv.TLS = TLSConfigACME(get, nodeCert, "nodes.bg.example.com", []string{"http/1.1", "acme-tls/1"})
+	srv.StartTLS()
+	defer srv.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(adminCert.Leaf)
+	c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "bg.example.com"}}}
+	rsp, err := c.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsp.Body.Close()
+	if asked != "bg.example.com" {
+		t.Fatalf("callback asked for %q", asked)
+	}
+
+	asked = ""
+	nodeRoots := x509.NewCertPool()
+	nodeRoots.AddCert(nodeCert.Leaf)
+	c = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: nodeRoots, ServerName: "nodes.bg.example.com"}}}
+	if _, err := c.Get(srv.URL); err == nil || !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("node name without a client certificate: %v", err)
+	}
+	if asked != "" {
+		t.Fatal("the ACME callback was asked for the node name")
+	}
+}

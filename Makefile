@@ -3,7 +3,7 @@ GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
 BINS = boundgate-control boundgate-node boundgatectl boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: mac-app test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: server-bundle mac-app test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -61,6 +61,14 @@ test-tpm:
 # BoundGate.app (docs/MACOS-APP.md): Go in the box, Swift and codesign on the Mac
 mac-app:
 	apps/macos/build-app.sh
+
+# Everything a Linux server needs (docs/DEPLOY.md): make server-bundle GOARCH=amd64
+server-bundle: build-linux
+	rm -rf dist/boundgate-server && mkdir -p dist/boundgate-server/bin
+	cp bin/linux_$(GOARCH)/boundgate-control bin/linux_$(GOARCH)/boundgate-node bin/linux_$(GOARCH)/boundgatectl dist/boundgate-server/bin/
+	cp deploy/server/docker-compose.yml deploy/server/Dockerfile.control deploy/server/Dockerfile.node deploy/server/*.example dist/boundgate-server/
+	tar -C dist -czf dist/boundgate-server-linux-$(GOARCH).tar.gz boundgate-server
+	@echo "dist/boundgate-server-linux-$(GOARCH).tar.gz"
 
 test-race:
 	box env CGO_ENABLED=1 go test -race -count=1 ./...

@@ -7,7 +7,7 @@ cannot leave it (TPM 2.0, later Secure Enclave), a user only with OIDC, and
 every flow only if a Cedar policy says so. The tunnel is standard HTTP/3:
 CONNECT-IP (RFC 9484) over QUIC on UDP/443.
 
-Status: prototype, milestone M8 stage 1 (macOS menu-bar app, see `docs/MACOS-APP.md`; TPM 2.0 device keys incl. VM vTPMs, `hardware_bound` as a signed binding field, see `docs/TPM.md`; macOS endpoint, see `docs/MACOS.md`; node model: control plane on port 443,
+Status: prototype, milestone M8 stage 1 (macOS menu-bar app, see `docs/MACOS-APP.md`; server deployment with built-in Let's Encrypt, see `docs/DEPLOY.md`; TPM 2.0 device keys incl. VM vTPMs, `hardware_bound` as a signed binding field, see `docs/TPM.md`; macOS endpoint, see `docs/MACOS.md`; node model: control plane on port 443,
 one `boundgate-node` binary with the roles endpoint / subnet-router / hub /
 exit-node, hub-and-spoke overlay with HA; enrollment with manual admin
 confirmation and an admin-signed binding (SSHSIG, YubiKey) that every node

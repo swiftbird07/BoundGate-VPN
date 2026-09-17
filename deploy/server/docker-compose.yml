@@ -1,0 +1,34 @@
+# BoundGate on one Linux server: control plane and a hub (docs/DEPLOY.md).
+# Both use the host's network: the control plane needs nothing else, and a
+# hub is a router, whose tunnel device, routes and NAT belong to the host.
+#
+#   docker compose up -d --build
+#   docker compose exec hub boundgatectl enroll
+name: boundgate
+
+services:
+  control:
+    build: { context: ., dockerfile: Dockerfile.control }
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./control.yaml:/etc/boundgate/control.yaml:ro
+      - ./state/control:/var/lib/boundgate
+      - ./logs/control:/var/log/boundgate
+    command: ["boundgate-control", "-config", "/etc/boundgate/control.yaml"]
+
+  hub:
+    build: { context: ., dockerfile: Dockerfile.node }
+    network_mode: host
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    depends_on: [control]
+    volumes:
+      - ./hub.yaml:/etc/boundgate/node.yaml:ro
+      - ./state/hub:/var/lib/boundgate
+      - ./logs/hub:/var/log/boundgate
+      - ./run/hub:/run/boundgate
+      # a TPM or vTPM for the hub's key (key_kind: tpm2 in hub.yaml):
+      # devices: ["/dev/net/tun:/dev/net/tun", "/dev/tpmrm0:/dev/tpmrm0"]
+    command: ["boundgate-node", "-config", "/etc/boundgate/node.yaml"]

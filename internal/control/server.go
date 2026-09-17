@@ -21,6 +21,8 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
@@ -62,8 +64,45 @@ type Config struct {
 	OIDC oidc.Config
 	// Admin configures browser logins; RPID defaults to ServerName.
 	Admin api.AdminConfig
+	// ACME obtains the admin certificate from a public CA (Let's Encrypt)
+	// instead of TLSCert/TLSKey. The node channel is not affected: nodes pin
+	// its own long-lived key.
+	ACME ACMEConfig
 	// NoSPA disables the embedded admin UI (tests).
 	NoSPA bool
+}
+
+// ACMEConfig: certificates for the admin name by TLS-ALPN-01 on the TCP
+// listener itself, so nothing but port 443 is needed.
+type ACMEConfig struct {
+	Enabled bool
+	// Email receives the CA's expiry and policy mail (optional).
+	Email string
+	// CacheDir keeps account key and certificates (0700).
+	CacheDir string
+	// DirectoryURL overrides the CA (default: Let's Encrypt production;
+	// its staging directory is the way to try a setup without rate limits).
+	DirectoryURL string
+}
+
+// AdminCertFunc supplies the admin certificate per handshake (ACME).
+type AdminCertFunc func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+
+// TLSConfigACME is TLSConfig with the admin certificate coming from get.
+// On the TCP listener protos must contain acme.ALPNProto so the CA can
+// validate the name.
+func TLSConfigACME(get AdminCertFunc, nodeCert tls.Certificate, nodeServerName string, protos []string) *tls.Config {
+	cfg := TLSConfig(tls.Certificate{}, nodeCert, nodeServerName, protos)
+	split := cfg.GetConfigForClient
+	adminCfg := &tls.Config{MinVersion: tls.VersionTLS13, GetCertificate: get, NextProtos: protos}
+	cfg.Certificates, cfg.GetCertificate = nil, get
+	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		if hello.ServerName == nodeServerName {
+			return split(hello)
+		}
+		return adminCfg, nil
+	}
+	return cfg
 }
 
 // TLSConfig builds the SNI-splitting server configuration. protos are the
@@ -128,9 +167,12 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	adminCert, adminCreated, err := servercert.LoadOrCreate(cfg.TLSCert, cfg.TLSKey, append([]string{cfg.ServerName}, cfg.ExtraNames...))
-	if err != nil {
-		return err
+	var adminCert tls.Certificate
+	adminCreated := false
+	if !cfg.ACME.Enabled {
+		if adminCert, adminCreated, err = servercert.LoadOrCreate(cfg.TLSCert, cfg.TLSKey, append([]string{cfg.ServerName}, cfg.ExtraNames...)); err != nil {
+			return err
+		}
 	}
 	if adminCreated {
 		log.Info("created self-signed admin certificate", "cert", cfg.TLSCert, "names", append([]string{cfg.ServerName}, cfg.ExtraNames...))
@@ -169,16 +211,34 @@ func Run(ctx context.Context, cfg Config) error {
 	log.Info("admin logins", "rp_id", cfg.Admin.RPID, "origins", cfg.Admin.Origins, "group", cfg.Admin.Group)
 	root := h.Root(cfg.NodeServerName)
 
+	tcpTLS := TLSConfig(adminCert, nodeCert, cfg.NodeServerName, []string{"h2", "http/1.1"})
+	udpTLS := TLSConfig(adminCert, nodeCert, cfg.NodeServerName, []string{http3.NextProtoH3})
+	if cfg.ACME.Enabled {
+		if cfg.ACME.CacheDir == "" {
+			cfg.ACME.CacheDir = filepath.Join(filepath.Dir(cfg.DBPath), "acme")
+		}
+		if err := os.MkdirAll(cfg.ACME.CacheDir, 0o700); err != nil {
+			return err
+		}
+		names := append([]string{cfg.ServerName}, cfg.ExtraNames...)
+		m := &autocert.Manager{Prompt: autocert.AcceptTOS, Cache: autocert.DirCache(cfg.ACME.CacheDir), HostPolicy: autocert.HostWhitelist(names...), Email: cfg.ACME.Email}
+		if cfg.ACME.DirectoryURL != "" {
+			m.Client = &acme.Client{DirectoryURL: cfg.ACME.DirectoryURL}
+		}
+		tcpTLS = TLSConfigACME(m.GetCertificate, nodeCert, cfg.NodeServerName, []string{"h2", "http/1.1", acme.ALPNProto})
+		udpTLS = TLSConfigACME(m.GetCertificate, nodeCert, cfg.NodeServerName, []string{http3.NextProtoH3})
+		log.Info("admin certificate from ACME (TLS-ALPN-01 on the TCP listener)", "names", names, "cache", cfg.ACME.CacheDir, "directory", cfg.ACME.DirectoryURL)
+	}
 	tcpSrv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           root,
-		TLSConfig:         TLSConfig(adminCert, nodeCert, cfg.NodeServerName, []string{"h2", "http/1.1"}),
+		TLSConfig:         tcpTLS,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	udpSrv := &http3.Server{
 		Addr:      cfg.Listen,
 		Handler:   root,
-		TLSConfig: TLSConfig(adminCert, nodeCert, cfg.NodeServerName, []string{http3.NextProtoH3}),
+		TLSConfig: udpTLS,
 		QUICConfig: &quic.Config{
 			MaxIdleTimeout:  90 * time.Second, // long-polls run 30 s
 			KeepAlivePeriod: 20 * time.Second,

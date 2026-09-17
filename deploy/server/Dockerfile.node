@@ -1,0 +1,5 @@
+FROM alpine:3.20
+RUN apk add --no-cache iproute2 nftables ca-certificates curl
+COPY bin/boundgate-node bin/boundgatectl /usr/local/bin/
+RUN mkdir -p /var/lib/boundgate /var/log/boundgate /etc/boundgate /run/boundgate
+CMD ["boundgate-node"]

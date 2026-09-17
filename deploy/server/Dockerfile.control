@@ -1,0 +1,5 @@
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY bin/boundgate-control /usr/local/bin/boundgate-control
+RUN mkdir -p /var/lib/boundgate /var/log/boundgate /etc/boundgate
+CMD ["boundgate-control"]

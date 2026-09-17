@@ -52,6 +52,12 @@ type config struct {
 		Group           string   `yaml:"group"`   // OIDC group of administrators; default admins
 		SessionLifetime string   `yaml:"session_lifetime"`
 	} `yaml:"admin"`
+	ACME struct {
+		Enabled      bool   `yaml:"enabled"`       // admin certificate from Let's Encrypt (TLS-ALPN-01 on :443)
+		Email        string `yaml:"email"`         // optional contact for the CA
+		CacheDir     string `yaml:"cache_dir"`     // default: <dir of db_path>/acme
+		DirectoryURL string `yaml:"directory_url"` // default: Let's Encrypt production
+	} `yaml:"acme"`
 }
 
 func main() {
@@ -139,5 +145,6 @@ func run(cfgPath string) error {
 		Logs:               logs,
 		OIDC:               oc,
 		Admin:              adminCfg,
+		ACME:               control.ACMEConfig{Enabled: cfg.ACME.Enabled, Email: cfg.ACME.Email, CacheDir: cfg.ACME.CacheDir, DirectoryURL: cfg.ACME.DirectoryURL},
 	})
 }
