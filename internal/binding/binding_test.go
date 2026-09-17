@@ -288,3 +288,42 @@ func FuzzParseBinding(f *testing.F) {
 		}
 	})
 }
+
+// hardware_bound is signed; bindings from before the field existed (no such
+// key in the JSON) keep verifying and mean "not hardware-bound".
+func TestHardwareBoundIsSigned(t *testing.T) {
+	admin := newSigner(t, "ed25519")
+	signers := Signers{admin.PublicKey()}
+
+	soft := node("soft", registry.RoleEndpoint)
+	sign(t, &soft, admin)
+	if strings.Contains(soft.Binding, "hardware_bound") {
+		t.Fatalf("false must be left out: %s", soft.Binding)
+	}
+	if _, err := VerifyNode(soft, signers); err != nil {
+		t.Fatal(err)
+	}
+	// the control plane "upgrades" a software-key node
+	soft.HardwareBound = true
+	if _, err := VerifyNode(soft, signers); err == nil {
+		t.Fatal("hardware_bound flipped to true after signing, still verifies")
+	}
+
+	hw := node("hw", registry.RoleEndpoint)
+	hw.HardwareBound = true
+	sign(t, &hw, admin)
+	if !strings.HasSuffix(hw.Binding, `,"hardware_bound":true}`) {
+		t.Fatalf("got %s", hw.Binding)
+	}
+	if _, err := VerifyNode(hw, signers); err != nil {
+		t.Fatal(err)
+	}
+	hw.HardwareBound = false
+	if _, err := VerifyNode(hw, signers); err == nil {
+		t.Fatal("hardware_bound flipped to false after signing, still verifies")
+	}
+	// an explicit false is not canonical
+	if _, err := Parse([]byte(strings.Replace(soft.Binding, `}`, `,"hardware_bound":false}`, 1))); err == nil {
+		t.Fatal("explicit false accepted")
+	}
+}

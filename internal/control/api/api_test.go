@@ -726,3 +726,52 @@ func TestLoginDisabledWithoutIdP(t *testing.T) {
 		t.Fatalf("login without idp: %d %s", code, b)
 	}
 }
+
+// hardware_bound: the node claims, the admin grants, the binding carries it.
+func TestHardwareBoundGrant(t *testing.T) {
+	e := newEnv(t)
+	e.registerSigner()
+	view := func(id string) api.NodeView {
+		var nv api.NodeView
+		e.adminCall("GET", "/api/v1/admin/nodes/"+id, "", http.StatusOK, &nv)
+		return nv
+	}
+
+	// a TPM node: the claim is shown but grants nothing until an admin confirms
+	tpm := e.device("server")
+	st := e.enroll(tpm, `{"name":"server","platform":"linux","key_kind":"tpm2","hardware_bound":true,"roles":["endpoint"]}`)
+	if nv := view(st.NodeID); !nv.HardwareClaimed || nv.HardwareBound {
+		t.Fatalf("pending: claimed=%v bound=%v", nv.HardwareClaimed, nv.HardwareBound)
+	}
+	nv := e.approve(st.NodeID, `{"roles":["endpoint"],"kind":"workload"}`)
+	if !nv.HardwareBound || !nv.Signed {
+		t.Fatalf("approved: %+v", nv)
+	}
+	code, snap := e.snapshot(tpm, 0, "1s")
+	if code != http.StatusOK || !snap.Self.HardwareBound || !strings.Contains(snap.Self.Binding, `"hardware_bound":true`) {
+		t.Fatalf("snapshot: %d %+v", code, snap)
+	}
+
+	// the admin distrusts the claim later: a signed field changes, the approval is gone
+	e.adminCall("PATCH", "/api/v1/admin/nodes/"+st.NodeID, `{"hardware_bound":false}`, http.StatusOK, nil)
+	if nv := view(st.NodeID); nv.Status != "confirmed" || nv.HardwareBound || !nv.HardwareClaimed {
+		t.Fatalf("after patch: %+v", nv)
+	}
+
+	// a software-key node cannot be granted hardware_bound, at confirm or later
+	soft := e.device("laptop")
+	st2 := e.enroll(soft, `{"name":"laptop","platform":"darwin","key_kind":"softkey","roles":["endpoint"]}`)
+	e.adminCall("POST", "/api/v1/admin/nodes/"+st2.NodeID+"/confirm", `{"roles":["endpoint"],"hardware_bound":true}`, http.StatusConflict, nil)
+	nv2 := e.approve(st2.NodeID, `{"roles":["endpoint"]}`)
+	if nv2.HardwareBound {
+		t.Fatalf("software key: %+v", nv2)
+	}
+	e.adminCall("PATCH", "/api/v1/admin/nodes/"+st2.NodeID, `{"hardware_bound":true}`, http.StatusConflict, nil)
+
+	// confirming a TPM node as not hardware-bound is possible from the start
+	tpm2 := e.device("vm")
+	st3 := e.enroll(tpm2, `{"name":"vm","platform":"linux","key_kind":"tpm2","hardware_bound":true,"roles":["endpoint"]}`)
+	if nv3 := e.approve(st3.NodeID, `{"roles":["endpoint"],"hardware_bound":false}`); nv3.HardwareBound {
+		t.Fatalf("distrusted at confirm: %+v", nv3)
+	}
+}

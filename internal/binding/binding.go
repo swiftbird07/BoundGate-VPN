@@ -40,11 +40,15 @@ type Binding struct {
 	Roles      []registry.Role    `json:"roles"`
 	Prefixes   []registry.Prefix  `json:"prefixes"`
 	OverlayIP  netip.Addr         `json:"overlay_ip"`
+	// HardwareBound: the admin vouches that the key lives in a TPM. Left out
+	// when false, so bindings signed before the field existed stay valid and
+	// mean what they always meant: not hardware-bound.
+	HardwareBound bool `json:"hardware_bound,omitempty"`
 }
 
 // FromNode builds the binding a node record must be signed for.
 func FromNode(n registry.Node) Binding {
-	return Binding{NodeID: string(n.ID), SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP}
+	return Binding{NodeID: string(n.ID), SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP, HardwareBound: n.HardwareBound}
 }
 
 // Normalize sorts roles and prefixes and masks prefixes.
@@ -168,6 +172,8 @@ func (b Binding) Matches(n registry.Node) error {
 		return fmt.Errorf("binding: roles %v, record says %v", b.Roles, want.Roles)
 	case !slices.Equal(b.Prefixes, want.Prefixes):
 		return fmt.Errorf("binding: prefixes %v, record says %v", b.Prefixes, want.Prefixes)
+	case b.HardwareBound != want.HardwareBound:
+		return fmt.Errorf("binding: hardware_bound %v, record says %v", b.HardwareBound, want.HardwareBound)
 	case b.OverlayIP != want.OverlayIP:
 		return fmt.Errorf("binding: overlay ip %s, record says %s", b.OverlayIP, want.OverlayIP)
 	}

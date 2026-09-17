@@ -130,7 +130,7 @@ func (h *Handlers) nodeEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, "node", "enrollment requested", n.ID,
 		map[string]any{"name": n.Name, "hostname": n.Hostname, "platform": n.Platform, "key_kind": n.KeyKind,
-			"hardware_bound": n.HardwareBound, "spki": n.SPKI.String(), "src": ip,
+			"hardware_claimed": n.HardwareClaimed, "spki": n.SPKI.String(), "src": ip,
 			"requested_roles": n.RequestedRoles, "requested_prefixes": n.RequestedPrefixes, "public_addr": n.PublicAddr})
 	writeJSON(w, http.StatusAccepted, h.enrollStatus(r, n))
 }

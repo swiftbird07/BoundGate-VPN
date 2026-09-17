@@ -1,0 +1,7 @@
+# Software TPM 2.0 for the lab and for `make test-tpm`. A stand-in for the
+# TPM chip of a real machine: same commands, none of the hardware protection.
+FROM alpine:3.20
+RUN apk add --no-cache swtpm && mkdir -p /var/lib/swtpm /run/swtpm
+ENTRYPOINT ["swtpm", "socket", "--tpm2", "--tpmstate", "dir=/var/lib/swtpm", "--flags", "startup-clear"]
+# default: raw TPM commands on a unix socket (the lab shares it through a volume)
+CMD ["--server", "type=unixio,path=/run/swtpm/tpm.sock,mode=0666", "--ctrl", "type=unixio,path=/run/swtpm/ctrl.sock,mode=0600"]

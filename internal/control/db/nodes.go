@@ -24,15 +24,18 @@ const (
 
 // Node is a row of the nodes table.
 type Node struct {
-	ID            string
-	Name          string
-	Hostname      string
-	Platform      string
-	KeyKind       string
-	HardwareBound bool
-	SPKI          devicekey.SPKIHash
-	CertDER       []byte
-	Attrs         map[string]string
+	ID       string
+	Name     string
+	Hostname string
+	Platform string
+	KeyKind  string
+	// HardwareClaimed is what the node reported about its key at enrollment;
+	// HardwareBound is what an admin granted (signed in the binding).
+	HardwareClaimed bool
+	HardwareBound   bool
+	SPKI            devicekey.SPKIHash
+	CertDER         []byte
+	Attrs           map[string]string
 	// Requested* are claims from the enrollment request.
 	RequestedRoles    []registry.Role
 	RequestedPrefixes []registry.Prefix
@@ -67,7 +70,7 @@ type Node struct {
 const nodeCols = `id, name, hostname, platform, key_kind, hardware_bound, spki_hash, cert_der, attrs_json,
 	requested_roles_json, requested_prefixes_json, roles_json, prefixes_json, overlay_ip, public_addr,
 	status, requested_at, request_ip, confirmed_at, confirmed_by, approved_at, approved_by, revoked_at, revoked_by,
-	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at, kind`
+	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at, kind, hardware_claimed`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -79,7 +82,7 @@ func scanNode(s scanner) (Node, error) {
 	if err := s.Scan(&n.ID, &n.Name, &n.Hostname, &n.Platform, &n.KeyKind, &n.HardwareBound, &spki, &n.CertDER, &attrs,
 		&reqRoles, &reqPrefixes, &roles, &prefixes, &overlay, &n.PublicAddr,
 		&n.Status, &requestedAt, &n.RequestIP, &confirmedAt, &confirmedBy, &approvedAt, &approvedBy, &revokedAt, &revokedBy,
-		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt, &n.Kind); err != nil {
+		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt, &n.Kind, &n.HardwareClaimed); err != nil {
 		return n, err
 	}
 	n.SignedAt = parseTime(signedAt)
@@ -135,7 +138,7 @@ func (d *DB) CreatePending(ctx context.Context, r EnrollRequest) (Node, error) {
 		name = "node-" + id[:8]
 	}
 	_, err := d.tx(ctx, false, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO nodes (id, name, hostname, platform, key_kind, hardware_bound, spki_hash, cert_der, attrs_json,
+		_, err := tx.ExecContext(ctx, `INSERT INTO nodes (id, name, hostname, platform, key_kind, hardware_claimed, spki_hash, cert_der, attrs_json,
 			requested_roles_json, requested_prefixes_json, public_addr, status, requested_at, request_ip)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, 'pending', ?, ?)`,
 			id, name, r.Hostname, r.Platform, r.KeyKind, r.HardwareBound, r.SPKI[:], r.CertDER,
@@ -224,7 +227,13 @@ type Grant struct {
 	Prefixes   []registry.Prefix
 	OverlayIP  netip.Addr // zero = assign the next free address
 	PublicAddr string     // hubs; empty keeps what the node requested
+	// HardwareBound: nil takes the node's claim at confirm and keeps the
+	// grant on update. True needs the claim: an admin can distrust a
+	// reported hardware key, not invent one.
+	HardwareBound *bool
 }
+
+const errNoHardwareClaim = "the node reported a software key; hardware_bound cannot be granted"
 
 // Validate checks the grant against the pool.
 func (g Grant) Validate(pool netip.Prefix) error {
@@ -283,11 +292,18 @@ func (d *DB) ConfirmNode(ctx context.Context, id, by string, g Grant, pool netip
 		if kind == "" {
 			kind = registry.KindInteractive
 		}
+		hw := cur.HardwareClaimed
+		if g.HardwareBound != nil {
+			hw = *g.HardwareBound
+		}
+		if hw && !cur.HardwareClaimed {
+			return fmt.Errorf("%w: %s", ErrConflict, errNoHardwareClaim)
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE nodes SET status = 'confirmed', confirmed_at = ?, confirmed_by = ?,
-			name = COALESCE(NULLIF(?, ''), name), kind = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?,
+			name = COALESCE(NULLIF(?, ''), name), kind = ?, hardware_bound = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?,
 			public_addr = COALESCE(NULLIF(?, ''), public_addr), binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL
 			WHERE id = ? AND status IN ('pending', 'confirmed')`,
-			now(), by, g.Name, string(kind), jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), g.PublicAddr, id)
+			now(), by, g.Name, string(kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), g.PublicAddr, id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, ip)
@@ -352,7 +368,14 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 			return 0, false, fmt.Errorf("%w: %v", ErrConflict, err)
 		}
 	}
-	signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP || g.Kind != cur.Kind
+	hw := cur.HardwareBound
+	if g.HardwareBound != nil {
+		hw = *g.HardwareBound
+	}
+	if hw && !cur.HardwareClaimed {
+		return 0, false, fmt.Errorf("%w: %s", ErrConflict, errNoHardwareClaim)
+	}
+	signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP || g.Kind != cur.Kind || hw != cur.HardwareBound
 	demote := cur.Status == StatusApproved && signedChanged
 	bump := cur.Status == StatusApproved
 	version, err := d.tx(ctx, bump, func(tx *sql.Tx) error {
@@ -360,11 +383,11 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 		if g.OverlayIP.IsValid() {
 			overlay = g.OverlayIP.String()
 		}
-		q := `UPDATE nodes SET name = COALESCE(NULLIF(?, ''), name), kind = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?, public_addr = ?`
+		q := `UPDATE nodes SET name = COALESCE(NULLIF(?, ''), name), kind = ?, hardware_bound = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?, public_addr = ?`
 		if demote {
 			q += `, status = 'confirmed', binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL, approved_at = NULL, approved_by = NULL`
 		}
-		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, g.PublicAddr, id)
+		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, g.PublicAddr, id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, g.OverlayIP)

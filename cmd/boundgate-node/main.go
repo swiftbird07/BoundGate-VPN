@@ -24,7 +24,9 @@ type config struct {
 	Name     string `yaml:"name"`
 	StateDir string `yaml:"state_dir"`
 	KeyKind  string `yaml:"key_kind"`
-	Control  struct {
+	// TPMDevice: for key_kind tpm2; default /dev/tpmrm0, or unix:PATH / tcp:HOST:PORT (swtpm)
+	TPMDevice string `yaml:"tpm_device"`
+	Control   struct {
 		Addr       string `yaml:"addr"`
 		ServerName string `yaml:"server_name"`
 		// Pin is the hex SPKI hash of the control plane's node-channel key;
@@ -85,6 +87,7 @@ func run(cfgPath string) error {
 		Name:              cfg.Name,
 		StateDir:          cfg.StateDir,
 		KeyKind:           cfg.KeyKind,
+		TPMDevice:         cfg.TPMDevice,
 		ControlAddr:       cfg.Control.Addr,
 		ControlServerName: cfg.Control.ServerName,
 		ControlPin:        cfg.Control.Pin,

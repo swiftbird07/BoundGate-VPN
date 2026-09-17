@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -32,6 +33,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicecert"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/softkey"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/tpm2key"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/controlclient"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
@@ -45,8 +47,13 @@ type Config struct {
 	Name string
 	// StateDir holds device.key and device.crt.
 	StateDir string
-	// KeyKind selects the DeviceKey implementation: "softkey" (default) or "tpm2" (M6).
+	// KeyKind selects the DeviceKey implementation: "softkey" (default) or
+	// "tpm2" (a key created in and bound to the machine's TPM 2.0).
 	KeyKind string
+	// TPMDevice is the TPM for key kind tpm2: a device path (default
+	// /dev/tpmrm0; a VM's vTPM appears there as well) or unix:PATH /
+	// tcp:HOST:PORT for a software TPM (swtpm).
+	TPMDevice string
 	// ControlAddr is host:port of the control plane (port 443).
 	ControlAddr string
 	// ControlServerName is the node SNI, default "nodes." + host of ControlAddr.
@@ -79,7 +86,7 @@ type Config struct {
 	// AllowOverlap disables the overlap guard: routes are installed even
 	// when this machine has an address inside them (see overlap.go).
 	AllowOverlap bool
-	Log         *slog.Logger
+	Log          *slog.Logger
 	// FlowLog receives one record per flow open/deny/close (the "flow"
 	// stream); nil means the system log.
 	FlowLog *slog.Logger
@@ -105,34 +112,34 @@ type UserStatus struct {
 
 // Status is what the CLI shows.
 type Status struct {
-	State           State           `json:"state"`
-	Profile         string          `json:"profile,omitempty"`
-	OverlayIP       string          `json:"overlay_ip,omitempty"`
-	Kind            registry.Kind   `json:"kind,omitempty"`
-	Roles           []registry.Role `json:"roles,omitempty"`
+	State     State           `json:"state"`
+	Profile   string          `json:"profile,omitempty"`
+	OverlayIP string          `json:"overlay_ip,omitempty"`
+	Kind      registry.Kind   `json:"kind,omitempty"`
+	Roles     []registry.Role `json:"roles,omitempty"`
 	// User is the active user session bound to this node (interactive nodes).
 	User *UserStatus `json:"user,omitempty"`
 	// LoginRequired is set when a hub refused the node for lack of a session.
-	LoginRequired bool `json:"login_required,omitempty"`
-	Prefixes        []string        `json:"prefixes,omitempty"`
-	Hubs            []HubStatus     `json:"hubs,omitempty"`
-	Routes          []string        `json:"routes,omitempty"`
+	LoginRequired bool        `json:"login_required,omitempty"`
+	Prefixes      []string    `json:"prefixes,omitempty"`
+	Hubs          []HubStatus `json:"hubs,omitempty"`
+	Routes        []string    `json:"routes,omitempty"`
 	// SkippedRoutes are advertised networks the node refused to route
 	// because this machine already lives in them (overlap guard).
-	SkippedRoutes []string `json:"skipped_routes,omitempty"`
-	Tunnels         int             `json:"tunnels"` // accepted tunnels (hub role)
-	Since           time.Time       `json:"since,omitempty"`
-	LastError       string          `json:"last_error,omitempty"`
-	LastClose       string          `json:"last_close,omitempty"`
-	NodeName        string          `json:"node_name"`
-	NodeID          string          `json:"node_id,omitempty"`
-	SPKI            string          `json:"spki"`
-	Fingerprint     string          `json:"fingerprint"`
-	KeyKind         string          `json:"key_kind"`
-	HardwareBound   bool            `json:"hardware_bound"`
-	Enrollment      string          `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
-	EnrollmentError string          `json:"enrollment_error,omitempty"`
-	Control         string          `json:"control"`
+	SkippedRoutes   []string  `json:"skipped_routes,omitempty"`
+	Tunnels         int       `json:"tunnels"` // accepted tunnels (hub role)
+	Since           time.Time `json:"since,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
+	LastClose       string    `json:"last_close,omitempty"`
+	NodeName        string    `json:"node_name"`
+	NodeID          string    `json:"node_id,omitempty"`
+	SPKI            string    `json:"spki"`
+	Fingerprint     string    `json:"fingerprint"`
+	KeyKind         string    `json:"key_kind"`
+	HardwareBound   bool      `json:"hardware_bound"`
+	Enrollment      string    `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
+	EnrollmentError string    `json:"enrollment_error,omitempty"`
+	Control         string    `json:"control"`
 	// ControlError is the last error of the control channel ("" = fine).
 	ControlError string `json:"control_error,omitempty"`
 	// ControlPin is the fingerprint of the pinned control-plane key.
@@ -223,6 +230,11 @@ func New(cfg Config) (*Node, error) {
 	switch cfg.KeyKind {
 	case "", "softkey":
 		opener = softkey.New(filepath.Join(cfg.StateDir, "device.key"))
+	case tpm2key.Kind:
+		opener = tpm2key.New(cfg.TPMDevice, filepath.Join(cfg.StateDir, "device.tpm"))
+		if _, err := os.Stat(filepath.Join(cfg.StateDir, "device.key")); err == nil {
+			cfg.Log.Warn("a software key exists next to the TPM key: this node now has a new identity and must enroll again; remove device.key once it is no longer needed")
+		}
 	default:
 		return nil, fmt.Errorf("node: unsupported key kind %q", cfg.KeyKind)
 	}
@@ -800,6 +812,9 @@ func (n *Node) Close() {
 	n.ship.flush(ctx)
 	cancel()
 	n.control.Close()
+	if c, ok := n.key.(io.Closer); ok {
+		c.Close() // a TPM key unloads itself
+	}
 }
 
 func (n *Node) watch(s *session) {
@@ -852,7 +867,7 @@ func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *sessio
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &session{
 		n: n, ctx: ctx, cancel: cancel, profile: prof, self: snap.Self, pool: snap.Pool.Masked(),
-		isHub: snap.Self.IsHub() || registry.HasRole(snap.Self.Roles, registry.RoleHub),
+		isHub:  snap.Self.IsHub() || registry.HasRole(snap.Self.Roles, registry.RoleHub),
 		bypass: make(map[netip.Addr]bool), peerRoute: make(map[netip.Prefix]int), done: make(chan struct{}),
 		tunnels: make(map[string]*tunnelStats),
 	}
