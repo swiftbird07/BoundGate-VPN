@@ -1,0 +1,64 @@
+# Builds the BoundGate image for amd64 and arm64 and pushes it to this
+# Gitea's container registry: every push to main becomes :latest (plus
+# :sha-<commit>), every tag v* becomes :<tag>. Needs an act_runner with
+# Docker. The registry login uses the secret REGISTRY_TOKEN (an access token
+# with package:write, Settings › Actions › Secrets); without it the job
+# tries the workflow's own token.
+#
+# The same build from a Mac: make image-push (Makefile).
+name: image
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: admin SPA (embedded into boundgate-control)
+        run: cd web && npm ci --no-audit --no-fund && npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: binaries for every platform
+        run: |
+          for arch in amd64 arm64; do
+            mkdir -p bin/linux_$arch
+            for b in boundgate-control boundgate-node boundgatectl boundgate-mux; do
+              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -o bin/linux_$arch/$b ./cmd/$b
+            done
+          done
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: gitlab.net407.com
+          username: ${{ gitea.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: gitlab.net407.com/sbh/boundgate
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=tag
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: REVISION=${{ gitea.sha }}

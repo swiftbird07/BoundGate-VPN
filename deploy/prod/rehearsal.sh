@@ -1,16 +1,20 @@
 #!/bin/sh
-# Rehearsal of the server kit with real binaries in the local Docker VM:
+# Rehearsal of the all-in-one kit with the real image in the local Docker VM:
 # mux + control plane + hub on ONE address and port 443 (host network of the
 # VM), and a client in its own container that enrolls, is approved and
 # reaches the hub through the shared port. Nothing on the Mac is touched.
+# The compose file is the shipped one; only the image is the locally built
+# boundgate:local (make image) instead of the registry's :latest.
 #
-#   make -o web server-bundle GOARCH=arm64 && deploy/server/rehearsal.sh
-#   deploy/server/rehearsal.sh down
+#   make rehearsal              (= make image && deploy/prod/rehearsal.sh)
+#   deploy/prod/rehearsal.sh down
 set -eu
 cd "$(dirname "$0")/../.."
 W=$PWD/dist/rehearsal
 P=bgrehearsal
-C="docker compose -p $P -f $W/docker-compose.yml"
+IMAGE=${BOUNDGATE_IMAGE:-boundgate:local}
+C="docker compose -p $P -f $W/docker-compose.yml --profile mux"
+export BOUNDGATE_IMAGE=$IMAGE
 fail() { echo "FAIL: $*" >&2; exit 1; }
 wait_for() { n=$1; shift; while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && return 0; n=$((n-1)); sleep 1; done; return 1; }
 
@@ -20,9 +24,9 @@ if [ "${1:-}" = down ]; then
   echo "rehearsal stopped"; exit 0
 fi
 
-[ -d dist/boundgate-server/bin ] || fail "run: make -o web server-bundle GOARCH=$(uname -m | sed 's/x86_64/amd64/')"
+docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "no image $IMAGE: run make image"
 "$0" down >/dev/null
-rm -rf "$W"; mkdir -p "$W"; cp -R dist/boundgate-server/. "$W/"
+rm -rf "$W"; mkdir -p "$W"; cp -R deploy/prod/all-in-one/. "$W/"
 GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
 
 echo "== 0. configuration: one address, port 443 for everything (the VM's host network; clients come in over $GW)"
@@ -42,7 +46,7 @@ log_stdout: true
 YAML
 
 echo "== 1. start mux, control plane, hub"
-$C up -d --build >/dev/null 2>&1 || fail "compose up (is port 443 of the VM free?)"
+$C up -d >/dev/null 2>&1 || fail "compose up (is port 443 of the VM free?): $($C up -d 2>&1 | tail -3)"
 hub() { $C exec -T hub "$@"; }
 wait_for 30 test -s "$W/state/control/bootstrap.token" || fail "control plane did not start: $($C logs control | tail -3)"
 TOKEN=$(cat "$W/state/control/bootstrap.token")
@@ -77,7 +81,7 @@ if $C logs hub 2>&1 | grep -q 'falling back to TCP'; then fail "the hub fell bac
 HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
 
 echo "== 4. a client in its own network namespace: same address, same port, other server name"
-docker run -d --name $P-client --cap-add NET_ADMIN --device /dev/net/tun -v "$W/client.yaml:/etc/boundgate/node.yaml:ro" $P-hub boundgate-node -config /etc/boundgate/node.yaml >/dev/null
+docker run -d --name $P-client --cap-add NET_ADMIN --device /dev/net/tun -v "$W/client.yaml:/etc/boundgate/node.yaml:ro" "$IMAGE" boundgate-node -config /etc/boundgate/node.yaml >/dev/null
 cl() { docker exec $P-client "$@"; }
 wait_for 30 cl boundgatectl -json enroll || fail "client cannot enroll: $(docker logs $P-client 2>&1 | tail -3)"
 approve "$(cl boundgatectl -json enroll)" '"kind":"workload","roles":["endpoint"]'

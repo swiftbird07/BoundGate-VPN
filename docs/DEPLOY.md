@@ -1,15 +1,24 @@
-# Deploying on a server (control plane + hub)
+# Deploying with Docker (control plane, hubs, nodes)
 
-One Linux server (a Hetzner Cloud VM is what this was written for) runs the
-control plane and a hub with Docker Compose; clients are nodes like the Mac
-app (MACOS-APP.md). This is a prototype deployment: read SECURITY.md before
-you depend on it.
+Everything server-side runs as containers from **one prebuilt image**,
+`gitlab.net407.com/sbh/boundgate:latest` (control plane, node, CLI and mux
+in one image; amd64 and arm64). Two compose kits under `deploy/prod/`:
+
+| Kit | Runs | For |
+|---|---|---|
+| `deploy/prod/all-in-one` | control plane + hub, and the mux when the two share one address (profile `mux`) | the one server everything starts with (a Hetzner Cloud VM is what this was written for) |
+| `deploy/prod/node` | one node: hub, subnet router, exit node or workload endpoint | every further Linux machine: a second hub, a VM in front of a LAN (with its vTPM), a server that should only be reachable |
+
+Clients are nodes like the Mac app (MACOS-APP.md); the dev lab in
+`deploy/compose` builds its own images and is not for production. This is
+a prototype deployment: read SECURITY.md before you depend on it.
 
 ## What you need
 
-* A server with a public IPv4 address, Docker and the compose plugin.
-  `make server-bundle GOARCH=amd64` for Intel/AMD machines (Hetzner CX/CPX),
-  `GOARCH=arm64` for Ampere (CAX).
+* A server with a public IPv4 address, Docker and the compose plugin
+  (Intel/AMD or arm64: the image tag covers both).
+* Access to the image: `docker login gitlab.net407.com` on the server with a
+  Gitea access token (scope `read:package`) unless the package is public.
 * A DNS name for the control plane, `bg.example.com` below, pointing at it.
   The node channel uses `nodes.bg.example.com` only as a TLS name on the
   same port; it needs no DNS record.
@@ -63,16 +72,28 @@ node channel falls back to TCP), but there is no tunnel until M8.2.
 ## Install
 
 ```bash
-make server-bundle GOARCH=amd64                     # on the Mac: dist/boundgate-server-linux-amd64.tar.gz
-scp dist/boundgate-server-linux-amd64.tar.gz root@SERVER:/opt/
+scp -r deploy/prod/all-in-one root@SERVER:/opt/boundgate        # the compose file and the three examples
 ssh root@SERVER
-cd /opt && tar xzf boundgate-server-linux-amd64.tar.gz && cd boundgate-server
+cd /opt/boundgate
 for f in mux control hub; do cp $f.yaml.example $f.yaml; done            # replace bg.example.com everywhere, fill in oidc
+echo COMPOSE_PROFILES=mux > .env                                        # one address: the mux owns 443. Two addresses: skip, see the compose file
 mkdir -p state/control && umask 077 && printf '%s\n' 'THE-OIDC-CLIENT-SECRET' > state/control/oidc.secret
 sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000          # QUIC wants larger UDP buffers; persist in /etc/sysctl.d
-docker compose up -d --build mux control
+docker compose pull
+docker compose up -d mux control
 docker compose logs -f control
 ```
+
+Compose does not build anything: it pulls `:latest`, which the CI job
+(`.gitea/workflows/image.yml`) pushes for every commit on `main`, tagged
+also `sha-<commit>`, and every `v*` tag as `:<tag>`. Pin one of those in
+`.env` (`BOUNDGATE_IMAGE=gitlab.net407.com/sbh/boundgate:sha-abc1234`) when
+"whatever is on main" is not what you want on a server. Updating is
+`docker compose pull && docker compose up -d`. Without a CI runner,
+`make image-push` on the Mac does the same build (both architectures,
+buildx from the `docker:cli` image because Colima ships none; `docker
+login gitlab.net407.com` first with a token that has `write:package`).
+`make image` builds `boundgate:local` for this machine only.
 
 On its first start the control plane creates its database, the long-lived
 node-channel key (`state/control/nodes.key`: **back it up**, every node pins
@@ -103,7 +124,7 @@ set `acme.directory_url` to the staging directory first.
 ## The hub
 
 ```bash
-docker compose up -d --build hub
+docker compose up -d hub
 docker compose exec hub boundgatectl enroll      # shows the hub's fingerprint; compare the control pin with the fingerprint from the log
 ```
 
@@ -127,6 +148,27 @@ on a Docker host: `sysctl -w net.ipv4.ip_forward=1`, and Docker's
 `FORWARD` policy is *drop*, so allow the tunnel device:
 `iptables -I DOCKER-USER -i bg0 -j ACCEPT; iptables -I DOCKER-USER -o bg0 -j ACCEPT`.
 
+## Further nodes
+
+Every other Linux machine gets `deploy/prod/node`: copy the directory, fill
+in `node.yaml` (the example has a block per role: subnet router with its
+LAN prefix, exit node, a second hub, a workload endpoint), then
+
+```bash
+docker compose pull && docker compose up -d
+docker compose exec node boundgatectl enroll        # confirm + sign in the UI; auto_up brings it up
+docker compose exec node boundgatectl status
+```
+
+Host network, `NET_ADMIN` and `/dev/net/tun` are what a node needs; a
+router additionally `net.ipv4.ip_forward=1` on the host (Docker sets it
+itself) and, on a Docker host, the `DOCKER-USER` rules above. A VM with a
+vTPM (Proxmox: add a TPM 2.0 device) passes `/dev/tpmrm0` into the
+container and sets `key_kind: tpm2` (TPM.md); the admin then grants
+`hardware_bound` at approval. `./state` holds the device identity: keep it
+across updates, and note that copying it to a second machine is exactly
+the cloning a TPM key prevents.
+
 ## The Mac
 
 Build and install the app (MACOS-APP.md), *Install service*, enter
@@ -141,12 +183,13 @@ A VPN that owns the overlay range stops `Connect` with an explanation (R66).
 
 ## Rehearsal
 
-`deploy/server/rehearsal.sh` runs exactly this kit in the local Docker VM:
+`make rehearsal` builds `boundgate:local` and runs the shipped all-in-one
+compose file with it in the local Docker VM (`deploy/prod/rehearsal.sh`):
 mux, control plane and hub on one address and port 443, a client in its own
 container that enrolls over HTTP/3, is approved and signed, brings a tunnel
 up on the shared UDP port and pings the hub; it checks that the hub sees
 the client's real address and that a mux restart does not interrupt the
-tunnel. `make rehearsal` builds the bundle for the VM's architecture first.
+tunnel.
 
 ## Operating it
 
@@ -162,4 +205,4 @@ tunnel. `make rehearsal` builds the bundle for the VM's architecture first.
 
 SECURITY.md, in particular R21 (the hub sees overlay traffic until M7),
 R24/R73 (trust on first use at enrollment), R67 (no TPM attestation),
-R76 (ACME, shared host) and R77/R78 (the mux).
+R76 (ACME, shared host), R77/R78 (the mux) and R79 (the image).

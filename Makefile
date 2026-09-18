@@ -3,7 +3,7 @@ GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: rehearsal server-bundle mac-app test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: image image-push rehearsal mac-app test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -62,18 +62,34 @@ test-tpm:
 mac-app:
 	apps/macos/build-app.sh
 
-# Everything a Linux server needs (docs/DEPLOY.md): make server-bundle GOARCH=amd64
-server-bundle: build-linux
-	rm -rf dist/boundgate-server && mkdir -p dist/boundgate-server/bin
-	cp bin/linux_$(GOARCH)/boundgate-control bin/linux_$(GOARCH)/boundgate-node bin/linux_$(GOARCH)/boundgatectl bin/linux_$(GOARCH)/boundgate-mux dist/boundgate-server/bin/
-	cp deploy/server/docker-compose.yml deploy/server/Dockerfile.control deploy/server/Dockerfile.node deploy/server/Dockerfile.mux deploy/server/*.example dist/boundgate-server/
-	tar -C dist -czf dist/boundgate-server-linux-$(GOARCH).tar.gz boundgate-server
-	@echo "dist/boundgate-server-linux-$(GOARCH).tar.gz"
+# The one image every deployment pulls (deploy/prod, docs/DEPLOY.md). Binaries
+# come from build-linux (Go in the box, cooldown-checked); the Dockerfile only
+# adds ip/nft/CA roots. `image` builds for this machine's architecture into the
+# local Docker; `image-push` builds amd64+arm64 and pushes them as one tag.
+# Colima has no buildx plugin, so buildx runs from the docker:cli image
+# against the VM's socket (builder "boundgate", a docker-container driver
+# with the VM's binfmt for the foreign architecture). Pushing needs a
+# `docker login gitlab.net407.com` on this Mac first (token with package:write).
+IMAGE ?= gitlab.net407.com/sbh/boundgate
+IMAGE_TAG ?= latest
+PLATFORMS ?= linux/amd64,linux/arm64
+REVISION := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILDX = docker run --rm -e DOCKER_HOST=unix:///var/run/docker.sock \
+  -v /var/run/docker.sock:/var/run/docker.sock -v boundgate-buildx:/root/.docker/buildx \
+  -v "$(HOME)/.docker/config.json:/root/.docker/config.json:ro" -v "$(CURDIR)":/work -w /work docker:cli buildx
 
-# The server kit end to end in the local Docker VM (docs/DEPLOY.md)
-rehearsal:
-	$(MAKE) server-bundle GOARCH=$(GOARCH)
-	deploy/server/rehearsal.sh
+image: build-linux
+	docker build --build-arg TARGETARCH=$(GOARCH) --build-arg REVISION=$(REVISION) -t boundgate:local -f deploy/Dockerfile .
+
+image-push:
+	@for a in $$(echo "$(PLATFORMS)" | tr ',' ' ' | sed 's#linux/##g'); do $(MAKE) -o web build-linux GOARCH=$$a || exit 1; done
+	@$(BUILDX) inspect boundgate >/dev/null 2>&1 || $(BUILDX) create --name boundgate --driver docker-container >/dev/null
+	$(BUILDX) build --builder boundgate --platform $(PLATFORMS) --build-arg REVISION=$(REVISION) \
+	  -t $(IMAGE):$(IMAGE_TAG) -t $(IMAGE):sha-$(REVISION) -f deploy/Dockerfile --push .
+
+# The all-in-one kit end to end in the local Docker VM (docs/DEPLOY.md)
+rehearsal: image
+	deploy/prod/rehearsal.sh
 
 test-race:
 	box env CGO_ENABLED=1 go test -race -count=1 ./...

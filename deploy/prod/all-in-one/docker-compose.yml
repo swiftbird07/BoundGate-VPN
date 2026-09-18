@@ -1,0 +1,62 @@
+# BoundGate all-in-one: control plane and a hub on one Linux server, from the
+# prebuilt image (docs/DEPLOY.md). Everything uses the host's network: a hub
+# is a router whose tunnel device, routes and NAT belong to the host, and the
+# mux must see real client addresses.
+#
+# One public address, port 443 shared (the usual case): the mux owns 443 on
+# TCP and UDP and routes by TLS server name to control plane and hub, which
+# listen on loopback (behind_mux in control.yaml and hub.yaml). Start it
+# with the `mux` profile:
+#
+#   docker compose --profile mux pull
+#   docker compose --profile mux up -d          # or COMPOSE_PROFILES=mux in .env
+#   docker compose exec hub boundgatectl enroll
+#
+# Two addresses (control plane and hub each own port 443 of their own IP):
+# leave the profile off, set `listen` in control.yaml and hub.yaml to the
+# respective address and drop `behind_mux`.
+#
+# Updating: docker compose --profile mux pull && docker compose --profile mux up -d
+name: boundgate
+
+x-image: &image ${BOUNDGATE_IMAGE:-gitlab.net407.com/sbh/boundgate:latest}
+
+services:
+  mux:
+    image: *image
+    profiles: [mux]
+    network_mode: host
+    restart: unless-stopped
+    user: "65534:65534"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    volumes:
+      - ./mux.yaml:/etc/boundgate/mux.yaml:ro
+    command: ["boundgate-mux", "-config", "/etc/boundgate/mux.yaml"]
+
+  control:
+    image: *image
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./control.yaml:/etc/boundgate/control.yaml:ro
+      - ./state/control:/var/lib/boundgate     # database, node-channel key (back it up), ACME cache, bootstrap token
+      - ./logs/control:/var/log/boundgate
+    command: ["boundgate-control", "-config", "/etc/boundgate/control.yaml"]
+
+  hub:
+    image: *image
+    network_mode: host
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+      # a TPM or vTPM for the hub's key (key_kind: tpm2 in hub.yaml, docs/TPM.md):
+      # - /dev/tpmrm0:/dev/tpmrm0
+    depends_on: [control]
+    volumes:
+      - ./hub.yaml:/etc/boundgate/node.yaml:ro
+      - ./state/hub:/var/lib/boundgate         # the device identity
+      - ./logs/hub:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/node.yaml"]

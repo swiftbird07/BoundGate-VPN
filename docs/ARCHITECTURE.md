@@ -19,6 +19,11 @@ dependency: policy can narrow what identity granted, never widen it.
 | `boundgate-mux` | Server, optional, owns port 443 | Lets control plane and hub share one address and port 443 (TCP and UDP): routes by TLS server name and QUIC connection ID, terminates nothing, holds no key (DEPLOY.md) |
 | `boundgatectl` | Every participant, as user; admins for `admin sign` | Thin CLI over the node's Unix socket (status, identity, enroll, up, down, login, logout); `admin sign` talks to the control plane directly and signs bindings with the admin's SSH key |
 
+All four ship in one container image, `gitlab.net407.com/sbh/boundgate`
+(DEPLOY.md): a server picks the binary with the compose `command`, and
+every Linux machine that takes part runs the same tag. The dev lab
+(`deploy/compose`) builds its own images from the tree.
+
 There is no separate agent or gateway. One binary, roles per node:
 
 | Role | Meaning |

@@ -1,0 +1,28 @@
+# A single BoundGate node from the prebuilt image (docs/DEPLOY.md): a hub, a
+# subnet router in front of a LAN, an exit node, or a workload endpoint. The
+# control plane runs elsewhere (deploy/prod/all-in-one). Host network: the
+# tunnel device, routes and NAT the node installs belong to the host.
+#
+#   cp node.yaml.example node.yaml               # name, control plane, roles
+#   docker compose pull && docker compose up -d
+#   docker compose exec node boundgatectl enroll   # then confirm + sign in the admin UI
+#   docker compose exec node boundgatectl status
+#
+# Updating: docker compose pull && docker compose up -d
+name: boundgate-node
+
+services:
+  node:
+    image: ${BOUNDGATE_IMAGE:-gitlab.net407.com/sbh/boundgate:latest}
+    network_mode: host
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+      # TPM or vTPM (key_kind: tpm2 in node.yaml, docs/TPM.md); on Proxmox add a vTPM to the VM:
+      # - /dev/tpmrm0:/dev/tpmrm0
+    volumes:
+      - ./node.yaml:/etc/boundgate/node.yaml:ro
+      - ./state:/var/lib/boundgate             # the device identity: losing it means re-enrolling
+      - ./logs:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/node.yaml"]
