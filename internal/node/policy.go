@@ -209,7 +209,7 @@ func (ts *tunnelStats) WritePacket(b []byte) ([]byte, error) {
 
 func (ts *tunnelStats) attrs() map[string]any {
 	return map[string]any{
-		"tunnel": ts.t.ID(), "peer": string(ts.peer.ID), "peer_name": ts.peer.Name, "peer_addr": ts.t.Peer().SourceIP().String(),
+		"tunnel": ts.t.ID(), "peer": string(ts.peer.ID), "peer_name": ts.peer.Name, "peer_addr": ts.t.Peer().SourceIP().String(), "transport": ts.t.Transport(),
 		"opened_at": ts.t.Opened().UTC().Format(time.RFC3339Nano),
 		"bytes_in": ts.in.Load(), "bytes_out": ts.out.Load(), "packets_in": ts.inPkts.Load(), "packets_out": ts.outPkts.Load(),
 	}

@@ -23,10 +23,11 @@ public struct HubStatus: Codable, Equatable, Sendable, Identifiable {
     public var addr: String
     public var state: String
     public var error: String?
+    public var transport: String?   // "quic", or "tcp" on the fallback for networks that block UDP
     public var primary: Bool
 
-    public init(name: String, addr: String, state: String, error: String? = nil, primary: Bool = false) {
-        self.name = name; self.addr = addr; self.state = state; self.error = error; self.primary = primary
+    public init(name: String, addr: String, state: String, error: String? = nil, transport: String? = nil, primary: Bool = false) {
+        self.name = name; self.addr = addr; self.state = state; self.error = error; self.transport = transport; self.primary = primary
     }
 
     public var id: String { name }

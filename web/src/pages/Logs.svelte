@@ -72,7 +72,7 @@
       <tbody>
         {#each tunnels as t (t.id)}
           <tr>
-            <td><b>{t.peer_name || t.peer_id}</b><div class="faint small mono">{t.peer_addr}</div></td>
+            <td><b>{t.peer_name || t.peer_id}</b><div class="faint small mono">{t.peer_addr}{#if t.transport === 'tcp'} · over TCP{/if}</div></td>
             <td>{t.hub_name || t.hub_id}</td>
             <td>{#if t.closed_at}<Badge status="ended" label={t.close_reason || 'closed'} />{:else}<span class="badge ok pulse">open</span>{/if}</td>
             <td><Time at={t.opened_at} /></td>

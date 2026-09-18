@@ -49,9 +49,13 @@ func (l *staticLookup) remove(h devicekey.SPKIHash) {
 // echoHandler assigns an address and echoes packets with src/dst swapped.
 type echoHandler struct {
 	accepted chan transport.AuthenticatedPeer
+	refuse   int // HTTP status to refuse every tunnel with, 0 = accept
 }
 
 func (h *echoHandler) Accept(_ context.Context, peer transport.AuthenticatedPeer) (transport.TunnelConfig, int, error) {
+	if h.refuse != 0 {
+		return transport.TunnelConfig{}, h.refuse, nil
+	}
 	h.accepted <- peer
 	return transport.TunnelConfig{
 		Assigned: []netip.Prefix{netip.MustParsePrefix("100.96.0.2/32")},
@@ -127,18 +131,23 @@ func newServerCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
 }
 
 type testEnv struct {
-	srv    *transport.Server
-	lookup *staticLookup
-	h      *echoHandler
-	roots  *x509.CertPool
-	addr   string
-	cancel context.CancelFunc
+	srv     *transport.Server
+	lookup  *staticLookup
+	h       *echoHandler
+	roots   *x509.CertPool
+	addr    string
+	tcpAddr string
+	cancel  context.CancelFunc
 }
 
 func startServer(t *testing.T, lookup *staticLookup) *testEnv {
 	t.Helper()
 	serverCert, roots := newServerCert(t)
 	h := &echoHandler{accepted: make(chan transport.AuthenticatedPeer, 8)}
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv, err := transport.NewServer(transport.ServerConfig{
 		Addr:        "127.0.0.1:0",
 		TLS:         transport.ServerTLSConfig(serverCert, lookup),
@@ -146,6 +155,7 @@ func startServer(t *testing.T, lookup *staticLookup) *testEnv {
 		Template:    "https://gateway.test/vpn",
 		IdleTimeout: 5 * time.Second,
 		KeepAlive:   time.Second,
+		TCPListener: tcpLn,
 	}, h)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +175,7 @@ func startServer(t *testing.T, lookup *staticLookup) *testEnv {
 		cancel()
 		<-done
 	})
-	return &testEnv{srv: srv, lookup: lookup, h: h, roots: roots, addr: srv.LocalAddr().String(), cancel: cancel}
+	return &testEnv{srv: srv, lookup: lookup, h: h, roots: roots, addr: srv.LocalAddr().String(), tcpAddr: tcpLn.Addr().String(), cancel: cancel}
 }
 
 func (e *testEnv) dial(t *testing.T, cert tls.Certificate) (*transport.ClientTunnel, error) {
@@ -178,6 +188,20 @@ func (e *testEnv) dial(t *testing.T, cert tls.Certificate) (*transport.ClientTun
 		Template:    "https://gateway.test/vpn",
 		IdleTimeout: 5 * time.Second,
 		KeepAlive:   time.Second,
+	})
+}
+
+// dialTCP is dial over the TCP fallback: same TLS material, same template.
+func (e *testEnv) dialTCP(t *testing.T, cert tls.Certificate) (*transport.ClientTunnel, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return transport.DialTCP(ctx, transport.ClientConfig{
+		GatewayAddr: e.tcpAddr,
+		TLS:         transport.ClientTLSConfig(cert, e.roots, "gateway.test"),
+		Template:    "https://gateway.test/vpn",
+		IdleTimeout: 5 * time.Second,
+		KeepAlive:   200 * time.Millisecond,
 	})
 }
 

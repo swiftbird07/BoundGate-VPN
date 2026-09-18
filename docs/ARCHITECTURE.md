@@ -99,8 +99,24 @@ See `ACL.md` for the entity model, the enforcement points and the flow log.
   possession of the device key.
 * Only port 443. UDP/443 carries tunnels (hubs) and the HTTP/3 node channel
   (control plane); TCP/443 carries the admin API and, for nodes, the
-  fallback when UDP is blocked. Tunnel fallback over TCP is not in the
-  prototype (plan: M8.2).
+  fallback when UDP is blocked, for the node channel and for the tunnel.
+* **Tunnel over TCP (the fallback, M8.2).** Hotel, guest and corporate
+  networks often drop UDP. A hub therefore also serves the tunnel on
+  TCP/443: the same mTLS with the same device certificates and the same
+  pinned hub key, then RFC 9484's HTTP/1.1 form (`Upgrade: connect-ip`,
+  101) and RFC 9297 capsules on the stream: ADDRESS_ASSIGN and
+  ROUTE_ADVERTISEMENT as on QUIC, IP packets in DATAGRAM capsules, plus two
+  private capsules for what a stream lacks (a close code, a keep-alive).
+  A spoke dials QUIC first; only when the handshake gets **no answer**
+  within 5 s does it try TCP (an answer, even a refusal, never switches
+  transports). On TCP it retries QUIC every `quic_retry` (2 min) and moves
+  back without a gap: the new tunnel is attached before the old one is
+  closed. TCP-in-TCP costs latency under loss; `transport: tcp` forces it
+  for testing, `quic` disables the fallback, `tcp_fallback: false` on a
+  hub switches the listener off. A mux or an SNI-passthrough reverse
+  proxy sees an ordinary TLS connection for `hub.boundgate`; behind PROXY
+  protocol v2 the hub still logs the client's address. Status and the
+  tunnel records say which transport a tunnel runs on.
 * One address is enough: where control plane and hub live on the same
   server, `boundgate-mux` owns 443 and both listen on loopback
   (`behind_mux`). TCP is routed by the ClientHello's server name. QUIC is

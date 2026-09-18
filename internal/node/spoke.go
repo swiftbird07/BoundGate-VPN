@@ -53,6 +53,7 @@ type HubStatus struct {
 	State      string    `json:"state"`
 	Error      string    `json:"error,omitempty"`
 	Since      time.Time `json:"since,omitempty"`
+	Transport  string    `json:"transport,omitempty"` // quic or tcp (the fallback)
 	Primary    bool      `json:"primary"`
 	Advertised []string  `json:"advertised,omitempty"`
 }
@@ -179,15 +180,11 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 		m.electLocked()
 		m.applyRoutesLocked()
 		m.mu.Unlock()
-		n.log.Info("hub connected", "hub", l.hub.Name, "addr", l.hub.PublicAddr, "advertised", adv)
+		n.log.Info("hub connected", "hub", l.hub.Name, "addr", l.hub.PublicAddr, "advertised", adv, "transport", t.Transport())
 		n.publishStatus()
 
 		go m.pump(ctx, t)
-		select {
-		case <-t.Done():
-		case <-ctx.Done():
-			_ = t.Close()
-		}
+		t = m.wait(ctx, l, t)
 		reason := "connection lost"
 		revoked := false
 		if code, ok := transport.CloseCode(t.Err()); ok {
@@ -236,7 +233,75 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 	}
 }
 
+// wait blocks while the link lives. On the TCP fallback it periodically
+// tries QUIC again and, when that works, moves the link over without a gap:
+// the new tunnel is attached before the old one is closed. Returns the
+// tunnel that ended.
+func (m *spokeManager) wait(ctx context.Context, l *hubLink, t *transport.ClientTunnel) *transport.ClientTunnel {
+	n := m.s.n
+	for {
+		var probe <-chan time.Time
+		if t.Transport() == "tcp" && n.cfg.Transport == "auto" {
+			probe = time.After(n.cfg.QUICRetry)
+		}
+		select {
+		case <-t.Done():
+			return t
+		case <-ctx.Done():
+			_ = t.Close()
+			return t
+		case <-probe:
+			nt, adv, err := m.dialWith(ctx, l.hub, "quic")
+			if err != nil {
+				n.log.Debug("still on the tcp fallback: QUIC did not work", "hub", l.hub.Name, "err", err)
+				continue
+			}
+			m.mu.Lock()
+			old := t
+			t = nt
+			l.tunnel, l.advertised, l.since = nt, adv, time.Now()
+			m.s.dp.table.Detach(l.hub.OverlayIP, old)
+			m.s.dp.table.Attach(l.hub.OverlayIP, nt)
+			m.primary = nil // re-elect so the uplink points at the new tunnel
+			m.electLocked()
+			m.applyRoutesLocked()
+			m.mu.Unlock()
+			go m.pump(ctx, nt)
+			_ = old.Close()
+			n.log.Info("hub connection moved back to QUIC", "hub", l.hub.Name, "advertised", adv)
+			n.publishStatus()
+		}
+	}
+}
+
+// dial connects to a hub with the configured transport preference: QUIC
+// first; when its handshake gets no answer (a network that blocks UDP) the
+// same tunnel over TCP. An answer from the hub, even a refusal, is never a
+// reason to switch transports.
 func (m *spokeManager) dial(ctx context.Context, hub registry.Node) (*transport.ClientTunnel, []netip.Prefix, error) {
+	switch m.s.n.cfg.Transport {
+	case "tcp":
+		return m.dialWith(ctx, hub, "tcp")
+	case "quic":
+		return m.dialWith(ctx, hub, "quic")
+	}
+	t, adv, err := m.dialWith(ctx, hub, "quic")
+	if err == nil || m.s.n.cfg.NoTCPFallback || ctx.Err() != nil {
+		return t, adv, err
+	}
+	var de *transport.DialError
+	if errors.As(err, &de) && de.Status != 0 {
+		return nil, nil, err // the hub answered over QUIC
+	}
+	m.s.n.log.Info("QUIC handshake failed; trying the tunnel over TCP", "hub", hub.Name, "err", err)
+	t, adv, terr := m.dialWith(ctx, hub, "tcp")
+	if terr != nil {
+		return nil, nil, fmt.Errorf("quic: %v; tcp: %w", err, terr)
+	}
+	return t, adv, nil
+}
+
+func (m *spokeManager) dialWith(ctx context.Context, hub registry.Node, transportName string) (*transport.ClientTunnel, []netip.Prefix, error) {
 	s := m.s
 	target := hub.PublicAddr
 	if o, ok := s.n.cfg.HubAddrs[hub.Name]; ok {
@@ -253,13 +318,20 @@ func (m *spokeManager) dial(ctx context.Context, hub registry.Node) (*transport.
 	}
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	t, err := transport.Dial(dctx, transport.ClientConfig{
-		GatewayAddr: addr.String(),
-		TLS:         transport.ClientTLSConfigPinned(s.n.cert, hub.SPKI),
-		Template:    transport.HubTemplate,
-		IdleTimeout: 30 * time.Second,
-		KeepAlive:   10 * time.Second,
-	})
+	cc := transport.ClientConfig{
+		GatewayAddr:      addr.String(),
+		TLS:              transport.ClientTLSConfigPinned(s.n.cert, hub.SPKI),
+		Template:         transport.HubTemplate,
+		IdleTimeout:      30 * time.Second,
+		KeepAlive:        10 * time.Second,
+		HandshakeTimeout: 5 * time.Second,
+	}
+	var t *transport.ClientTunnel
+	if transportName == "tcp" {
+		t, err = transport.DialTCP(dctx, cc)
+	} else {
+		t, err = transport.Dial(dctx, cc)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -444,6 +516,9 @@ func (m *spokeManager) hubs() []HubStatus {
 			continue
 		}
 		hs := HubStatus{Name: l.hub.Name, Addr: l.hub.PublicAddr, State: l.state, Error: l.err, Since: l.since, Primary: l == m.primary}
+		if l.tunnel != nil {
+			hs.Transport = l.tunnel.Transport()
+		}
 		for _, a := range l.advertised {
 			hs.Advertised = append(hs.Advertised, a.String())
 		}

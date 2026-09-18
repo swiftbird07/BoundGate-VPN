@@ -75,6 +75,16 @@ type Config struct {
 	// BehindMux: the hub shares its public port with other servers behind a
 	// boundgate-mux. Listen is then the private address the mux delivers to.
 	BehindMux *BehindMux
+	// NoTCPFallback: a hub serves tunnels on UDP only, and a spoke never
+	// tries TCP. Default: hubs also listen on TCP at Listen (the same
+	// tunnel over TLS on TCP/443 for networks that block UDP) and spokes
+	// fall back to it when the QUIC handshake gets no answer.
+	NoTCPFallback bool
+	// Transport is the spoke's preference: "auto" (QUIC, then TCP; back to
+	// QUIC when it works again), "quic" (never TCP), "tcp" (always TCP).
+	Transport string
+	// QUICRetry is how often a spoke on TCP tries QUIC again. Default 2m.
+	QUICRetry time.Duration
 	// AutoUp brings the overlay up as soon as the first snapshot arrives
 	// (servers, hubs, routers). Interactive endpoints use `boundgatectl up`.
 	AutoUp bool
@@ -114,6 +124,9 @@ type BehindMux struct {
 	ID byte
 	// Trusted are the addresses the mux delivers from.
 	Trusted []netip.Prefix
+	// NoProxyProtocol: the TCP front sends no PROXY v2 header, so the hub
+	// sees the front's address instead of the client's on TCP tunnels.
+	NoProxyProtocol bool
 }
 
 // UserStatus is the node's user session as the CLI shows it.
@@ -216,6 +229,19 @@ func New(cfg Config) (*Node, error) {
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":443"
+	}
+	switch cfg.Transport {
+	case "", "auto":
+		cfg.Transport = "auto"
+	case "quic", "tcp":
+	default:
+		return nil, fmt.Errorf("node: transport %q: want auto, quic or tcp", cfg.Transport)
+	}
+	if cfg.NoTCPFallback && cfg.Transport == "tcp" {
+		return nil, errors.New("node: transport tcp with tcp_fallback: false")
+	}
+	if cfg.QUICRetry == 0 {
+		cfg.QUICRetry = 2 * time.Minute
 	}
 	if cfg.Name == "" {
 		cfg.Name, _ = os.Hostname()
@@ -934,17 +960,32 @@ func (s *session) apply(ctx context.Context) error {
 	if s.isHub {
 		var pc net.PacketConn
 		var gen quic.ConnectionIDGenerator
+		var tcpLn net.Listener
+		if !n.cfg.NoTCPFallback {
+			ln, err := net.Listen("tcp", n.cfg.Listen)
+			if err != nil {
+				return fmt.Errorf("hub tcp listener: %w", err)
+			}
+			tcpLn = ln
+		}
 		if m := n.cfg.BehindMux; m != nil {
 			bc, err := mux.ListenBackend(n.cfg.Listen, m.Trusted)
 			if err != nil {
+				if tcpLn != nil {
+					_ = tcpLn.Close()
+				}
 				return err
 			}
 			pc, gen = bc, mux.CIDGenerator{ID: m.ID}
-			n.log.Info("hub listens behind a mux", "addr", n.cfg.Listen, "id", m.ID, "trusted", m.Trusted)
+			if tcpLn != nil && !m.NoProxyProtocol {
+				tcpLn = &mux.ProxyListener{Listener: tcpLn, Trusted: m.Trusted}
+			}
+			n.log.Info("hub listens behind a mux", "addr", n.cfg.Listen, "id", m.ID, "trusted", m.Trusted, "proxy_protocol", tcpLn != nil && !m.NoProxyProtocol)
 		}
 		srv, err := transport.NewServer(transport.ServerConfig{
 			PacketConn:      pc,
 			ConnIDGenerator: gen,
+			TCPListener:     tcpLn,
 			Addr:            n.cfg.Listen,
 			TLS:             transport.ServerTLSConfig(n.cert, n.holder),
 			Lookup:          n.holder,
@@ -954,9 +995,15 @@ func (s *session) apply(ctx context.Context) error {
 			Logger:          n.log,
 		}, &hubService{s: s})
 		if err != nil {
+			if tcpLn != nil {
+				_ = tcpLn.Close()
+			}
 			return err
 		}
 		if err := srv.Listen(); err != nil {
+			if tcpLn != nil {
+				_ = tcpLn.Close()
+			}
 			return err
 		}
 		s.srv = srv
@@ -969,7 +1016,7 @@ func (s *session) apply(ctx context.Context) error {
 				s.close("hub listener failed: " + err.Error())
 			}
 		}()
-		n.log.Info("hub listening", "udp", srv.LocalAddr().String(), "overlay_ip", s.self.OverlayIP, "public_addr", n.cfg.PublicAddr)
+		n.log.Info("hub listening", "udp", srv.LocalAddr().String(), "tcp_fallback", tcpLn != nil, "overlay_ip", s.self.OverlayIP, "public_addr", n.cfg.PublicAddr)
 	}
 	hubs := n.holder.Load().Hubs()
 	if !s.isHub {

@@ -266,6 +266,9 @@ func printStatus(s node.Status, asJSON bool) error {
 				mark = "*"
 			}
 			line := fmt.Sprintf("hub %s        %s (%s) %s", mark, h.Name, h.Addr, h.State)
+			if h.Transport == "tcp" {
+				line += " over TCP (UDP blocked?)"
+			}
 			if h.Error != "" {
 				line += ": " + h.Error
 			}

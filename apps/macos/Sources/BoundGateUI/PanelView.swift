@@ -216,7 +216,7 @@ struct ConnectionCard: View {
                         Spacer()
                         if let since = s.since, since.timeIntervalSince1970 > 0 { Text(since, style: .relative).font(.body(11.5)).foregroundStyle(t.text3) }
                     }
-                    InfoRow(label: "Through", value: hub?.name ?? "–")
+                    InfoRow(label: "Through", value: (hub?.name ?? "–") + (hub?.transport == "tcp" ? " · over TCP" : ""))
                     if let u = s.user { InfoRow(label: "Signed in as", value: u.displayName) }
                     InfoRow(label: "Networks", value: networks(s))
                 case .loginRequired:

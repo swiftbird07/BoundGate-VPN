@@ -62,7 +62,7 @@
     {:else}
       <table><thead><tr><th>Peer</th><th>Hub</th><th>Since</th><th class="num">Traffic</th></tr></thead><tbody>
         {#each tunnels as t (t.id)}
-          <tr><td><b>{t.peer_name || t.peer_id}</b><div class="faint small">{t.peer_addr}</div></td><td>{t.hub_name || t.hub_id}</td><td><Time at={t.opened_at} /></td><td class="num">{bytes(t.bytes_in + t.bytes_out)}</td></tr>
+          <tr><td><b>{t.peer_name || t.peer_id}</b><div class="faint small">{t.peer_addr}{#if t.transport === 'tcp'} · over TCP{/if}</div></td><td>{t.hub_name || t.hub_id}</td><td><Time at={t.opened_at} /></td><td class="num">{bytes(t.bytes_in + t.bytes_out)}</td></tr>
         {/each}
       </tbody></table>
     {/if}

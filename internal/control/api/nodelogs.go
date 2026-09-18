@@ -144,7 +144,7 @@ func tunnelReport(hubID string, ev ShippedEvent) (db.TunnelReport, bool) {
 		t, _ := time.Parse(time.RFC3339Nano, str(k))
 		return t
 	}
-	rep := db.TunnelReport{ID: str("tunnel"), HubID: hubID, PeerID: str("peer"), PeerAddr: str("peer_addr"), OpenedAt: ts("opened_at"), ClosedAt: ts("closed_at"),
+	rep := db.TunnelReport{ID: str("tunnel"), HubID: hubID, PeerID: str("peer"), PeerAddr: str("peer_addr"), Transport: str("transport"), OpenedAt: ts("opened_at"), ClosedAt: ts("closed_at"),
 		CloseReason: str("reason"), BytesIn: num("bytes_in"), BytesOut: num("bytes_out"), PacketsIn: num("packets_in"), PacketsOut: num("packets_out")}
 	if rep.ID == "" || rep.PeerID == "" || rep.OpenedAt.IsZero() {
 		return db.TunnelReport{}, false

@@ -25,6 +25,10 @@ prefixes:
 #
 # workload endpoint (a server that only needs to be reached, no user login)
 # roles: [endpoint]
+#
+# transport: auto                  # tunnels to hubs: QUIC on UDP/443, the same tunnel over TCP/443 when the
+                                   # network blocks UDP, back to QUIC when it works again (quic_retry: 2m).
+                                   # `tcp` forces the fallback, `quic` never uses it
 auto_up: true                      # up as soon as approved and at every start
 profile: full                      # routes everything hubs advertise. A server should not take an exit node's
                                    # 0.0.0.0/0 as its default route: put an `include` profile (docs/PROFILES.md, the

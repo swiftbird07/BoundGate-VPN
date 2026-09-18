@@ -52,8 +52,13 @@ make a handshake fail.
   client's address, so the servers see real peers, connections survive a
   client's address change, and the mux keeps no state for established
   connections: restarting it does not drop a tunnel.
-* A hub's TCP fallback for tunnels does not exist yet (plan: M8.2); the mux
-  already routes `hub.boundgate` on TCP once a hub listens there.
+* **TCP/443 is the tunnel's fallback**, not only the admin UI's port: a
+  client whose network blocks UDP gets the same tunnel over TLS on TCP
+  (ARCHITECTURE.md, "Tunnel over TCP"). The mux routes `hub.boundgate` on
+  TCP to the hub's TCP listener with a PROXY header, so the hub still sees
+  the client's address; the spoke returns to QUIC by itself when UDP works
+  again. `boundgatectl status` shows `over TCP (UDP blocked?)` on such a
+  link, the tunnel list in the UI shows `over TCP`.
 
 ### Port 443 is already taken by a web server or reverse proxy
 
@@ -64,10 +69,11 @@ What works is **passing the connection through by server name** (layer 4):
 | Setup | TCP/443 | UDP/443 |
 |---|---|---|
 | mux in front (simplest) | mux; `default_tcp: 127.0.0.1:8080` hands every other name to your web server, TLS untouched. Move the web server's HTTPS listener to that port | mux |
-| your proxy stays in front | your proxy passes `bg.example.com` and `nodes.bg.example.com` through by SNI to `127.0.0.1:8443` with PROXY protocol v2 (Traefik: TCP router `HostSNI(...)` + `tls.passthrough`, `proxyProtocol.version: 2`; nginx: `stream` + `ssl_preread`, `proxy_protocol on`; HAProxy: `mode tcp`, `req.ssl_sni`, `send-proxy-v2`; Caddy: layer4 app). Without PROXY protocol: `behind_mux.no_proxy_protocol: true`, and the control plane sees the proxy's address | mux with `no_tcp: true`. General-purpose proxies cannot route QUIC by name; if yours serves HTTP/3 itself on UDP/443, that has to move or be switched off (its sites keep working over TCP) |
+| your proxy stays in front | your proxy passes `bg.example.com` and `nodes.bg.example.com` through by SNI to `127.0.0.1:8443`, and `hub.boundgate` to `127.0.0.1:8444` (the tunnel's TCP fallback), with PROXY protocol v2 (Traefik: TCP router `HostSNI(...)` + `tls.passthrough`, `proxyProtocol.version: 2`; nginx: `stream` + `ssl_preread`, `proxy_protocol on`; HAProxy: `mode tcp`, `req.ssl_sni`, `send-proxy-v2`; Caddy: layer4 app). Without PROXY protocol: `behind_mux.no_proxy_protocol: true` in both yaml files, and control plane and hub see the proxy's address | mux with `no_tcp: true`. General-purpose proxies cannot route QUIC by name; if yours serves HTTP/3 itself on UDP/443, that has to move or be switched off (its sites keep working over TCP) |
 
-If UDP/443 cannot be had at all, nodes still reach the control plane (its
-node channel falls back to TCP), but there is no tunnel until M8.2.
+If UDP/443 cannot be had at all on the server, everything still works over
+TCP alone: the node channel and the tunnel both fall back, at the cost of
+TCP-in-TCP for the tunnel. Do not run that way on purpose.
 
 ## Install
 
@@ -189,7 +195,9 @@ mux, control plane and hub on one address and port 443, a client in its own
 container that enrolls over HTTP/3, is approved and signed, brings a tunnel
 up on the shared UDP port and pings the hub; it checks that the hub sees
 the client's real address and that a mux restart does not interrupt the
-tunnel.
+tunnel. Then it blocks UDP/443 in the client's namespace: the tunnel comes
+back over TCP through the mux, the hub still sees the client's address,
+and once UDP is allowed again the client moves back to QUIC.
 
 ## Operating it
 
@@ -205,4 +213,5 @@ tunnel.
 
 SECURITY.md, in particular R21 (the hub sees overlay traffic until M7),
 R24/R73 (trust on first use at enrollment), R67 (no TPM attestation),
-R76 (ACME, shared host), R77/R78 (the mux) and R79 (the image).
+R76 (ACME, shared host), R77/R78 (the mux), R79 (the image) and R80 (the
+TCP fallback).

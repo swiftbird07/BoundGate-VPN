@@ -44,15 +44,46 @@ type Handler interface {
 	Release(peer AuthenticatedPeer, cfg TunnelConfig)
 }
 
+// serverLink is what a Tunnel needs from its transport: the QUIC
+// connection with its CONNECT-IP session, or the capsule stream on TCP.
+type serverLink interface {
+	ReadPacket(b []byte) (int, error)
+	WritePacket(b []byte) (icmp []byte, err error)
+	Done() <-chan struct{}
+	Err() error
+	Close(code quic.ApplicationErrorCode, reason string) error
+}
+
+// quicLink adapts connect-ip-go's session to serverLink.
+type quicLink struct {
+	conn  *connectip.Conn
+	qconn *quic.Conn
+}
+
+func (l *quicLink) ReadPacket(b []byte) (int, error)     { return l.conn.ReadPacket(b) }
+func (l *quicLink) WritePacket(b []byte) ([]byte, error) { return l.conn.WritePacket(b) }
+func (l *quicLink) Done() <-chan struct{}                { return l.qconn.Context().Done() }
+func (l *quicLink) Close(c quic.ApplicationErrorCode, r string) error {
+	return l.qconn.CloseWithError(c, r)
+}
+func (l *quicLink) Err() error {
+	select {
+	case <-l.qconn.Context().Done():
+		return context.Cause(l.qconn.Context())
+	default:
+		return nil
+	}
+}
+
 // Tunnel is one accepted CONNECT-IP session with an authenticated peer.
 type Tunnel struct {
-	id     string
-	peer   AuthenticatedPeer
-	cfg    TunnelConfig
-	conn   *connectip.Conn
-	qconn  *quic.Conn
-	opened time.Time
-	once   sync.Once
+	id        string
+	peer      AuthenticatedPeer
+	cfg       TunnelConfig
+	link      serverLink
+	transport string // "quic" or "tcp"
+	opened    time.Time
+	once      sync.Once
 
 	mu        sync.Mutex
 	localCode quic.ApplicationErrorCode
@@ -72,25 +103,21 @@ func (t *Tunnel) Config() TunnelConfig { return t.cfg }
 // Opened is when the tunnel was accepted.
 func (t *Tunnel) Opened() time.Time { return t.opened }
 
+// Transport is "quic" or "tcp".
+func (t *Tunnel) Transport() string { return t.transport }
+
 // ReadPacket reads one IP packet sent by the device.
-func (t *Tunnel) ReadPacket(b []byte) (int, error) { return t.conn.ReadPacket(b) }
+func (t *Tunnel) ReadPacket(b []byte) (int, error) { return t.link.ReadPacket(b) }
 
 // WritePacket sends one IP packet to the device. A non-nil icmp return is an
 // ICMP error the caller should deliver back towards the original sender.
-func (t *Tunnel) WritePacket(b []byte) (icmp []byte, err error) { return t.conn.WritePacket(b) }
+func (t *Tunnel) WritePacket(b []byte) (icmp []byte, err error) { return t.link.WritePacket(b) }
 
-// Done is closed when the underlying QUIC connection ends.
-func (t *Tunnel) Done() <-chan struct{} { return t.qconn.Context().Done() }
+// Done is closed when the underlying connection ends.
+func (t *Tunnel) Done() <-chan struct{} { return t.link.Done() }
 
 // Err returns why the connection ended, or nil while it is alive.
-func (t *Tunnel) Err() error {
-	select {
-	case <-t.qconn.Context().Done():
-		return context.Cause(t.qconn.Context())
-	default:
-		return nil
-	}
-}
+func (t *Tunnel) Err() error { return t.link.Err() }
 
 // Close ends the tunnel with an application error code.
 func (t *Tunnel) Close(code quic.ApplicationErrorCode, reason string) error {
@@ -99,7 +126,7 @@ func (t *Tunnel) Close(code quic.ApplicationErrorCode, reason string) error {
 		t.mu.Lock()
 		t.localCode, t.localWhy, t.localSet = code, reason, true
 		t.mu.Unlock()
-		err = t.qconn.CloseWithError(code, reason)
+		err = t.link.Close(code, reason)
 	})
 	return err
 }
@@ -133,6 +160,9 @@ type ServerConfig struct {
 	// (internal/mux); neither touches authentication.
 	PacketConn      net.PacketConn
 	ConnIDGenerator quic.ConnectionIDGenerator
+	// TCPListener, when set, also serves the tunnel over TCP (tcp.go): the
+	// fallback for clients whose network blocks UDP. Same TLS, same peers.
+	TCPListener net.Listener
 }
 
 // Server terminates QUIC + mTLS + CONNECT-IP for approved devices.
@@ -142,6 +172,7 @@ type Server struct {
 	tmpl    *uritemplate.Template
 	log     *slog.Logger
 	h3      *http3.Server
+	hs      *http.Server
 	pconn   net.PacketConn
 	qt      *quic.Transport
 	mu      sync.Mutex
@@ -234,8 +265,11 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("transport: listen: %w", err)
 	}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
 	go func() { errc <- s.h3.ServeListener(ln) }()
+	if s.cfg.TCPListener != nil {
+		go func() { errc <- s.serveTCP(s.cfg.TCPListener) }()
+	}
 	select {
 	case <-ctx.Done():
 		s.closeAll(ErrCodeShutdown, "hub shutting down")
@@ -244,6 +278,16 @@ func (s *Server) Serve(ctx context.Context) error {
 		_ = s.h3.Shutdown(shutdownCtx)
 		_ = s.qt.Close()
 		_ = s.pconn.Close()
+		if s.cfg.TCPListener != nil {
+			s.mu.Lock()
+			hs := s.hs
+			s.mu.Unlock()
+			if hs != nil {
+				_ = hs.Close()
+			}
+			_ = s.cfg.TCPListener.Close()
+			<-errc
+		}
 		<-errc
 		return nil
 	case err := <-errc:
@@ -300,7 +344,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("transport: proxy setup failed", "peer", peer, "err", err)
 		return
 	}
-	t := &Tunnel{id: newTunnelID(), peer: peer, cfg: cfg, conn: conn, qconn: qconn, opened: time.Now()}
+	t := &Tunnel{id: newTunnelID(), peer: peer, cfg: cfg, link: &quicLink{conn: conn, qconn: qconn}, transport: "quic", opened: time.Now()}
 	defer conn.Close()
 	if len(cfg.Assigned) > 0 {
 		if err := conn.AssignAddresses(r.Context(), cfg.Assigned); err != nil {

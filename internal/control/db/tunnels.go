@@ -15,6 +15,7 @@ type Tunnel struct {
 	PeerID      string     `json:"peer_id"`
 	PeerName    string     `json:"peer_name,omitempty"`
 	PeerAddr    string     `json:"peer_addr,omitempty"`
+	Transport   string     `json:"transport,omitempty"` // quic, or tcp (the fallback)
 	OpenedAt    time.Time  `json:"opened_at"`
 	ClosedAt    *time.Time `json:"closed_at,omitempty"`
 	CloseReason string     `json:"close_reason,omitempty"`
@@ -31,6 +32,7 @@ type TunnelReport struct {
 	HubID       string
 	PeerID      string
 	PeerAddr    string
+	Transport   string
 	OpenedAt    time.Time
 	ClosedAt    time.Time // zero while open
 	CloseReason string
@@ -49,17 +51,18 @@ func (d *DB) UpsertTunnel(ctx context.Context, r TunnelReport) error {
 	if !r.ClosedAt.IsZero() {
 		closed = r.ClosedAt.UTC().Format(timeFormat)
 	}
-	_, err := d.sql.ExecContext(ctx, `INSERT INTO tunnels (id, hub_id, peer_id, peer_addr, opened_at, closed_at, close_reason, bytes_in, bytes_out, packets_in, packets_out, last_report_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := d.sql.ExecContext(ctx, `INSERT INTO tunnels (id, hub_id, peer_id, peer_addr, transport, opened_at, closed_at, close_reason, bytes_in, bytes_out, packets_in, packets_out, last_report_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		  peer_addr = CASE WHEN excluded.peer_addr <> '' THEN excluded.peer_addr ELSE peer_addr END,
+		  transport = CASE WHEN excluded.transport <> '' THEN excluded.transport ELSE transport END,
 		  closed_at = CASE WHEN tunnels.close_reason = 'hub stopped reporting' AND excluded.closed_at IS NULL THEN NULL
 		                   ELSE COALESCE(tunnels.closed_at, excluded.closed_at) END,
 		  close_reason = CASE WHEN tunnels.closed_at IS NULL OR tunnels.close_reason = 'hub stopped reporting' THEN excluded.close_reason ELSE close_reason END,
 		  bytes_in = MAX(bytes_in, excluded.bytes_in), bytes_out = MAX(bytes_out, excluded.bytes_out),
 		  packets_in = MAX(packets_in, excluded.packets_in), packets_out = MAX(packets_out, excluded.packets_out),
 		  last_report_at = excluded.last_report_at`,
-		r.ID, r.HubID, r.PeerID, r.PeerAddr, r.OpenedAt.UTC().Format(timeFormat), closed, r.CloseReason,
+		r.ID, r.HubID, r.PeerID, r.PeerAddr, r.Transport, r.OpenedAt.UTC().Format(timeFormat), closed, r.CloseReason,
 		r.BytesIn, r.BytesOut, r.PacketsIn, r.PacketsOut, now())
 	return err
 }
@@ -77,7 +80,7 @@ func (d *DB) ListTunnels(ctx context.Context, q TunnelQuery) ([]Tunnel, error) {
 	if q.Limit <= 0 || q.Limit > 5000 {
 		q.Limit = 500
 	}
-	sqlq := `SELECT t.id, t.hub_id, COALESCE(h.name, ''), t.peer_id, COALESCE(p.name, ''), t.peer_addr, t.opened_at, t.closed_at, t.close_reason,
+	sqlq := `SELECT t.id, t.hub_id, COALESCE(h.name, ''), t.peer_id, COALESCE(p.name, ''), t.peer_addr, t.transport, t.opened_at, t.closed_at, t.close_reason,
 		t.bytes_in, t.bytes_out, t.packets_in, t.packets_out, t.last_report_at
 		FROM tunnels t LEFT JOIN nodes h ON h.id = t.hub_id LEFT JOIN nodes p ON p.id = t.peer_id WHERE 1=1`
 	var args []any
@@ -104,7 +107,7 @@ func (d *DB) ListTunnels(ctx context.Context, q TunnelQuery) ([]Tunnel, error) {
 		var t Tunnel
 		var opened, last string
 		var closed sql.NullString
-		if err := rows.Scan(&t.ID, &t.HubID, &t.HubName, &t.PeerID, &t.PeerName, &t.PeerAddr, &opened, &closed, &t.CloseReason,
+		if err := rows.Scan(&t.ID, &t.HubID, &t.HubName, &t.PeerID, &t.PeerName, &t.PeerAddr, &t.Transport, &opened, &closed, &t.CloseReason,
 			&t.BytesIn, &t.BytesOut, &t.PacketsIn, &t.PacketsOut, &last); err != nil {
 			return nil, err
 		}

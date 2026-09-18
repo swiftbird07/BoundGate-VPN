@@ -33,7 +33,7 @@ nodes[5].sign_command = `boundgatectl admin sign --control https://control.examp
 nodes[5].sign_expires_at = new Date(Date.now() + 480e3).toISOString();
 
 const tunnel = (i: number, hub: T.Node, peer: T.Node, opened: number, closed?: number, reason?: string): T.Tunnel => ({
-  id: `t${i}`, hub_id: hub.id, hub_name: hub.name, peer_id: peer.id, peer_name: peer.name, peer_addr: `203.0.113.${20 + i}:5${1000 + i * 37}`, opened_at: ago(opened),
+  id: `t${i}`, hub_id: hub.id, hub_name: hub.name, peer_id: peer.id, peer_name: peer.name, peer_addr: `203.0.113.${20 + i}:5${1000 + i * 37}`, transport: i % 5 === 3 ? 'tcp' : 'quic', opened_at: ago(opened),
   closed_at: closed === undefined ? undefined : ago(closed), close_reason: reason, bytes_in: 48_000_000 * (i + 1), bytes_out: 310_000_000 * (i + 1), packets_in: 52_000 * (i + 1), packets_out: 240_000 * (i + 1), last_report_at: ago(closed ?? 6),
 });
 const tunnels: T.Tunnel[] = [

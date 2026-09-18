@@ -12,6 +12,7 @@ routes:
     sni: [hub.boundgate]                           # the name every spoke uses for a hub (fixed)
     id: 2                                          # = behind_mux.id in hub.yaml
     udp: 127.0.0.1:8444
+    tcp: 127.0.0.1:8444                            # the tunnel's TCP fallback for clients whose network blocks UDP
 # Something else already serves HTTPS on this machine (Caddy, Traefik, nginx)?
 # Move it to another port and name it here: every other server name goes
 # there untouched, TLS included.

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -41,9 +42,13 @@ type config struct {
 	PublicAddr string            `yaml:"public_addr"`
 	Listen     string            `yaml:"listen"`
 	BehindMux  *struct {
-		ID      int      `yaml:"id"`      // 1..255, first byte of this hub's QUIC connection IDs
-		Trusted []string `yaml:"trusted"` // where the mux delivers from, e.g. [127.0.0.1]
+		ID              int      `yaml:"id"`                // 1..255, first byte of this hub's QUIC connection IDs
+		Trusted         []string `yaml:"trusted"`           // where the mux delivers from, e.g. [127.0.0.1]
+		NoProxyProtocol bool     `yaml:"no_proxy_protocol"` // the TCP front sends no PROXY v2 header
 	} `yaml:"behind_mux"`
+	TCPFallback  *bool             `yaml:"tcp_fallback"` // default true: hubs serve the tunnel on TCP too, spokes fall back to it
+	Transport    string            `yaml:"transport"`    // spoke: auto (default) | quic | tcp
+	QUICRetry    time.Duration     `yaml:"quic_retry"`   // spoke on TCP: how often to try QUIC again, default 2m
 	AutoUp       bool              `yaml:"auto_up"`
 	Profile      string            `yaml:"profile"`
 	ProfilesDir  string            `yaml:"profiles_dir"`
@@ -154,7 +159,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		if err != nil || len(trusted) == 0 {
 			return fmt.Errorf("config: behind_mux.trusted: %v", err)
 		}
-		behindMux = &node.BehindMux{ID: byte(m.ID), Trusted: trusted}
+		behindMux = &node.BehindMux{ID: byte(m.ID), Trusted: trusted, NoProxyProtocol: m.NoProxyProtocol}
 	}
 	n, err := node.New(node.Config{
 		Name:              local.Name,
@@ -169,6 +174,9 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		PublicAddr:        cfg.PublicAddr,
 		Listen:            cfg.Listen,
 		BehindMux:         behindMux,
+		NoTCPFallback:     cfg.TCPFallback != nil && !*cfg.TCPFallback,
+		Transport:         cfg.Transport,
+		QUICRetry:         cfg.QUICRetry,
 		AutoUp:            cfg.AutoUp,
 		Profile:           cfg.Profile,
 		ProfilesDir:       cfg.ProfilesDir,

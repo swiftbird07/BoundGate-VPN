@@ -40,6 +40,7 @@ state_dir: /var/lib/boundgate
 control: {addr: "$GW:443", server_name: nodes.bg.test}
 roles: [endpoint]
 hub_addrs: {hub1: "$GW:443"}   # the rehearsal has no DNS; a real hub is dialed at its public_addr
+quic_retry: 10s                # step 7: back to QUIC quickly once UDP works again (default 2m)
 socket: /run/boundgate/node.sock
 tun_name: bg0
 log_stdout: true
@@ -103,5 +104,21 @@ $C restart mux >/dev/null 2>&1
 wait_for 15 cl ping -c 1 -W 2 "$HUBIP" || fail "tunnel dead after a mux restart"
 [ "$(cl boundgatectl -json status | jq -r '.hubs[0].since')" = "$SINCE" ] || fail "the tunnel was re-established instead of continuing"
 
+echo "== 7. UDP blocked on the client's side: the tunnel falls back to TCP/443 through the mux, then returns to QUIC"
+cl nft add table ip blk || fail "nft in the client container"
+cl nft add chain ip blk out '{ type filter hook output priority 0; }'
+cl nft add rule ip blk out udp dport 443 drop
+cl boundgatectl down >/dev/null && wait_for 30 cl boundgatectl up || fail "client up with UDP blocked: $(cl boundgatectl status | tail -5)"
+wait_for 60 sh -c "docker exec $P-client boundgatectl -json status | jq -e '[.hubs[] | select(.state == \"connected\" and .transport == \"tcp\")] | length == 1'" || fail "no TCP fallback tunnel: $(cl boundgatectl status | tail -4)"
+wait_for 10 cl ping -c 1 -W 2 "$HUBIP" || fail "hub $HUBIP not reachable over the TCP fallback"
+echo "   tunnel up over TCP, hub reachable"
+wait_for 40 sh -c "$C exec -T hub curl -sS -k --resolve bg.test:443:127.0.0.1 -H 'Authorization: Bearer $TOKEN' 'https://bg.test/api/v1/admin/tunnels?active=1' | jq -e --arg ip '$CLIENTIP' '.[] | select(.transport == \"tcp\" and (.peer_addr == \$ip or (.peer_addr | startswith(\$ip + \":\"))))'" \
+  || fail "the hub does not see the client's address on the TCP tunnel (PROXY protocol through the mux)"
+echo "   the hub sees the client's real address on TCP too"
+cl nft delete table ip blk
+wait_for 60 sh -c "docker exec $P-client boundgatectl -json status | jq -e '[.hubs[] | select(.state == \"connected\" and .transport == \"quic\")] | length == 1'" || fail "did not return to QUIC: $(cl boundgatectl status | tail -4)"
+wait_for 10 cl ping -c 1 -W 2 "$HUBIP" || fail "hub unreachable after the move back to QUIC"
+echo "   back on QUIC, hub reachable"
+
 "$0" down >/dev/null
-echo "PASS: control plane and hub share one address and port 443 (TCP and UDP) behind boundgate-mux"
+echo "PASS: control plane and hub share one address and port 443 (TCP and UDP) behind boundgate-mux; UDP-blocked clients tunnel over TCP"

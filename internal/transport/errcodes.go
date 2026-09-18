@@ -20,11 +20,16 @@ const (
 )
 
 // CloseCode extracts the application error code from a connection error, if
-// the peer closed the connection with one.
+// the peer closed the connection with one: QUIC's application error, or the
+// close capsule of the TCP fallback.
 func CloseCode(err error) (quic.ApplicationErrorCode, bool) {
 	var appErr *quic.ApplicationError
 	if errors.As(err, &appErr) {
 		return appErr.ErrorCode, true
+	}
+	var ce *CloseError
+	if errors.As(err, &ce) && ce.Remote {
+		return ce.Code, true
 	}
 	return 0, false
 }
