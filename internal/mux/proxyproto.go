@@ -182,6 +182,14 @@ func (c *proxyConn) Read(p []byte) (int, error) {
 // RemoteAddr is the client's address. net/http asks for it before the first
 // read, in the connection's own goroutine, so reading the header here (with
 // a deadline) blocks nobody else.
+// CloseWrite half-closes the connection, so the mux can relay an EOF.
+func (c *proxyConn) CloseWrite() error {
+	if t, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return t.CloseWrite()
+	}
+	return nil
+}
+
 func (c *proxyConn) RemoteAddr() net.Addr {
 	c.header()
 	if c.remote != nil {

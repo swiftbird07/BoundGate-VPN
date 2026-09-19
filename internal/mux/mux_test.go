@@ -271,6 +271,43 @@ func TestTCPRoutedByServerName(t *testing.T) {
 	}
 }
 
+// A reverse proxy in front of the mux (listen_tcp + trusted_fronts): its
+// PROXY v1 header names the client, and the backend sees that address. A
+// trusted front that sends no header is relayed as itself.
+func TestTCPBehindTrustedFront(t *testing.T) {
+	cplAddr, cplRoots := tlsBackend(t, "bg.example.com", true)
+	f := startFront(t, Config{ListenTCP: "127.0.0.1:0", TrustedFronts: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, Routes: []Route{
+		{Name: "control", SNI: []string{"bg.example.com"}, TCP: cplAddr, ProxyProtocol: true},
+	}})
+	if f.TCPAddr().(*net.TCPAddr).Port == f.UDPAddr().(*net.UDPAddr).Port {
+		t.Fatal("listen_tcp did not get its own socket")
+	}
+	get := func(header string) string {
+		tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: cplRoots, ServerName: "bg.example.com"},
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				c, err := (&net.Dialer{}).DialContext(ctx, "tcp", f.TCPAddr().String())
+				if err == nil && header != "" {
+					_, err = c.Write([]byte(header))
+				}
+				return c, err
+			}}
+		defer tr.CloseIdleConnections()
+		rsp, err := (&http.Client{Transport: tr, Timeout: 5 * time.Second}).Get("https://bg.example.com/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rsp.Body.Close()
+		b, _ := io.ReadAll(rsp.Body)
+		return string(b)
+	}
+	if body := get("PROXY TCP4 203.0.113.9 10.20.1.204 40000 8080\r\n"); body != "bg.example.com sees 203.0.113.9:40000" {
+		t.Fatalf("got %q", body)
+	}
+	if body := get(""); !strings.HasPrefix(body, "bg.example.com sees 127.0.0.1:") {
+		t.Fatalf("got %q", body)
+	}
+}
+
 func TestClientHelloSNI(t *testing.T) {
 	// a real ClientHello, captured from crypto/tls
 	c, s := net.Pipe()

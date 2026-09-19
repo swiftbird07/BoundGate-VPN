@@ -157,6 +157,24 @@ nodes.bg.example.com }`, backends with `server … 127.0.0.1:8444 send-proxy-v2`
 Caddy: the `layer4` app with `tls sni` matchers and `proxy` handlers
 (`proxy_protocol v2`).
 
+**Variant C, the proxy is another machine.** A WAF or load balancer in
+front of the network owns the public TCP/443 and reaches the BoundGate host
+on one private port; UDP is forwarded to the BoundGate host directly (NAT).
+The mux then serves both, on different sockets, and the proxy needs a single
+target for every BoundGate name:
+
+```yaml
+listen: ":8443"                 # UDP, from the NAT
+listen_tcp: "10.0.0.5:8080"     # TCP, from the proxy only
+trusted_fronts: [10.0.0.2]      # the proxy: its PROXY header (v1 or v2) names the client
+```
+
+The mux hands that client address on to control plane and hub (PROXY v2),
+which keep `behind_mux.trusted: [127.0.0.1]`. A connection from a trusted
+front without a header (the HTTP hop to the admin name) is relayed with the
+proxy's address. `public_addr` of the hub and `control.addr` of the nodes
+name the public address and port, not these.
+
 Whichever variant: the firewall still opens only TCP 443 and UDP 443; the
 proxy's HTTP-01 port 80 if it needs it.
 

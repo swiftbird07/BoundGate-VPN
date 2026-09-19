@@ -30,7 +30,13 @@ type Route struct {
 // Config of the front.
 type Config struct {
 	Listen string // ":443", TCP and UDP
-	Routes []Route
+	// ListenTCP moves the TCP side to another address, for a reverse proxy in
+	// front that delivers TLS to a private port while UDP arrives directly.
+	ListenTCP string
+	// TrustedFronts are such reverse proxies: their PROXY header (v1 or v2)
+	// names the client, and the backends get that address, not the proxy's.
+	TrustedFronts []netip.Prefix
+	Routes        []Route
 	// DefaultTCP receives TLS connections for every other name, untouched:
 	// the web server or reverse proxy that would otherwise own port 443.
 	DefaultTCP string
@@ -137,9 +143,15 @@ func New(cfg Config) (*Front, error) {
 	if cfg.NoTCP {
 		return f, nil
 	}
-	if f.tcp, err = net.Listen("tcp", cfg.Listen); err != nil {
+	if cfg.ListenTCP == "" {
+		cfg.ListenTCP = cfg.Listen
+	}
+	if f.tcp, err = net.Listen("tcp", cfg.ListenTCP); err != nil {
 		f.udp.Close()
 		return nil, fmt.Errorf("mux: %w", err)
+	}
+	if len(cfg.TrustedFronts) > 0 {
+		f.tcp = &ProxyListener{Listener: f.tcp, Trusted: cfg.TrustedFronts}
 	}
 	return f, nil
 }
@@ -396,7 +408,7 @@ func (f *Front) serveTCP(c net.Conn) {
 }
 
 func closeWrite(c net.Conn) {
-	if t, ok := c.(*net.TCPConn); ok {
+	if t, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = t.CloseWrite()
 	}
 }

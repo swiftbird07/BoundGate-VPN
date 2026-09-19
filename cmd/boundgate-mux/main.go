@@ -23,7 +23,9 @@ import (
 )
 
 type config struct {
-	Listen string `yaml:"listen"` // default ":443", TCP and UDP
+	Listen        string   `yaml:"listen"`         // default ":443", TCP and UDP
+	ListenTCP     string   `yaml:"listen_tcp"`     // TCP elsewhere than UDP: a reverse proxy in front delivers TLS to this private address
+	TrustedFronts []string `yaml:"trusted_fronts"` // those proxies: their PROXY header (v1/v2) carries the client address
 	Routes []struct {
 		Name          string   `yaml:"name"`
 		SNI           []string `yaml:"sni"`
@@ -63,7 +65,11 @@ func run(path string) error {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})).With("component", "mux")
-	mc := mux.Config{Listen: cfg.Listen, DefaultTCP: cfg.DefaultTCP, DefaultProxyProtocol: cfg.DefaultProxyProtocol, NoTCP: cfg.NoTCP, Log: log}
+	fronts, err := mux.ParseTrusted(cfg.TrustedFronts)
+	if err != nil {
+		return fmt.Errorf("config: trusted_fronts: %w", err)
+	}
+	mc := mux.Config{Listen: cfg.Listen, ListenTCP: cfg.ListenTCP, TrustedFronts: fronts, DefaultTCP: cfg.DefaultTCP, DefaultProxyProtocol: cfg.DefaultProxyProtocol, NoTCP: cfg.NoTCP, Log: log}
 	for _, r := range cfg.Routes {
 		if r.UDP != "" && (r.ID < 1 || r.ID > 255) {
 			return fmt.Errorf("config: route %q: id must be 1..255 and match behind_mux.id of that server", r.Name)
