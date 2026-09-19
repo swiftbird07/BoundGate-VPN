@@ -42,8 +42,41 @@ services:
     volumes:
       - ./control.yaml:/etc/boundgate/control.yaml:ro
       - ./state/control:/var/lib/boundgate     # database, node-channel key (back it up), ACME cache, bootstrap token
+      - ./state/certs:/var/lib/boundgate/certs  # certificates from the acme-dns service (profile dns-acme)
       - ./logs/control:/var/log/boundgate
     command: ["boundgate-control", "-config", "/etc/boundgate/control.yaml"]
+
+  # Let's Encrypt by DNS challenge (profile dns-acme), for servers whose port
+  # 443 the CA cannot reach: geo-blocking, an allowlist, no public admin UI.
+  # lego proves the name through your DNS provider's API, writes the
+  # certificate to ./state/certs/certificates/<name>.crt|.key, renews it, and
+  # the control plane picks up the new files by itself. In control.yaml:
+  # acme.enabled: false, tls_cert/tls_key pointing at those files (see the
+  # example). In .env: LEGO_EMAIL, LEGO_DNS (the provider name, e.g. hetzner,
+  # cloudflare, inwx, ionos, route53, ...) and that provider's variables,
+  # e.g. HETZNER_API_KEY. https://go-acme.github.io/lego/dns/ lists them.
+  acme-dns:
+    image: goacme/lego:latest
+    profiles: [dns-acme]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LEGO_DOMAIN: ${BG_DOMAIN:-bg.example.com}
+    volumes:
+      - ./state/certs:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          if [ -f "/data/certificates/$$LEGO_DOMAIN.json" ]; then
+            lego --accept-tos --path /data --email "$$LEGO_EMAIL" --dns "$$LEGO_DNS" --domains "$$LEGO_DOMAIN" renew --days 30
+          else
+            lego --accept-tos --path /data --email "$$LEGO_EMAIL" --dns "$$LEGO_DNS" --domains "$$LEGO_DOMAIN" run
+          fi
+          sleep 43200
+        done
 
   hub:
     image: *image

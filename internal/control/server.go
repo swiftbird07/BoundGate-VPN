@@ -12,6 +12,7 @@ package control
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -76,6 +78,14 @@ type Config struct {
 	// (a hub, a web server) behind a boundgate-mux or a TCP reverse proxy in
 	// SNI-passthrough mode. Listen is then the private address.
 	BehindMux *BehindMux
+	// AdminAllow restricts the admin UI and API (every server name but the
+	// node name) to client addresses in these prefixes; empty allows all.
+	// Enforced at the TLS handshake and again per request. The node channel
+	// is never restricted: nodes are anywhere.
+	AdminAllow []netip.Prefix
+	// CertReloadInterval is how often TLSCert/TLSKey are checked for a
+	// renewed pair (default 30s; an external ACME client writes them).
+	CertReloadInterval time.Duration
 	// NoSPA disables the embedded admin UI (tests).
 	NoSPA bool
 }
@@ -197,6 +207,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if adminCreated {
 		log.Info("created self-signed admin certificate", "cert", cfg.TLSCert, "names", append([]string{cfg.ServerName}, cfg.ExtraNames...))
 	}
+	if cfg.CertReloadInterval == 0 {
+		cfg.CertReloadInterval = 30 * time.Second
+	}
 	nodeCert, nodeCreated, err := servercert.LoadOrCreate(cfg.NodeCert, cfg.NodeKey, []string{cfg.NodeServerName})
 	if err != nil {
 		return err
@@ -231,8 +244,21 @@ func Run(ctx context.Context, cfg Config) error {
 	log.Info("admin logins", "rp_id", cfg.Admin.RPID, "origins", cfg.Admin.Origins, "group", cfg.Admin.Group)
 	root := h.Root(cfg.NodeServerName)
 
-	tcpTLS := TLSConfig(adminCert, nodeCert, cfg.NodeServerName, []string{"h2", "http/1.1"})
-	udpTLS := TLSConfig(adminCert, nodeCert, cfg.NodeServerName, []string{http3.NextProtoH3})
+	// The admin certificate comes through a callback in every case: from
+	// the files (reloaded when an external ACME client renews them) or from
+	// the built-in ACME manager.
+	reloader := newCertReloader(cfg.TLSCert, cfg.TLSKey, adminCert, cfg.CertReloadInterval)
+	reloader.onLoad = func(c *tls.Certificate, err error) {
+		if err != nil {
+			log.Error("admin certificate files changed but do not load; keeping the old one", "cert", cfg.TLSCert, "err", err)
+			return
+		}
+		if leaf, e := x509.ParseCertificate(c.Certificate[0]); e == nil {
+			log.Info("admin certificate reloaded", "cert", cfg.TLSCert, "not_after", leaf.NotAfter.UTC().Format(time.RFC3339), "names", leaf.DNSNames)
+		}
+	}
+	tcpTLS := TLSConfigACME(reloader.Get, nodeCert, cfg.NodeServerName, []string{"h2", "http/1.1"})
+	udpTLS := TLSConfigACME(reloader.Get, nodeCert, cfg.NodeServerName, []string{http3.NextProtoH3})
 	if cfg.ACME.Enabled {
 		if cfg.ACME.CacheDir == "" {
 			cfg.ACME.CacheDir = filepath.Join(filepath.Dir(cfg.DBPath), "acme")
@@ -248,6 +274,28 @@ func Run(ctx context.Context, cfg Config) error {
 		tcpTLS = TLSConfigACME(m.GetCertificate, nodeCert, cfg.NodeServerName, []string{"h2", "http/1.1", acme.ALPNProto})
 		udpTLS = TLSConfigACME(m.GetCertificate, nodeCert, cfg.NodeServerName, []string{http3.NextProtoH3})
 		log.Info("admin certificate from ACME (TLS-ALPN-01 on the TCP listener)", "names", names, "cache", cfg.ACME.CacheDir, "directory", cfg.ACME.DirectoryURL)
+	}
+	if len(cfg.AdminAllow) > 0 {
+		var denied atomic.Int64
+		onDeny := func(addr net.Addr) {
+			if n := denied.Add(1); n == 1 || n%100 == 0 {
+				log.Warn("admin UI refused: address not in admin_allow", "addr", addr, "count", n)
+			}
+		}
+		tcpTLS = restrictAdmin(tcpTLS, cfg.NodeServerName, cfg.AdminAllow, onDeny)
+		udpTLS = restrictAdmin(udpTLS, cfg.NodeServerName, cfg.AdminAllow, onDeny)
+		inner := root
+		root = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// second line of defence behind the handshake check
+			if r.TLS == nil || r.TLS.ServerName != cfg.NodeServerName {
+				if !adminAllowed(cfg.AdminAllow, strAddr(r.RemoteAddr), nil) {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+			}
+			inner.ServeHTTP(w, r)
+		})
+		log.Info("admin UI restricted to", "admin_allow", cfg.AdminAllow)
 	}
 	tcpSrv := &http.Server{
 		Addr:              cfg.Listen,

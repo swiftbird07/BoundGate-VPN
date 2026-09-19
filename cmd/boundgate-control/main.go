@@ -30,6 +30,7 @@ type config struct {
 	NodeServerName     string   `yaml:"node_server_name"`
 	TLSCert            string   `yaml:"tls_cert"`
 	TLSKey             string   `yaml:"tls_key"`
+	AdminAllow         []string `yaml:"admin_allow"` // client prefixes that may reach the admin UI/API; empty = everyone
 	NodeCert           string   `yaml:"node_cert"`
 	NodeKey            string   `yaml:"node_key"`
 	DBPath             string   `yaml:"db_path"`
@@ -134,6 +135,10 @@ func run(cfgPath string) error {
 			return fmt.Errorf("config: admin.session_lifetime: %w", err)
 		}
 	}
+	adminAllow, err := mux.ParseTrusted(cfg.AdminAllow)
+	if err != nil {
+		return fmt.Errorf("config: admin_allow: %w", err)
+	}
 	var behindMux *control.BehindMux
 	if m := cfg.BehindMux; m != nil {
 		if m.ID < 1 || m.ID > 255 {
@@ -164,6 +169,7 @@ func run(cfgPath string) error {
 		OIDC:               oc,
 		Admin:              adminCfg,
 		BehindMux:          behindMux,
+		AdminAllow:         adminAllow,
 		ACME:               control.ACMEConfig{Enabled: cfg.ACME.Enabled, Email: cfg.ACME.Email, CacheDir: cfg.ACME.CacheDir, DirectoryURL: cfg.ACME.DirectoryURL},
 	})
 }

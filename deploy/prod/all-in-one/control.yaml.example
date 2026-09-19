@@ -6,10 +6,16 @@ behind_mux:
 # Without a mux (this server has port 443 of its address to itself): listen: ":443" and no behind_mux.
 server_name: bg.example.com        # what admins type into the browser
 # node_server_name: nodes.bg.example.com   # default: nodes.<server_name>. Only a TLS name on the same port, needs no DNS record
+# admin_allow: [10.0.0.0/8, 100.96.0.0/16, 203.0.113.7]   # who may reach the admin UI and API at all (handshake refused otherwise); nodes are never restricted
 acme:
   enabled: true                    # admin certificate from Let's Encrypt, validated on port 443 itself (TLS-ALPN-01; passes through the mux)
   email: ""                        # optional: expiry mail from the CA
   # directory_url: https://acme-staging-v02.api.letsencrypt.org/directory   # try the setup without rate limits (browser will warn)
+# Port 443 not reachable from the CA (geo-blocking, admin_allow)? DNS challenge instead: acme.enabled: false,
+# the acme-dns service (docker-compose.yml, profile dns-acme) writes the files below and the control plane
+# reloads them when they change. Any other ACME client that writes PEM files works the same way.
+# tls_cert: /var/lib/boundgate/certs/certificates/bg.example.com.crt
+# tls_key: /var/lib/boundgate/certs/certificates/bg.example.com.key
 node_cert: /var/lib/boundgate/nodes.crt   # long-lived identity of the node channel: every node pins this key. Back it up
 node_key: /var/lib/boundgate/nodes.key
 db_path: /var/lib/boundgate/control.db

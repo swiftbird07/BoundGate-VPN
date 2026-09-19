@@ -187,6 +187,42 @@ Let's Encrypt at the first browser request (TLS-ALPN-01 on port 443 itself);
 the first page load takes a few seconds. To rehearse without rate limits,
 set `acme.directory_url` to the staging directory first.
 
+### Certificates: three ways
+
+| | When | How |
+|---|---|---|
+| **Built-in, TLS-ALPN-01** (default) | port 443 is reachable from the internet | `acme.enabled: true`; nothing else. Validation is a TLS handshake on 443 with ALPN `acme-tls/1`, which passes through the mux or an SNI-passthrough proxy |
+| **DNS-01 through the `acme-dns` service** | the CA cannot reach 443: geo-blocking, `admin_allow`, a firewall that admits only your addresses | `acme.enabled: false`, `tls_cert`/`tls_key` pointing at `/var/lib/boundgate/certs/certificates/<name>.crt|.key`; in `.env`: `BG_DOMAIN`, `LEGO_EMAIL`, `LEGO_DNS=<provider>` and the provider's own variables (`HETZNER_API_KEY`, `CLOUDFLARE_DNS_API_TOKEN`, `INWX_USERNAME`/`INWX_PASSWORD`, …, see [lego's provider list](https://go-acme.github.io/lego/dns/)); start with `--profile dns-acme` (or `COMPOSE_PROFILES=mux,dns-acme`). lego issues, renews 30 days before expiry, and the control plane reloads the files within 30 s of a change (log line "admin certificate reloaded") |
+| **Your own files** | an existing wildcard, an internal CA, certbot/acme.sh on the host | `acme.enabled: false`, `tls_cert`/`tls_key`; renewals are picked up the same way |
+
+Let's Encrypt validates TLS-ALPN-01 from several vantage points in
+different countries, so a geo-IP block on 443 rules the built-in way out;
+DNS-01 needs no inbound access at all. The node channel is not involved in
+any of this: nodes pin the control plane's own key (`nodes.key`), not a
+CA-issued certificate.
+
+### Who may open the admin UI
+
+By default anyone who can reach 443 gets the login page (the node channel
+must be public; the admin UI merely shares the listener, see
+SECURITY.md R29/R81). `admin_allow` in `control.yaml` restricts the admin
+name to client prefixes:
+
+```yaml
+admin_allow: [100.96.0.0/16, 10.0.0.0/8, 203.0.113.7]   # the overlay, a private network, the office
+```
+
+Outside the list the TLS handshake for the admin name fails, so nothing is
+served, not even the certificate; the node name is never restricted; ACME
+validation handshakes are always let through. Client addresses are what
+the mux or proxy reports (PROXY protocol), so behind
+`no_proxy_protocol: true` every client is the proxy. Administering
+BoundGate through its own overlay (the control plane's host as a hub,
+`admin_allow` = the overlay pool) is the tightest arrangement: then the
+first admin logs in over an SSH tunnel (`ssh -L 8443:127.0.0.1:8443` and
+`admin_allow` including `127.0.0.1`), enrolls the hub and their own
+machine, and the UI is reachable only from approved devices from then on.
+
 ## First administrator
 
 1. Open `https://bg.example.com/`, sign in through your IdP (your account
@@ -290,5 +326,5 @@ and once UDP is allowed again the client moves back to QUIC.
 
 SECURITY.md, in particular R21 (the hub sees overlay traffic until M7),
 R24/R73 (trust on first use at enrollment), R67 (no TPM attestation),
-R76 (ACME, shared host), R77/R78 (the mux), R79 (the image) and R80 (the
-TCP fallback).
+R76 (ACME, shared host), R77/R78 (the mux), R79 (the image), R80 (the
+TCP fallback) and R81 (admin_allow).
