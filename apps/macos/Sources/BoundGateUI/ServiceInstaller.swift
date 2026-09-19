@@ -19,7 +19,8 @@ public protocol ServiceControlling: Sendable {
 }
 
 public struct LaunchDaemonService: ServiceControlling {
-    public static let plistName = "com.boundgate.node.plist"
+    /// The plist is named after its Label, <bundle id>.node (build-app.sh).
+    public static var plistName: String { (Bundle.main.bundleIdentifier ?? "com.boundgate") + ".node.plist" }
     public init() {}
 
     private var service: SMAppService { SMAppService.daemon(plistName: Self.plistName) }
@@ -30,7 +31,10 @@ public struct LaunchDaemonService: ServiceControlling {
         case .notRegistered: return .notRegistered
         case .requiresApproval: return .requiresApproval
         case .enabled: return .enabled
-        case .notFound: return .unavailable("the service definition is missing from the app bundle, or the app is not signed")
+        // A daemon that was never registered is reported as notFound on
+        // macOS 14/15/26, not as notRegistered; registering creates the
+        // entry. A really missing plist surfaces from register() instead.
+        case .notFound: return .notRegistered
         @unknown default: return .unavailable("unknown service state")
         }
     }

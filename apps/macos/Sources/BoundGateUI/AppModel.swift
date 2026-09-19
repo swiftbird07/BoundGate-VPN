@@ -116,7 +116,14 @@ public final class AppModel: ObservableObject {
     public func installService() {
         actionError = nil
         do { try installer.register() } catch {
-            actionError = "Could not register the background service: \(error.localizedDescription)"
+            let e = error as NSError
+            // SMAppServiceErrorDomain 1 (kSMErrorAlreadyRegistered / "Operation not permitted"):
+            // the daemon waits for the user's consent in System Settings
+            if e.domain == "SMAppServiceErrorDomain", e.code == 1, installer.state() == .requiresApproval {
+                installer.openApprovalSettings()
+            } else {
+                actionError = "Could not register the background service: \(error.localizedDescription) (\(e.domain) \(e.code))"
+            }
         }
         if installer.state() == .requiresApproval { installer.openApprovalSettings() }
         refresh()

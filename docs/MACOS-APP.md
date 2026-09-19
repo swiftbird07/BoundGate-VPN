@@ -13,7 +13,7 @@ BoundGate.app/Contents/
   MacOS/boundgate-node, boundgatectl      the Go daemon and CLI (built in the box)
   Resources/node.yaml                     the daemon's configuration, part of the signed bundle
   Resources/AppIcon.icns                  drawn from the mark at build time
-  Library/LaunchDaemons/com.boundgate.node.plist
+  Library/LaunchDaemons/<bundle id>.node.plist   (file name = Label)
 ```
 
 Stage 2 (a Network Extension instead of a root daemon, so the tunnel shows
@@ -31,7 +31,7 @@ run on the Mac (Xcode command line tools). The script signs inside out
 (daemon, CLI, then the bundle) with the hardened runtime and picks the
 identity itself: a *Developer ID Application* identity if the keychain has
 one, else *Apple Development*, else ad hoc. `SIGN_IDENTITY=…` and
-`BUNDLE_ID=…` (default `com.net407.boundgate`) override.
+`BUNDLE_ID=…` (default `de.swiftbird.boundgate`) override.
 
 | Signature | Good for |
 |---|---|

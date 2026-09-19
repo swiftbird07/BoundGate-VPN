@@ -12,7 +12,7 @@ cd "$(dirname "$0")/../.."
 REPO=$PWD
 VERSION=${VERSION:-0.8.0}
 BUILD=${BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
-BUNDLE_ID=${BUNDLE_ID:-com.net407.boundgate}
+BUNDLE_ID=${BUNDLE_ID:-de.swiftbird.boundgate}
 ARCH=$(uname -m | sed 's/x86_64/amd64/')
 APP=dist/BoundGate.app
 
@@ -33,7 +33,8 @@ for f in Info.plist com.boundgate.node.plist; do
   sed -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" "apps/macos/Bundle/$f" > "dist/$f"
 done
 mv dist/Info.plist "$APP/Contents/Info.plist"
-mv dist/com.boundgate.node.plist "$APP/Contents/Library/LaunchDaemons/com.boundgate.node.plist"
+# the file name equals the Label: BTM identifies the service by it
+mv dist/com.boundgate.node.plist "$APP/Contents/Library/LaunchDaemons/$BUNDLE_ID.node.plist"
 "$BIN/bgtool" icon dist/icon
 iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" dist/icon/BoundGate.iconset
 rm -rf dist/icon
