@@ -16,6 +16,8 @@ on:
       - 'docs/**'
       - '**.md'
       - 'apps/**'
+  # Re-run by hand (Actions > image > Run workflow), e.g. after a runner problem.
+  workflow_dispatch:
 
 # A newer push to the same ref replaces the build in progress instead of
 # queueing behind it; only the image of the latest commit is wanted.
