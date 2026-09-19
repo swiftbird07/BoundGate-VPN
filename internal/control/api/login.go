@@ -30,19 +30,19 @@ type LoginStart struct {
 
 // SessionView is a user session as nodes and admins see it.
 type SessionView struct {
-	ID        string    `json:"id"`
-	NodeID    string    `json:"node_id"`
-	NodeName  string    `json:"node_name,omitempty"`
-	Subject   string    `json:"subject"`
-	Email     string    `json:"email,omitempty"`
-	Username  string    `json:"username,omitempty"`
-	Groups    []string  `json:"groups"`
-	LoginIP   string    `json:"login_ip,omitempty"`
-	IssuedAt  time.Time `json:"issued_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        string     `json:"id"`
+	NodeID    string     `json:"node_id"`
+	NodeName  string     `json:"node_name,omitempty"`
+	Subject   string     `json:"subject"`
+	Email     string     `json:"email,omitempty"`
+	Username  string     `json:"username,omitempty"`
+	Groups    []string   `json:"groups"`
+	LoginIP   string     `json:"login_ip,omitempty"`
+	IssuedAt  time.Time  `json:"issued_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
-	EndedBy   string    `json:"ended_by,omitempty"`
-	EndReason string    `json:"end_reason,omitempty"`
+	EndedBy   string     `json:"ended_by,omitempty"`
+	EndReason string     `json:"end_reason,omitempty"`
 }
 
 func sessionView(s db.Session) SessionView {

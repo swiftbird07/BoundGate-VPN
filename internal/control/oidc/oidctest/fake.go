@@ -47,8 +47,8 @@ type Provider struct {
 
 type pending struct {
 	nonce, challenge, redirect string
-	user                        User
-	expires                     time.Time
+	user                       User
+	expires                    time.Time
 }
 
 // New creates a provider with a fresh signing key.
