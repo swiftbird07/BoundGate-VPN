@@ -94,12 +94,12 @@ func TestCanonicalIsStable(t *testing.T) {
 	var spki devicekey.SPKIHash
 	spki[0], spki[31] = 0xab, 0xcd
 	a := Binding{NodeID: "n", SPKI: spki, KeyVersion: 1,
-		Roles:    []registry.Role{registry.RoleSubnetRouter, registry.RoleEndpoint, registry.RoleEndpoint},
-		Prefixes: []registry.Prefix{{Prefix: netip.MustParsePrefix("192.168.178.7/24"), Mode: registry.ModeSNAT}, {Prefix: netip.MustParsePrefix("10.60.0.0/24"), Mode: registry.ModeRouted}},
+		Roles:     []registry.Role{registry.RoleSubnetRouter, registry.RoleEndpoint, registry.RoleEndpoint},
+		Prefixes:  []registry.Prefix{{Prefix: netip.MustParsePrefix("192.168.178.7/24"), Mode: registry.ModeSNAT}, {Prefix: netip.MustParsePrefix("10.60.0.0/24"), Mode: registry.ModeRouted}},
 		OverlayIP: netip.MustParseAddr("10.21.0.4")}
 	b := Binding{NodeID: "n", SPKI: spki, KeyVersion: 1,
-		Roles:    []registry.Role{registry.RoleEndpoint, registry.RoleSubnetRouter},
-		Prefixes: []registry.Prefix{{Prefix: netip.MustParsePrefix("10.60.0.0/24"), Mode: registry.ModeRouted}, {Prefix: netip.MustParsePrefix("192.168.178.0/24"), Mode: registry.ModeSNAT}},
+		Roles:     []registry.Role{registry.RoleEndpoint, registry.RoleSubnetRouter},
+		Prefixes:  []registry.Prefix{{Prefix: netip.MustParsePrefix("10.60.0.0/24"), Mode: registry.ModeRouted}, {Prefix: netip.MustParsePrefix("192.168.178.0/24"), Mode: registry.ModeSNAT}},
 		OverlayIP: netip.MustParseAddr("10.21.0.4")}
 	ca, err := a.Canonical()
 	if err != nil {

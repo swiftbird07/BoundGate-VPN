@@ -75,7 +75,7 @@ type Entry struct {
 	SNI     string
 	DNSName string
 
-	Opened, LastSeen time.Time
+	Opened, LastSeen                         time.Time
 	BytesIn, BytesOut, PacketsIn, PacketsOut uint64 // In = from the originator
 
 	sniBuf   []byte

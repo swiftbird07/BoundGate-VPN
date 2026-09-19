@@ -49,13 +49,13 @@ func SelfSigned(key devicekey.DeviceKey, deviceName string) (tls.Certificate, er
 		return tls.Certificate{}, fmt.Errorf("devicecert: serial: %w", err)
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: deviceName, Organization: []string{"BoundGate device"}},
-		NotBefore:    time.Now().Add(-5 * time.Minute),
-		NotAfter:     maxNotAfter,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		URIs:         []*url.URL{{Scheme: URIScheme, Opaque: "device:" + spki.String()}},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: deviceName, Organization: []string{"BoundGate device"}},
+		NotBefore:             time.Now().Add(-5 * time.Minute),
+		NotAfter:              maxNotAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		URIs:                  []*url.URL{{Scheme: URIScheme, Opaque: "device:" + spki.String()}},
 		BasicConstraintsValid: true,
 		IsCA:                  false,
 	}

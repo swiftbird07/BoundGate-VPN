@@ -31,8 +31,8 @@ import (
 
 // Client for the node API.
 type Client struct {
-	URL    string // https://control:443
-	http   *http.Client
+	URL     string // https://control:443
+	http    *http.Client
 	log     *slog.Logger
 	verify  func(*registry.Snapshot) error
 	onError func(error)
@@ -136,7 +136,9 @@ type APIError struct {
 	Message string
 }
 
-func (e *APIError) Error() string { return fmt.Sprintf("control plane: HTTP %d: %s", e.Status, e.Message) }
+func (e *APIError) Error() string {
+	return fmt.Sprintf("control plane: HTTP %d: %s", e.Status, e.Message)
+}
 
 // ErrNotApproved is returned when the control plane refuses the node
 // (pending, revoked or unknown).

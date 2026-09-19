@@ -219,9 +219,9 @@ func clientHello(name string) []byte {
 	ext := append(pad, sni...)
 	body := []byte{3, 3}
 	body = append(body, make([]byte, 32)...)
-	body = append(body, 0)                            // session id
-	body = append(body, 0, 2, 0x13, 0x01)             // cipher suites
-	body = append(body, 1, 0)                         // compression
+	body = append(body, 0)                // session id
+	body = append(body, 0, 2, 0x13, 0x01) // cipher suites
+	body = append(body, 1, 0)             // compression
 	body = append(body, byte(len(ext)>>8), byte(len(ext)))
 	body = append(body, ext...)
 	hs := append([]byte{1, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
