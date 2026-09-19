@@ -64,11 +64,13 @@ make a handshake fail.
 
 Device-bound identity means TLS must end at BoundGate, not at a proxy: the
 node channel and the tunnel are mTLS with the device certificate, which a
-proxy that terminates TLS cannot present. The admin UI shares the same
-TCP listener (its name selects the WebPKI certificate, `nodes.<name>` the
-node-channel key), and Let's Encrypt validates on that listener too
-(TLS-ALPN-01). So **nothing terminates TLS in front of BoundGate**; a proxy
-can only pass three server names through at layer 4, by SNI:
+proxy that terminates TLS cannot present. So **nothing terminates TLS for
+`nodes.<name>` and `hub.boundgate`**; a proxy passes them through at layer
+4, by SNI. The admin UI is different: it is ordinary HTTPS without client
+certificates, so a proxy may either pass it through as well (BoundGate's
+own certificate and ACME), or terminate it and re-encrypt to the control
+plane with the admin name as SNI (a WAF, the proxy's certificate; then
+`acme.enabled: false`, and the proxy pins `state/control/control.crt`).
 
 | Server name | Goes to | Protocol behind it |
 |---|---|---|
@@ -100,9 +102,12 @@ arrives through the mux like any other TLS connection for its name.
 
 **Variant B, the proxy stays on TCP/443.** The mux serves UDP only
 (`no_tcp: true` in `mux.yaml`), the proxy passes the three names through
-with PROXY protocol v2 (so control plane and hub log real addresses;
-without it set `behind_mux.no_proxy_protocol: true` in `control.yaml` and
-`hub.yaml`). Traefik, as a dynamic configuration file:
+with PROXY protocol (so control plane and hub log real addresses).
+BoundGate reads v2 (the mux, HAProxy, Traefik), v1 (all nginx can send)
+and, from a trusted address, connections without a header (an HTTP proxy
+that re-encrypts to the admin name cannot send one; BoundGate then sees the
+proxy's address). `behind_mux.no_proxy_protocol: true` switches header
+parsing off altogether. Traefik, as a dynamic configuration file:
 
 ```yaml
 tcp:
@@ -133,10 +138,17 @@ stream {
     listen 443;
     ssl_preread on;
     proxy_pass $bg_upstream;
-    proxy_protocol on;                       # the http{} server then needs "listen 8081 ssl proxy_protocol;"
+    proxy_protocol on;                       # v1; the http{} server then needs "listen 8081 ssl proxy_protocol;"
   }
 }
 ```
+
+The [nginx-waf](https://gitlab.net407.com/BDH/Nginx-WAF) project renders
+exactly this from a `[[boundgate]]` entry in its `hosts.toml`, with its geo
+gate applied to the BoundGate names and the admin UI as one of its hosts.
+`FRONT=nginx deploy/prod/rehearsal.sh` runs the rehearsal behind a stock
+nginx (mux on UDP only), `NGINX_STREAM_FILE=` with a stream block of your
+own.
 
 HAProxy: `mode tcp`, `tcp-request inspect-delay 5s`, `tcp-request content
 accept if { req.ssl_hello_type 1 }`, `use_backend bg_hub if { req.ssl_sni -i

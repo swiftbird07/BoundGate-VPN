@@ -8,13 +8,17 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-// PROXY protocol v2 (haproxy.org/download/2.9/doc/proxy-protocol.txt): what
+// PROXY protocol (haproxy.org/download/2.9/doc/proxy-protocol.txt): what
 // the front, or any TCP reverse proxy in SNI-passthrough mode, puts before
-// the client's bytes so the server learns who is calling.
+// the client's bytes so the server learns who is calling. The mux, HAProxy
+// and Traefik send the binary v2; nginx's stream module can only send the
+// text v1 ("PROXY TCP4 src dst sport dport\r\n"). Both are read.
 
 var proxyV2Sig = []byte{0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A}
 
@@ -39,10 +43,13 @@ func ProxyV2Header(src, dst net.Addr) []byte {
 	return binary.BigEndian.AppendUint16(binary.BigEndian.AppendUint16(out, sa.Port()), da.Port())
 }
 
-// ProxyListener accepts PROXY v2 headers from trusted sources and reports
-// the carried address as RemoteAddr. Connections from anyone else pass
-// through unchanged, so a server can be reachable both ways; a trusted
-// source that sends no header is refused.
+// ProxyListener accepts PROXY v1 and v2 headers from trusted sources and
+// reports the carried address as RemoteAddr. Connections from anyone else
+// pass through unchanged, so a server can be reachable both ways. A trusted
+// source may also send no header at all (an HTTP reverse proxy that
+// re-encrypts to the admin name cannot send one): the connection then
+// starts with a TLS record, which no PROXY header can be mistaken for, and
+// RemoteAddr stays the proxy's own address.
 type ProxyListener struct {
 	net.Listener
 	Trusted []netip.Prefix
@@ -86,9 +93,21 @@ func (c *proxyConn) readHeader() {
 	c.r = bufio.NewReader(c.Conn)
 	_ = c.Conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	defer c.Conn.SetReadDeadline(time.Time{})
+	first, err := c.r.Peek(6)
+	if err != nil {
+		c.err = err
+		return
+	}
+	if bytes.Equal(first, []byte("PROXY ")) {
+		c.readV1()
+		return
+	}
+	if !bytes.Equal(first, proxyV2Sig[:6]) {
+		return // no header: a TLS ClientHello (0x16 ...) straight from a trusted HTTP proxy
+	}
 	hdr := make([]byte, 16)
 	if _, err := io.ReadFull(c.r, hdr); err != nil || !bytes.Equal(hdr[:12], proxyV2Sig) || hdr[12]>>4 != 2 {
-		c.err = errors.New("mux: PROXY protocol v2 header expected from a trusted front")
+		c.err = errors.New("mux: malformed PROXY protocol v2 header from a trusted front")
 		return
 	}
 	n := int(binary.BigEndian.Uint16(hdr[14:]))
@@ -114,6 +133,42 @@ func (c *proxyConn) readHeader() {
 			c.remote = net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom16([16]byte(body[0:16])).Unmap(), binary.BigEndian.Uint16(body[32:34])))
 		}
 	}
+}
+
+// readV1 parses the text header: "PROXY TCP4|TCP6 src dst sport dport\r\n"
+// or "PROXY UNKNOWN ...\r\n", at most 107 bytes.
+func (c *proxyConn) readV1() {
+	var line []byte
+	for len(line) < 107 {
+		b, err := c.r.ReadByte()
+		if err != nil {
+			c.err = err
+			return
+		}
+		line = append(line, b)
+		if b == '\n' {
+			break
+		}
+	}
+	if !bytes.HasSuffix(line, []byte("\r\n")) {
+		c.err = errors.New("mux: malformed PROXY protocol v1 header from a trusted front")
+		return
+	}
+	f := strings.Fields(string(line))
+	if len(f) < 2 || f[1] == "UNKNOWN" {
+		return
+	}
+	if len(f) != 6 || (f[1] != "TCP4" && f[1] != "TCP6") {
+		c.err = errors.New("mux: malformed PROXY protocol v1 header from a trusted front")
+		return
+	}
+	ip, err1 := netip.ParseAddr(f[2])
+	port, err2 := strconv.ParseUint(f[4], 10, 16)
+	if err1 != nil || err2 != nil {
+		c.err = errors.New("mux: malformed PROXY protocol v1 address from a trusted front")
+		return
+	}
+	c.remote = net.TCPAddrFromAddrPort(netip.AddrPortFrom(ip.Unmap(), uint16(port)))
 }
 
 func (c *proxyConn) Read(p []byte) (int, error) {

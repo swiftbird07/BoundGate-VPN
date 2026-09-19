@@ -8,6 +8,13 @@
 #
 #   make rehearsal              (= make image && deploy/prod/rehearsal.sh)
 #   deploy/prod/rehearsal.sh down
+#
+# FRONT=nginx puts a stock nginx on TCP/443 instead of the mux (which then
+# serves UDP only, no_tcp): SNI passthrough with `ssl_preread`, PROXY protocol
+# v1 as nginx sends it. This is the "reverse proxy stays in front" setup of
+# docs/DEPLOY.md. NGINX_STREAM_FILE=<file> uses that stream{} block instead of
+# the built-in one (e.g. what nginx-waf's render-sites.py wrote for a
+# [[boundgate]] entry with control 127.0.0.1:8443, hub 127.0.0.1:8444).
 set -eu
 cd "$(dirname "$0")/../.."
 W=$PWD/dist/rehearsal
@@ -19,7 +26,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 wait_for() { n=$1; shift; while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && return 0; n=$((n-1)); sleep 1; done; return 1; }
 
 if [ "${1:-}" = down ]; then
-  docker rm -f $P-client >/dev/null 2>&1 || true
+  docker rm -f $P-client $P-nginx >/dev/null 2>&1 || true
   [ -f "$W/docker-compose.yml" ] && $C down --remove-orphans >/dev/null 2>&1 || true
   echo "rehearsal stopped"; exit 0
 fi
@@ -45,6 +52,35 @@ socket: /run/boundgate/node.sock
 tun_name: bg0
 log_stdout: true
 YAML
+
+if [ "${FRONT:-mux}" = nginx ]; then
+  echo "   front: nginx on TCP/443 (SNI passthrough, PROXY v1), mux on UDP/443 only"
+  sed -i.bak -e 's/^# no_tcp: true/no_tcp: true/' "$W/mux.yaml" && grep -q '^no_tcp: true' "$W/mux.yaml" || fail "could not switch the mux to no_tcp"
+  mkdir -p "$W/nginx"
+  if [ -n "${NGINX_STREAM_FILE:-}" ]; then
+    cp "$NGINX_STREAM_FILE" "$W/nginx/streams.main"
+  else
+    cat > "$W/nginx/streams.main" <<'NGX'
+stream {
+  map $ssl_preread_server_name $bg_backend {
+    bg.test        127.0.0.1:8443;
+    nodes.bg.test  127.0.0.1:8443;
+    hub.boundgate  127.0.0.1:8444;
+    default        127.0.0.1:9;
+  }
+  server {
+    listen 443;
+    ssl_preread on;
+    proxy_protocol on;
+    proxy_pass $bg_backend;
+  }
+}
+NGX
+  fi
+  printf 'events {}\ninclude /etc/nginx/bg/streams.main;\n' > "$W/nginx/nginx.conf"
+  docker run -d --name $P-nginx --network host -v "$W/nginx:/etc/nginx/bg:ro" nginx:stable-alpine nginx -g 'daemon off;' -c /etc/nginx/bg/nginx.conf >/dev/null \
+    || fail "nginx front"
+fi
 
 echo "== 1. start mux, control plane, hub"
 $C up -d >/dev/null 2>&1 || fail "compose up (is port 443 of the VM free?): $($C up -d 2>&1 | tail -3)"
