@@ -406,6 +406,9 @@ func housekeeping(ctx context.Context, store *db.DB, cfg Config, log interface {
 		if _, err := store.ExpireSignTokens(ctx); err != nil {
 			log.Error("expire sign tokens", "err", err)
 		}
+		if _, err := store.ExpireSignerChanges(ctx); err != nil {
+			log.Error("expire signer list proposals", "err", err)
+		}
 		if n, err := store.PruneLogs(ctx, cfg.LogRetention); err != nil {
 			log.Error("prune logs", "err", err)
 		} else if n > 0 {
