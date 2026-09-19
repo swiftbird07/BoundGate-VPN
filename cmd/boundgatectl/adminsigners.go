@@ -34,7 +34,7 @@ func runAdminSignSigners(args []string, asJSON bool) error {
 	control := fs.String("control", "", "control plane URL (https://host[:port])")
 	cacert := fs.String("cacert", "", "PEM file to trust instead of the system roots (dev, self-signed)")
 	token := fs.String("token", "", "one-time token from the admin UI")
-	keyFile := fs.String("key", "", "sign with this OpenSSH private key file (unencrypted)")
+	keyFile := fs.String("key", "", "sign with this OpenSSH private key file, without ssh-agent; a passphrase protected file or a security key (YubiKey) is signed by ssh-keygen, which asks for passphrase, PIN and touch")
 	agentKey := fs.String("agent-key", "", "pick the ssh-agent key whose comment or fingerprint contains this")
 	sigFile := fs.String("signature", "", "post this SSHSIG file made with `ssh-keygen -Y sign -n boundgate-signers` instead of signing")
 	outFile := fs.String("out", "", "write the list to this file for `ssh-keygen -Y sign` and exit")
@@ -125,17 +125,7 @@ func runAdminSignSigners(args []string, asJSON bool) error {
 		}
 		sig = string(b)
 	} else {
-		signer, err := pickSigner(*keyFile, *agentKey, allowed)
-		if err != nil {
-			return err
-		}
-		if !asJSON {
-			fmt.Printf("signing with: %s %s\n", signer.PublicKey().Type(), ssh.FingerprintSHA256(signer.PublicKey()))
-			if binding.IsHardwareKey(signer.PublicKey()) {
-				fmt.Println("touch your security key now")
-			}
-		}
-		if sig, err = binding.SignSet(signer, []byte(p.Set)); err != nil {
+		if sig, err = signMessage(*keyFile, *agentKey, allowed, binding.SignersNamespace, []byte(p.Set), asJSON); err != nil {
 			return err
 		}
 	}

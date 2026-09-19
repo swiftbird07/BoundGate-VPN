@@ -43,7 +43,7 @@ func runAdmin(args []string, asJSON bool) error {
 	nodeID := fs.String("node", "", "node id from the confirm step")
 	fp := fs.String("fingerprint", "", "the node's key fingerprint you compared (64 hex digits, spaces allowed)")
 	token := fs.String("token", "", "one-time sign token from the confirm step")
-	keyFile := fs.String("key", "", "sign with this OpenSSH private key file (unencrypted)")
+	keyFile := fs.String("key", "", "sign with this OpenSSH private key file, without ssh-agent; a passphrase protected file or a security key (YubiKey) is signed by ssh-keygen, which asks for passphrase, PIN and touch")
 	agentKey := fs.String("agent-key", "", "pick the ssh-agent key whose comment or fingerprint contains this")
 	sigFile := fs.String("signature", "", "post this SSHSIG file made with `ssh-keygen -Y sign -n boundgate-binding` instead of signing")
 	outFile := fs.String("out", "", "write the binding to this file for `ssh-keygen -Y sign` and exit")
@@ -103,17 +103,8 @@ func runAdmin(args []string, asJSON bool) error {
 		}
 		sig = string(b)
 	default:
-		signer, err := pickSigner(*keyFile, *agentKey, sb.Signers)
-		if err != nil {
-			return err
-		}
-		if !asJSON {
-			fmt.Printf("signing with: %s %s\n", signer.PublicKey().Type(), ssh.FingerprintSHA256(signer.PublicKey()))
-			if binding.IsHardwareKey(signer.PublicKey()) {
-				fmt.Println("touch your security key now")
-			}
-		}
-		if sig, err = binding.Sign(signer, sb.Namespace, []byte(sb.Binding)); err != nil {
+		var err error
+		if sig, err = signMessage(*keyFile, *agentKey, sb.Signers, sb.Namespace, []byte(sb.Binding), asJSON); err != nil {
 			return err
 		}
 	}
@@ -136,27 +127,12 @@ func runAdmin(args []string, asJSON bool) error {
 	return nil
 }
 
-// pickSigner returns the signer to use: a key file, or an ssh-agent key that
-// is one of the registered admin keys (narrowed by --agent-key).
-func pickSigner(keyFile, agentKey string, registered []string) (ssh.Signer, error) {
-	if keyFile != "" {
-		b, err := os.ReadFile(keyFile)
-		if err != nil {
-			return nil, err
-		}
-		s, err := ssh.ParsePrivateKey(b)
-		if err != nil {
-			var pw *ssh.PassphraseMissingError
-			if errors.As(err, &pw) {
-				return nil, errors.New("admin sign: the key file is encrypted; add it to ssh-agent and use the agent instead")
-			}
-			return nil, fmt.Errorf("admin sign: %s: %w", keyFile, err)
-		}
-		return s, nil
-	}
+// pickSigner returns the ssh-agent key that is one of the registered admin
+// keys (narrowed by --agent-key). Key files: signMessage.
+func pickSigner(agentKey string, registered []string) (ssh.Signer, error) {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
-		return nil, errors.New("admin sign: no --key and SSH_AUTH_SOCK is not set; start ssh-agent and add the admin key (ssh-add -K for a YubiKey resident key)")
+		return nil, errors.New("admin sign: no --key and SSH_AUTH_SOCK is not set; pass --key <private key file>, or start ssh-agent and add the admin key")
 	}
 	conn, err := net.Dial("unix", sock)
 	if err != nil {

@@ -216,9 +216,21 @@ container (`state/control/admin_signer`), registers it, and signs with
 ```bash
 ssh-keygen -t ed25519-sk -O resident -O verify-required -C "martin yubikey" -f ~/.ssh/id_boundgate_sk
 ./setup-dev.sh api POST /api/v1/admin/signers "$(jq -cn --arg k "$(cat ~/.ssh/id_boundgate_sk.pub)" '{name:"martin yubikey",public_key:$k}')"
-ssh-add -K                           # load the resident key into ssh-agent
-boundgatectl admin sign --control https://127.0.0.1:18443 --cacert deploy/compose/state/control/control.crt --node … --fingerprint … --token …
+boundgatectl admin sign --key ~/.ssh/id_boundgate_sk --control https://127.0.0.1:18443 --cacert deploy/compose/state/control/control.crt --node … --fingerprint … --token …
 ```
+
+`--key` signs then and there and leaves nothing loaded: a plain key file is
+used directly; a passphrase protected file or a security key's handle is
+handed to `ssh-keygen -Y sign`, which asks on the terminal for the passphrase,
+the FIDO PIN and the touch. That is the recommended way for something done a
+few times a year. Without `--key` the CLI asks ssh-agent, which keeps the
+unlocked file until it is removed and needs an askpass program for the PIN.
+
+On macOS the OpenSSH that ships with the system is built without security key
+support (`No FIDO SecurityKeyProvider specified`; its ssh-agent answers
+`failed to sign challenge`). Use Homebrew's (`brew install openssh`), both for
+creating the key and for signing; the CLI prefers `/opt/homebrew/bin/ssh-keygen`
+when it exists, `BOUNDGATE_SSH_KEYGEN` names another.
 
 or without an agent: `--out binding.json`, then `ssh-keygen -Y sign -n
 boundgate-binding -f ~/.ssh/id_boundgate_sk binding.json`, then
