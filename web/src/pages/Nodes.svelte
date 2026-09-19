@@ -161,7 +161,7 @@
         <label class="field">Kind <select bind:value={g.kind}><option value="interactive">interactive (a user logs in)</option><option value="workload">workload (no user session)</option></select></label>
       </div>
       {#if confirm.node.hardware_claimed}
-        <label class="check"><input type="checkbox" bind:checked={g.hardware} /> Hardware-bound: this machine keeps its key in a TPM ({confirm.node.key_kind})</label>
+        <label class="check"><input type="checkbox" bind:checked={g.hardware} /> Hardware-bound: this machine keeps its key in hardware, a TPM or a Mac's Secure Enclave ({confirm.node.key_kind})</label>
         <p class="hint">The node says so; nothing proves it remotely. Tick it if you know the machine. It becomes part of the signed binding, and policies can require it (<code>principal.hardware_bound</code>).</p>
       {/if}
       <div class="field"><span>Roles</span><div class="row">{#each allRoles as r}<label class="check"><input type="checkbox" checked={g.roles.includes(r)} onchange={() => toggleRole(r)} /> {r}</label>{/each}</div></div>

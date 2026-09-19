@@ -81,8 +81,14 @@ changed, an approval that does not verify.
   refused there.
 * **Reset.** `POST /v1/reset` (`boundgatectl reset`, only while down)
   removes the address, the pinned control-plane key and the pinned admin
-  keys, and returns to setup mode. The device key stays. This is the way out
-  of a mistyped address, which would otherwise be pinned forever.
+  key list, and returns to setup mode. The device key stays. This is the way
+  out of a mistyped address, which would otherwise be pinned forever. With
+  `{"new_identity": true}` (`boundgatectl reset -new-identity`) the device key
+  goes as well: the way from a software key to a Secure Enclave key.
+* **Device key.** The bundle's `node.yaml` says `key_kind: auto`: a key in the
+  Secure Enclave on Macs that have one, through the bundled helper
+  `Contents/MacOS/boundgate-sekey`; a Mac that already enrolled keeps its key
+  ([SECURE-ENCLAVE.md](SECURE-ENCLAVE.md)).
 * **`socket_group`.** The socket stays `0660 root`, now with a configurable
   group. The app's configuration says `admin`, so administrators of the Mac
   use the app (and `boundgatectl`) without `sudo`; standard users cannot.

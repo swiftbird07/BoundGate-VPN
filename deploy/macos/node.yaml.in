@@ -3,7 +3,7 @@
 # installed outside the repository.
 name: @NAME@
 state_dir: @STATE@
-key_kind: softkey                  # Secure Enclave keys come later
+key_kind: softkey                  # secure-enclave: key in the Mac's Secure Enclave (needs boundgate-sekey, `make mac-sekey`); auto: that where possible
 control:
   addr: 127.0.0.1:18443            # the compose control plane, published on loopback (UDP for HTTP/3, TCP fallback)
   server_name: nodes.control

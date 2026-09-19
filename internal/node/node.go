@@ -34,6 +34,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicecert"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/sekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/softkey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/tpm2key"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
@@ -50,9 +51,15 @@ type Config struct {
 	Name string
 	// StateDir holds device.key and device.crt.
 	StateDir string
-	// KeyKind selects the DeviceKey implementation: "softkey" (default) or
-	// "tpm2" (a key created in and bound to the machine's TPM 2.0).
+	// KeyKind selects the DeviceKey implementation: "softkey" (default),
+	// "tpm2" (a key created in and bound to the machine's TPM 2.0),
+	// "secure-enclave" (the same in a Mac's Secure Enclave), or "auto": keep
+	// the identity this node already has, and on a fresh state directory take
+	// the Secure Enclave where there is one and a software key elsewhere.
 	KeyKind string
+	// SEKeyHelper is the Secure Enclave helper for kind secure-enclave;
+	// default: boundgate-sekey next to this executable.
+	SEKeyHelper string
 	// TPMDevice is the TPM for key kind tpm2: a device path (default
 	// /dev/tpmrm0; a VM's vTPM appears there as well) or unix:PATH /
 	// tcp:HOST:PORT for a software TPM (swtpm).
@@ -276,13 +283,22 @@ func New(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	var opener devicekey.Opener
-	switch cfg.KeyKind {
+	kind := cfg.KeyKind
+	if kind == "auto" {
+		kind = autoKeyKind(cfg)
+	}
+	switch kind {
 	case "", "softkey":
 		opener = softkey.New(filepath.Join(cfg.StateDir, "device.key"))
 	case tpm2key.Kind:
 		opener = tpm2key.New(cfg.TPMDevice, filepath.Join(cfg.StateDir, "device.tpm"))
 		if _, err := os.Stat(filepath.Join(cfg.StateDir, "device.key")); err == nil {
 			cfg.Log.Warn("a software key exists next to the TPM key: this node now has a new identity and must enroll again; remove device.key once it is no longer needed")
+		}
+	case sekey.Kind:
+		opener = sekey.New(cfg.SEKeyHelper, filepath.Join(cfg.StateDir, "device.sekey"))
+		if _, err := os.Stat(filepath.Join(cfg.StateDir, "device.key")); err == nil {
+			cfg.Log.Warn("a software key exists next to the Secure Enclave key: this node now has a new identity and must enroll again; remove device.key once it is no longer needed")
 		}
 	default:
 		return nil, fmt.Errorf("node: unsupported key kind %q", cfg.KeyKind)
@@ -1274,4 +1290,30 @@ func (s *session) teardown() {
 	}
 	s.bypass = map[netip.Addr]bool{}
 	s.mu.Unlock()
+}
+
+// autoKeyKind resolves key kind "auto". An identity that exists is kept - a
+// node must not come back from an update as somebody else. A fresh state
+// directory gets the Secure Enclave where there is one.
+func autoKeyKind(cfg Config) string {
+	exists := func(name string) bool { _, err := os.Stat(filepath.Join(cfg.StateDir, name)); return err == nil }
+	if exists("device.sekey") {
+		return sekey.Kind
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	available := runtime.GOOS == "darwin" && sekey.Available(ctx, cfg.SEKeyHelper)
+	if exists("device.key") {
+		if available {
+			cfg.Log.Info("this Mac has a Secure Enclave, but the node keeps the software key it enrolled with. `boundgatectl reset -new-identity` moves it to a hardware-bound key; it then enrolls again")
+		}
+		return "softkey"
+	}
+	if available {
+		return sekey.Kind
+	}
+	if runtime.GOOS == "darwin" {
+		cfg.Log.Warn("no usable Secure Enclave (or its helper boundgate-sekey is missing): the device key will be a software key")
+	}
+	return "softkey"
 }

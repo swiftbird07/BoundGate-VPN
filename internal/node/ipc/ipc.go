@@ -40,9 +40,16 @@ type Options struct {
 	// Group owns the socket next to root ("" = root's group).
 	Group string
 	// Reset, when set, makes the node forget its control plane (settings,
-	// pin, admin keys; not the device key). The node must be down. Serve
-	// returns ErrReset after answering.
-	Reset func() error
+	// pin, admin key list), and with newIdentity its device key as well.
+	// The node must be down. Serve returns ErrReset after answering.
+	Reset func(newIdentity bool) error
+}
+
+// ResetRequest is the optional body of POST /v1/reset.
+type ResetRequest struct {
+	// NewIdentity also discards the device key: the node comes back with a
+	// new one (of the configured kind) and has to enroll again.
+	NewIdentity bool `json:"new_identity"`
 }
 
 // ErrReset is returned by Serve after a successful reset.
@@ -71,7 +78,14 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 			writeJSON(w, http.StatusConflict, ErrorResponse{"disconnect first (boundgatectl down)"})
 			return
 		}
-		if err := opt.Reset(); err != nil {
+		var body ResetRequest
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{"bad request body"})
+				return
+			}
+		}
+		if err := opt.Reset(body.NewIdentity); err != nil {
 			writeJSON(w, http.StatusInternalServerError, ErrorResponse{err.Error()})
 			return
 		}
@@ -296,8 +310,11 @@ func (c *Client) Configure(s Settings) error {
 }
 
 // Reset makes the daemon forget its control plane.
-func (c *Client) Reset() error {
-	return c.do(http.MethodPost, "/v1/reset", nil, nil)
+func (c *Client) Reset(newIdentity bool) error {
+	if !newIdentity {
+		return c.do(http.MethodPost, "/v1/reset", nil, nil)
+	}
+	return c.do(http.MethodPost, "/v1/reset", ResetRequest{NewIdentity: true}, nil)
 }
 
 // Down asks the daemon to tear the overlay down.

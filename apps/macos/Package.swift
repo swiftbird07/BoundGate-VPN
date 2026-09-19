@@ -13,6 +13,8 @@ let package = Package(
         .target(name: "BoundGateUI", dependencies: ["BoundGateKit"]),
         // the menu-bar app
         .executableTarget(name: "BoundGate", dependencies: ["BoundGateUI"]),
+        // Secure Enclave bridge for the daemon's device key (key_kind: secure-enclave)
+        .executableTarget(name: "boundgate-sekey"),
         // developer tool: talk to a daemon, render the UI states to PNG, draw the app icon
         .executableTarget(name: "bgtool", dependencies: ["BoundGateUI"]),
     ]

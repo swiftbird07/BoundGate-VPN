@@ -20,7 +20,7 @@ MACOS-APP.md (M8).
 | Routes | `route -n add -inet -net <prefix> -interface utunN` (`change` if it exists), `route -n delete …` on the way down |
 | Bypass routes | hubs, control plane and IdP stay reachable outside the tunnel: `route -n get <host>` tells gateway and interface, `route -n add -host <host> <gateway>` (or `-interface` on-link) pins them. Loopback targets need none. A host currently routed through another `utun` (a second VPN) is refused rather than pinned there |
 | Roles | endpoint only: forwarding and NAT answer "macOS nodes are endpoints only" |
-| Device key | software key in the state directory (`key_kind: softkey`); Secure Enclave keys are future work, TPM is M6 on Linux |
+| Device key | `key_kind: secure-enclave` or `auto`: a key in the Mac's Secure Enclave ([SECURE-ENCLAVE.md](SECURE-ENCLAVE.md)); `softkey`: a software key in the state directory |
 | DNS | the prototype pushes no DNS configuration on any platform yet, so nothing is touched (`scutil` comes with split DNS) |
 | Paths | installed: `/usr/local/bin`, `/usr/local/etc/boundgate/node.yaml`, state `/var/db/boundgate`, socket `/var/run/boundgate/node.sock` (the CLI's default on macOS; `BOUNDGATE_SOCKET` or `-socket` override), logs `/var/log/boundgate` |
 

@@ -3,7 +3,7 @@ GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: image image-push rehearsal mac-app test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: image image-push rehearsal mac-app mac-sekey test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -61,6 +61,14 @@ test-tpm:
 # BoundGate.app (docs/MACOS-APP.md): Go in the box, Swift and codesign on the Mac
 mac-app:
 	apps/macos/build-app.sh
+
+# The Secure Enclave bridge of a macOS node (key_kind secure-enclave / auto),
+# for installs without the app (deploy/macos/install.sh). Swift, so it builds
+# on the Mac and not in the box; the app bundle gets its own copy from mac-app.
+mac-sekey:
+	swift build --package-path apps/macos -c release --product boundgate-sekey
+	@mkdir -p bin/darwin_$(GOARCH)
+	cp "$$(swift build --package-path apps/macos -c release --show-bin-path)/boundgate-sekey" bin/darwin_$(GOARCH)/
 
 # The one image every deployment pulls (deploy/prod, docs/DEPLOY.md). Binaries
 # come from build-linux (Go in the box, cooldown-checked); the Dockerfile only

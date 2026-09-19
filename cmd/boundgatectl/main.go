@@ -138,8 +138,17 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 		fmt.Println("configured. Next: `boundgatectl enroll`, and compare the control pin it shows with your administrator's.")
 		return nil
 	case "reset":
-		if err := c.Reset(); err != nil {
+		fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+		newIdentity := fs.Bool("new-identity", false, "also discard the device key: the node gets a new one (a Secure Enclave key where key_kind allows) and enrolls again")
+		if err := fs.Parse(args[1:]); err != nil {
 			return err
+		}
+		if err := c.Reset(*newIdentity); err != nil {
+			return err
+		}
+		if *newIdentity {
+			fmt.Println("the node forgot its control plane and its device key. Next: `boundgatectl configure -control HOST`, then enroll again; revoke the old node in the admin UI.")
+			return nil
 		}
 		fmt.Println("the node forgot its control plane (the device key is kept). Next: `boundgatectl configure -control HOST`.")
 		return nil

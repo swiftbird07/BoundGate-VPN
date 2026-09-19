@@ -21,6 +21,7 @@ make build-darwin >/dev/null
 echo "== Swift app (release)"
 swift build --package-path apps/macos -c release --product BoundGate 2>&1 | tail -1
 swift build --package-path apps/macos -c release --product bgtool 2>&1 | tail -1
+swift build --package-path apps/macos -c release --product boundgate-sekey 2>&1 | tail -1
 BIN=$(swift build --package-path apps/macos -c release --show-bin-path)
 
 echo "== bundle"
@@ -28,6 +29,9 @@ rm -rf "$APP" dist/icon
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/LaunchDaemons" dist/icon
 cp "$BIN/BoundGate" "$APP/Contents/MacOS/BoundGate"
 cp "bin/darwin_$ARCH/boundgate-node" "bin/darwin_$ARCH/boundgatectl" "$APP/Contents/MacOS/"
+# Secure Enclave bridge of the daemon (key_kind auto / secure-enclave); the
+# daemon looks for it next to itself
+cp "$BIN/boundgate-sekey" "$APP/Contents/MacOS/boundgate-sekey"
 cp apps/macos/Bundle/node.yaml "$APP/Contents/Resources/node.yaml"
 for f in Info.plist com.boundgate.node.plist; do
   sed -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" "apps/macos/Bundle/$f" > "dist/$f"
@@ -52,7 +56,7 @@ case "$SIGN_IDENTITY" in
 esac
 echo "   identity: $SIGN_IDENTITY"
 # inside out: helpers first, the bundle last; hardened runtime everywhere
-for b in boundgate-node boundgatectl; do
+for b in boundgate-node boundgatectl boundgate-sekey; do
   codesign --force --options runtime $TS --identifier "$BUNDLE_ID.${b#boundgate-}" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/$b"
 done
 codesign --force --options runtime $TS --sign "$SIGN_IDENTITY" "$APP"

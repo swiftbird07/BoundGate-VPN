@@ -14,6 +14,8 @@ case "${1:-}" in
     install -d -m 755 /usr/local/bin /usr/local/etc/boundgate /usr/local/etc/boundgate/profiles /var/log/boundgate
     install -d -m 700 /var/db/boundgate
     install -m 755 "$BIN/boundgate-node" "$BIN/boundgatectl" /usr/local/bin/
+    # Secure Enclave bridge (make mac-sekey); the daemon looks for it next to itself
+    [ ! -f "$BIN/boundgate-sekey" ] || install -m 755 "$BIN/boundgate-sekey" /usr/local/bin/
     install -m 600 "$CFG" /usr/local/etc/boundgate/node.yaml
     install -m 644 "$REPO/deploy/macos/com.boundgate.node.plist" "$PLIST"
     launchctl bootout system "$PLIST" 2>/dev/null || true
@@ -22,7 +24,7 @@ case "${1:-}" in
   uninstall)
     /usr/local/bin/boundgatectl down 2>/dev/null || true
     launchctl bootout system "$PLIST" 2>/dev/null || true
-    rm -f "$PLIST" /usr/local/bin/boundgate-node /usr/local/bin/boundgatectl
+    rm -f "$PLIST" /usr/local/bin/boundgate-node /usr/local/bin/boundgatectl /usr/local/bin/boundgate-sekey
     rm -rf /usr/local/etc/boundgate /var/run/boundgate
     echo "removed; the device identity stays in /var/db/boundgate (delete it to forget this node)" ;;
   *) sed -n '2,5p' "$0"; exit 2 ;;

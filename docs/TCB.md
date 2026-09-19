@@ -12,7 +12,7 @@ reviewed. Everything outside the TCB may have bugs that cause wrong
 | Go `crypto/tls`, `crypto/x509`, `crypto/ecdsa` | TLS 1.3 handshake, certificate parsing, signatures |
 | `github.com/quic-go/quic-go` (+ `http3`) | QUIC transport, TLS integration, HTTP/3 |
 | `github.com/quic-go/connect-ip-go` | RFC 9484 capsules and datagrams, assigned-address enforcement |
-| `internal/devicekey`, `devicekey/softkey`, `devicekey/tpm2key` | Key generation and signing; the only code touching private key material |
+| `internal/devicekey`, `devicekey/softkey`, `devicekey/tpm2key`, `devicekey/sekey` (with the Swift helper `boundgate-sekey`) | Key generation and signing; the only code touching private key material |
 | `internal/devicecert` | Builds the certificate that carries the key |
 | `internal/transport` | `parseDeviceCert`, `verifyDevice`, `verifyPinned` (spoke → hub), `serverKeyHash` + pin (node → control plane), `PeerFromTLSState`, `AuthenticatedPeer`, `CloseDevice` (revocation) |
 | `internal/registry` lookup path | `Holder.LookupSPKI` and `Holder.Stale`: a stale or wrong answer here admits a wrong node |

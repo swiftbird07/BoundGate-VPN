@@ -30,7 +30,9 @@ type config struct {
 	KeyKind  string `yaml:"key_kind"`
 	// TPMDevice: for key_kind tpm2; default /dev/tpmrm0, or unix:PATH / tcp:HOST:PORT (swtpm)
 	TPMDevice string `yaml:"tpm_device"`
-	Control   struct {
+	// SEKeyHelper: for key_kind secure-enclave; default boundgate-sekey next to this executable
+	SEKeyHelper string `yaml:"sekey_helper"`
+	Control     struct {
 		Addr       string `yaml:"addr"`
 		ServerName string `yaml:"server_name"`
 		// Pin is the hex SPKI hash of the control plane's node-channel key;
@@ -169,6 +171,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		StateDir:          cfg.StateDir,
 		KeyKind:           cfg.KeyKind,
 		TPMDevice:         cfg.TPMDevice,
+		SEKeyHelper:       cfg.SEKeyHelper,
 		ControlAddr:       local.ControlAddr,
 		ControlServerName: local.ControlServerName,
 		ControlPin:        cfg.Control.Pin,
@@ -203,16 +206,29 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	opt := ipc.Options{Group: cfg.SocketGroup}
 	if !fromFile {
 		// Forget the control plane: its address, its pinned key and the admin
-		// keys learned from it. The device key stays; to the next control
-		// plane this is simply a node that enrolls.
-		opt.Reset = func() error {
-			for _, f := range []string{settingsPath, filepath.Join(cfg.StateDir, "control.pin"), filepath.Join(cfg.StateDir, "admin_keys")} {
-				if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
-					return err
-				}
-			}
-			return nil
-		}
+		// key list learned from it. The device key stays, and to the next
+		// control plane this is simply a node that enrolls - unless a new
+		// identity is asked for (from a software key to the Secure Enclave,
+		// key_kind auto): then the key files go as well.
+		opt.Reset = func(newIdentity bool) error { return forget(cfg.StateDir, settingsPath, newIdentity) }
 	}
 	return ipc.Serve(ctx, cfg.Socket, n, opt)
+}
+
+// forget removes what ties this node to its control plane, and with
+// newIdentity the device key files as well.
+func forget(stateDir, settingsPath string, newIdentity bool) error {
+	files := []string{settingsPath, "control.pin", "admin_trust.json", "admin_keys"}
+	if newIdentity {
+		files = append(files, "device.key", "device.sekey", "device.tpm", "device.crt")
+	}
+	for _, f := range files {
+		if !filepath.IsAbs(f) {
+			f = filepath.Join(stateDir, f)
+		}
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }

@@ -6,7 +6,7 @@ socket: /var/run/boundgate/node.sock
 socket_group: admin            # members of "admin" may drive the daemon from the app without sudo
 log_dir: /var/log/boundgate
 profiles_dir: /Library/Application Support/BoundGate/profiles
-key_kind: softkey              # Secure Enclave key: M6.1
+key_kind: auto                 # a key in the Secure Enclave on Macs that have one (Apple silicon, T2); a node that already enrolled keeps its key
 roles: [endpoint]
 tun_name: utun
 mtu: 1280

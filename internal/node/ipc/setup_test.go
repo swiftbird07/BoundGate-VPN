@@ -74,7 +74,7 @@ func TestServeSetup(t *testing.T) {
 	if err := c.Configure(Settings{ControlAddr: "not a host"}); err == nil {
 		t.Fatal("invalid address accepted")
 	}
-	if err := c.Reset(); err == nil {
+	if err := c.Reset(false); err == nil {
 		t.Fatal("reset in setup mode accepted")
 	}
 	if err := c.Configure(Settings{ControlAddr: "https://bg.example.com/", Name: " mac "}); err != nil {
