@@ -32,9 +32,10 @@ type config struct {
 		TCP           string   `yaml:"tcp"`            // its private TLS address
 		ProxyProtocol *bool    `yaml:"proxy_protocol"` // PROXY v2 on TCP; default true
 	} `yaml:"routes"`
-	DefaultTCP string `yaml:"default_tcp"` // every other server name, e.g. your web server's TLS port
-	NoTCP      bool   `yaml:"no_tcp"`      // UDP only: a reverse proxy owns TCP/443 and passes the BoundGate names through
-	LogLevel   string `yaml:"log_level"`   // info (default) | debug
+	DefaultTCP           string `yaml:"default_tcp"`                // every other server name, e.g. your web server's TLS port
+	DefaultProxyProtocol bool   `yaml:"default_tcp_proxy_protocol"` // send PROXY v2 to default_tcp too (nginx: proxy_protocol on; Traefik: proxyProtocol.trustedIPs; Caddy: proxy_protocol)
+	NoTCP                bool   `yaml:"no_tcp"`                     // UDP only: a reverse proxy owns TCP/443 and passes the BoundGate names through
+	LogLevel             string `yaml:"log_level"`                  // info (default) | debug
 }
 
 func main() {
@@ -62,7 +63,7 @@ func run(path string) error {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})).With("component", "mux")
-	mc := mux.Config{Listen: cfg.Listen, DefaultTCP: cfg.DefaultTCP, NoTCP: cfg.NoTCP, Log: log}
+	mc := mux.Config{Listen: cfg.Listen, DefaultTCP: cfg.DefaultTCP, DefaultProxyProtocol: cfg.DefaultProxyProtocol, NoTCP: cfg.NoTCP, Log: log}
 	for _, r := range cfg.Routes {
 		if r.UDP != "" && (r.ID < 1 || r.ID > 255) {
 			return fmt.Errorf("config: route %q: id must be 1..255 and match behind_mux.id of that server", r.Name)

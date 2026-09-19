@@ -34,6 +34,9 @@ type Config struct {
 	// DefaultTCP receives TLS connections for every other name, untouched:
 	// the web server or reverse proxy that would otherwise own port 443.
 	DefaultTCP string
+	// DefaultProxyProtocol sends a PROXY v2 header to DefaultTCP as well, so
+	// a web server or reverse proxy there sees real client addresses.
+	DefaultProxyProtocol bool
 	// NoTCP: only UDP is served here; TCP/443 belongs to a reverse proxy that
 	// passes the BoundGate names through by SNI.
 	NoTCP bool
@@ -362,7 +365,7 @@ func (f *Front) serveTCP(c net.Conn) {
 	_ = c.SetReadDeadline(time.Now().Add(tcpPeekWait))
 	name, raw, err := readTLSClientHello(c, tcpPeekMax)
 	_ = c.SetReadDeadline(time.Time{})
-	target, proxy := f.cfg.DefaultTCP, false
+	target, proxy := f.cfg.DefaultTCP, f.cfg.DefaultProxyProtocol
 	if err == nil {
 		if be := f.lookup(name); be != nil && be.route.TCP != "" {
 			target, proxy = be.route.TCP, be.route.ProxyProtocol

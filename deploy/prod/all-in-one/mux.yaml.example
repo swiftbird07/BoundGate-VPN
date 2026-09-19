@@ -17,6 +17,7 @@ routes:
 # Move it to another port and name it here: every other server name goes
 # there untouched, TLS included.
 # default_tcp: 127.0.0.1:8080
+# default_tcp_proxy_protocol: true   # and let it see real client addresses (it must expect PROXY v2 on that port)
 # Or keep your reverse proxy on TCP/443, let it pass bg.example.com and
 # nodes.bg.example.com through by SNI (no TLS termination, PROXY protocol v2)
 # to 127.0.0.1:8443, and let the mux serve UDP only:

@@ -62,14 +62,91 @@ make a handshake fail.
 
 ### Port 443 is already taken by a web server or reverse proxy
 
-Device-bound identity means TLS must end at BoundGate, not at a proxy: a
-proxy that terminates TLS cannot present the node's client certificate.
-What works is **passing the connection through by server name** (layer 4):
+Device-bound identity means TLS must end at BoundGate, not at a proxy: the
+node channel and the tunnel are mTLS with the device certificate, which a
+proxy that terminates TLS cannot present. The admin UI shares the same
+TCP listener (its name selects the WebPKI certificate, `nodes.<name>` the
+node-channel key), and Let's Encrypt validates on that listener too
+(TLS-ALPN-01). So **nothing terminates TLS in front of BoundGate**; a proxy
+can only pass three server names through at layer 4, by SNI:
 
-| Setup | TCP/443 | UDP/443 |
+| Server name | Goes to | Protocol behind it |
 |---|---|---|
-| mux in front (simplest) | mux; `default_tcp: 127.0.0.1:8080` hands every other name to your web server, TLS untouched. Move the web server's HTTPS listener to that port | mux |
-| your proxy stays in front | your proxy passes `bg.example.com` and `nodes.bg.example.com` through by SNI to `127.0.0.1:8443`, and `hub.boundgate` to `127.0.0.1:8444` (the tunnel's TCP fallback), with PROXY protocol v2 (Traefik: TCP router `HostSNI(...)` + `tls.passthrough`, `proxyProtocol.version: 2`; nginx: `stream` + `ssl_preread`, `proxy_protocol on`; HAProxy: `mode tcp`, `req.ssl_sni`, `send-proxy-v2`; Caddy: layer4 app). Without PROXY protocol: `behind_mux.no_proxy_protocol: true` in both yaml files, and control plane and hub see the proxy's address | mux with `no_tcp: true`. General-purpose proxies cannot route QUIC by name; if yours serves HTTP/3 itself on UDP/443, that has to move or be switched off (its sites keep working over TCP) |
+| `bg.example.com` | `127.0.0.1:8443` | admin UI and API (HTTPS, WebPKI), ACME validation |
+| `nodes.bg.example.com` | `127.0.0.1:8443` | node channel (mTLS), the TCP fallback of HTTP/3 |
+| `hub.boundgate` | `127.0.0.1:8444` | the tunnel's TCP fallback (mTLS) |
+
+UDP/443 stays with the mux in every setup: general-purpose proxies cannot
+route QUIC by server name. If the proxy serves HTTP/3 itself on UDP/443,
+switch that off (its sites keep working over TCP).
+
+**Variant A, the mux stays in front (simplest).** The mux owns 443, the
+proxy moves its HTTPS listener to another port and receives every other
+server name untouched:
+
+```yaml
+# mux.yaml
+default_tcp: 127.0.0.1:8080
+default_tcp_proxy_protocol: true     # so the proxy sees real client addresses
+```
+
+The proxy must then expect PROXY protocol v2 on that port (nginx:
+`listen 8080 ssl proxy_protocol;` + `set_real_ip_from 127.0.0.1;
+real_ip_header proxy_protocol;`; Traefik entrypoint
+`proxyProtocol.trustedIPs: ["127.0.0.1/32"]`; Caddy `servers { listener_wrappers
+{ proxy_protocol } }`), or leave the option off and see `127.0.0.1`.
+Its own ACME keeps working: HTTP-01 on port 80 is untouched, TLS-ALPN-01
+arrives through the mux like any other TLS connection for its name.
+
+**Variant B, the proxy stays on TCP/443.** The mux serves UDP only
+(`no_tcp: true` in `mux.yaml`), the proxy passes the three names through
+with PROXY protocol v2 (so control plane and hub log real addresses;
+without it set `behind_mux.no_proxy_protocol: true` in `control.yaml` and
+`hub.yaml`). Traefik, as a dynamic configuration file:
+
+```yaml
+tcp:
+  routers:
+    bg-control: { rule: "HostSNI(`bg.example.com`) || HostSNI(`nodes.bg.example.com`)", entryPoints: [websecure], service: bg-control, tls: { passthrough: true } }
+    bg-hub:     { rule: "HostSNI(`hub.boundgate`)", entryPoints: [websecure], service: bg-hub, tls: { passthrough: true } }
+  services:
+    bg-control: { loadBalancer: { proxyProtocol: { version: 2 }, servers: [{ address: "127.0.0.1:8443" }] } }
+    bg-hub:     { loadBalancer: { proxyProtocol: { version: 2 }, servers: [{ address: "127.0.0.1:8444" }] } }
+```
+
+Traefik's `websecure` entrypoint keeps terminating TLS for every other
+router; passthrough routers are matched by SNI first. Traefik in Docker
+needs `network_mode: host` or access to the mux/control/hub ports, and
+the control plane and hub then listen on an address Traefik can reach
+(`listen` in their yaml, `behind_mux.trusted` covering Traefik's
+address). nginx (`stream` context, not `http`):
+
+```nginx
+stream {
+  map $ssl_preread_server_name $bg_upstream {
+    bg.example.com        127.0.0.1:8443;
+    nodes.bg.example.com  127.0.0.1:8443;
+    hub.boundgate         127.0.0.1:8444;
+    default               127.0.0.1:8081;   # your http{} server, moved off 443
+  }
+  server {
+    listen 443;
+    ssl_preread on;
+    proxy_pass $bg_upstream;
+    proxy_protocol on;                       # the http{} server then needs "listen 8081 ssl proxy_protocol;"
+  }
+}
+```
+
+HAProxy: `mode tcp`, `tcp-request inspect-delay 5s`, `tcp-request content
+accept if { req.ssl_hello_type 1 }`, `use_backend bg_hub if { req.ssl_sni -i
+hub.boundgate }`, `use_backend bg_control if { req.ssl_sni -i bg.example.com
+nodes.bg.example.com }`, backends with `server … 127.0.0.1:8444 send-proxy-v2`.
+Caddy: the `layer4` app with `tls sni` matchers and `proxy` handlers
+(`proxy_protocol v2`).
+
+Whichever variant: the firewall still opens only TCP 443 and UDP 443; the
+proxy's HTTP-01 port 80 if it needs it.
 
 If UDP/443 cannot be had at all on the server, everything still works over
 TCP alone: the node channel and the tunnel both fall back, at the cost of
