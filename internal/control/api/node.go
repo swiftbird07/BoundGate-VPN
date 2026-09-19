@@ -50,9 +50,9 @@ type EnrollStatus struct {
 	Fingerprint string          `json:"fingerprint"`
 	Roles       []registry.Role `json:"roles,omitempty"`
 	OverlayIP   string          `json:"overlay_ip,omitempty"`
-	// AdminSignerKeys are the active admin keys (authorized_keys lines). A
-	// node pins them the first time it sees them and never updates them.
-	AdminSignerKeys []string `json:"admin_signer_keys,omitempty"`
+	// SignerChain is the signed history of the admin key list; the node
+	// verifies it (binding.VerifyChain) and pins its newest set.
+	SignerChain []registry.SignerLink `json:"signer_chain,omitempty"`
 	// ControlSPKI is the hash of the node-channel key the node should have
 	// pinned from the TLS handshake (a cross-check, not a source of trust).
 	ControlSPKI string `json:"control_spki,omitempty"`
@@ -63,10 +63,9 @@ func (h *Handlers) enrollStatus(r *http.Request, n db.Node) EnrollStatus {
 	if n.OverlayIP.IsValid() {
 		st.OverlayIP = n.OverlayIP.String()
 	}
-	if signers, err := h.d.DB.ListSigners(r.Context(), true); err == nil {
-		for _, s := range signers {
-			st.AdminSignerKeys = append(st.AdminSignerKeys, s.AuthorizedKey())
-		}
+	// The signed chain, exactly as stored: the node verifies it itself.
+	if chain, err := h.d.DB.SignerLinks(r.Context()); err == nil {
+		st.SignerChain = chain
 	}
 	return st
 }
@@ -86,10 +85,10 @@ func (h *Handlers) nodeEnroll(w http.ResponseWriter, r *http.Request) {
 	ip := remoteIP(r)
 	// Without an admin signing key no node can ever be approved, and the
 	// node would pin an empty key set. Refuse until one is registered.
-	if signers, err := h.d.DB.ListSigners(r.Context(), true); err != nil {
+	if st, err := h.signerState(r.Context()); err != nil {
 		fail(w, err, h.d.Logs.System)
 		return
-	} else if len(signers) == 0 {
+	} else if len(st.Keys) == 0 {
 		h.d.Logs.Enrollment.Warn("enrollment refused: no admin signing key registered", "src", ip)
 		writeError(w, http.StatusServiceUnavailable, "no admin signing key registered yet; ask the administrator")
 		return

@@ -110,7 +110,7 @@ State and logs live under `deploy/compose/state/` and `deploy/compose/logs/`
 (git-ignored). Delete `state/<service>/device.*` to get a new node identity
 (needs a new approval; a revoked key can never come back). Delete
 `state/control` to reset the control plane; then every node's
-`state/<service>/control.pin` and `admin_keys` must go too (new control
+`state/<service>/control.pin` and `admin_trust.json` must go too (new control
 key, new admin key), so the simplest reset is `rm -rf deploy/compose/state`
 and `make setup-dev`. A node that refuses the control plane with "key does
 not match the pinned key" after such a reset is doing its job.

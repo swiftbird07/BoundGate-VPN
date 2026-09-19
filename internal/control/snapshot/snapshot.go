@@ -27,6 +27,7 @@ type Source struct {
 	cachedPol     []db.Policy
 	cachedNet     db.NetworkSettings
 	cachedAt      time.Time
+	cachedChain   []registry.SignerLink
 }
 
 // New creates a source. Call Notify after every mutation that bumped the
@@ -40,6 +41,7 @@ type loaded struct {
 	policies []db.Policy
 	net      db.NetworkSettings
 	at       time.Time
+	chain    []registry.SignerLink
 }
 
 func (s *Source) load(ctx context.Context) (loaded, error) {
@@ -49,7 +51,7 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	}
 	s.mu.Lock()
 	if s.cachedNodes != nil && s.cachedVersion == version {
-		l := loaded{version, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedNet, s.cachedAt}
+		l := loaded{version, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedNet, s.cachedAt, s.cachedChain}
 		s.mu.Unlock()
 		return l, nil
 	}
@@ -71,6 +73,12 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	if err != nil {
 		return loaded{}, err
 	}
+	// The signed admin key list travels with every snapshot, exactly as
+	// stored: nodes verify it themselves (binding.VerifyChain).
+	chain, err := s.db.SignerLinks(ctx)
+	if err != nil {
+		return loaded{}, err
+	}
 	nodes := make([]registry.Node, 0, len(rows))
 	for _, n := range rows {
 		nodes = append(nodes, toRegistry(n))
@@ -85,9 +93,9 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	}
 	at := time.Now().UTC()
 	s.mu.Lock()
-	s.cachedVersion, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedNet, s.cachedAt = version, nodes, sessions, policies, net, at
+	s.cachedVersion, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedNet, s.cachedAt, s.cachedChain = version, nodes, sessions, policies, net, at, chain
 	s.mu.Unlock()
-	return loaded{version, nodes, sessions, policies, net, at}, nil
+	return loaded{version, nodes, sessions, policies, net, at, chain}, nil
 }
 
 func toRegistry(n db.Node) registry.Node {
@@ -134,6 +142,7 @@ func (s *Source) BuildFor(ctx context.Context, self transport.DeviceID) (*regist
 		Sessions:      make([]registry.Session, 0, len(l.sessions)),
 		Policies:      make([]registry.Policy, 0, len(l.policies)),
 		Pool:          l.net.Pool,
+		SignerChain:   l.chain,
 	}
 	for _, p := range l.policies {
 		if self == "" || p.AppliesTo(string(self)) {

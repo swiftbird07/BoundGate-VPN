@@ -59,11 +59,20 @@ ensure_signer() {
   fi
   pub=$(cat state/control/admin_signer.pub)
   fp=$($COMPOSE exec -T control ssh-keygen -lf "$SIGNER_KEY.pub" | awk '{print $2}')
-  if api GET /api/v1/admin/signers | jq -e --arg fp "$fp" '.[] | select(.fingerprint == $fp and .revoked_at == null)' >/dev/null; then
-    echo "signer: $fp already registered"
+  if api GET /api/v1/admin/signers | jq -e --arg fp "$fp" '.[] | select(.fingerprint == $fp and .active)' >/dev/null; then
+    echo "signer: $fp is in the signed admin key list"
   else
-    api POST /api/v1/admin/signers "$(jq -cn --arg k "$pub" '{name:"dev-admin",public_key:$k}')" \
-      | jq -r '"signer: registered \(.name) \(.fingerprint) (\(.key_type), hardware: \(.hardware))"'
+    # registering a key only proposes the next list; a key of the current
+    # list (for the first list: the key itself) has to sign it
+    if api GET /api/v1/admin/signers | jq -e --arg fp "$fp" '.[] | select(.fingerprint == $fp and .revoked_at == null)' >/dev/null; then
+      # registered by a lab from before lists were signed: sign the registered keys as the first list
+      tok=$(api POST /api/v1/admin/signers/change '{}' | jq -r .sign_token)
+    else
+      tok=$(api POST /api/v1/admin/signers "$(jq -cn --arg k "$pub" '{name:"dev-admin",public_key:$k}')" | jq -r .sign_token)
+    fi
+    $COMPOSE exec -T control boundgatectl -json admin sign-signers --control https://localhost:443 --cacert /var/lib/boundgate/control.crt \
+      --token "$tok" --key "$SIGNER_KEY" --yes --pin-dir /var/lib/boundgate/signer-pins \
+      | jq -r '"signer: admin key list is now version \(.version), signed by \(.signed_by)"'
   fi
 }
 

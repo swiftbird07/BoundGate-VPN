@@ -98,7 +98,8 @@ ssh-keygen -q -t ed25519 -N '' -C rehearsal -f "$W/signer"
 hub sh -c 'cat > /var/lib/boundgate/signer; chmod 600 /var/lib/boundgate/signer' < "$W/signer"
 hub sh -c 'cat > /var/lib/boundgate/control.crt' < "$W/state/control/control.crt"
 hub sh -c 'grep -q bg.test /etc/hosts || echo "127.0.0.1 bg.test" >> /etc/hosts'
-api POST /api/v1/admin/signers -d "$(jq -cn --arg k "$(cat "$W/signer.pub")" '{name:"rehearsal",public_key:$k}')" | jq -e .fingerprint >/dev/null || fail "signer"
+stok=$(api POST /api/v1/admin/signers -d "$(jq -cn --arg k "$(cat "$W/signer.pub")" '{name:"rehearsal",public_key:$k}')" | jq -r .sign_token)
+hub boundgatectl -json admin sign-signers --control https://bg.test:443 --cacert /var/lib/boundgate/control.crt --token "$stok" --key /var/lib/boundgate/signer --yes --pin-dir /var/lib/boundgate/signer-pins | jq -e '.version == 1' >/dev/null || fail "first admin key list"
 api PUT /api/v1/admin/settings/network -d '{"pool":"100.96.0.0/16"}' >/dev/null
 api POST /api/v1/admin/policies -d '{"name":"allow-all","cedar":"permit(principal, action, resource);","enabled":true,"scope":[]}' | jq -e .id >/dev/null || fail "policy"
 

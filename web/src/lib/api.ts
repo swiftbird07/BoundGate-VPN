@@ -53,8 +53,11 @@ export const admin = {
   reject: (id: string) => api('POST', `/admin/nodes/${id}/reject`),
   revoke: (id: string) => api('DELETE', `/admin/nodes/${id}`),
   signers: () => api<T.Signer[]>('GET', '/admin/signers'),
-  addSigner: (name: string, public_key: string) => api<T.Signer>('POST', '/admin/signers', { name, public_key }),
-  revokeSigner: (id: string) => api('DELETE', '/admin/signers/' + id),
+  // adding or removing a key only proposes the next signed list (202 + sign command)
+  addSigner: (name: string, public_key: string) => api<T.SignerChange>('POST', '/admin/signers', { name, public_key }),
+  revokeSigner: (id: string) => api<T.SignerChange>('DELETE', '/admin/signers/' + id),
+  signFirstList: () => api<T.SignerChange>('POST', '/admin/signers/change', {}),
+  signerSet: () => api<T.SignerSet>('GET', '/admin/signers/set'),
   sessions: (all = false) => api<T.Session[]>('GET', '/admin/sessions' + q({ all: all ? 1 : undefined })),
   revokeSession: (id: string) => api('DELETE', '/admin/sessions/' + id),
   network: () => api<T.NetworkSettings>('GET', '/admin/settings/network'),

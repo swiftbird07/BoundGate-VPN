@@ -20,9 +20,9 @@ reviewed. Everything outside the TCB may have bugs that cause wrong
 | `internal/node/hub.go` `Accept`/`Serve`, `enforceSessions` + `internal/node/forward` | Packets enter the overlay only from here, after the session check for interactive peers and the source check (and the ACL from M3) |
 | `registry.Snapshot.SessionFor` | Answers "does this node have a valid user session"; wrong answer = interactive node admitted without a person |
 | `internal/node/ipc` verb set | The local attack surface of the privileged daemon |
-| `internal/binding` (+ `golang.org/x/crypto/ssh`) | Canonical binding bytes, SSHSIG framing, signature verification against the pinned admin keys; `VerifySnapshot` decides which records a node believes |
+| `internal/binding` (+ `golang.org/x/crypto/ssh`) | Canonical binding bytes, SSHSIG framing, signature verification against the pinned admin keys; `VerifyChain` decides which admin key list a node, the control plane and the admin CLI accept (signed chain); `VerifySnapshot` decides which records a node believes |
 | Node snapshot intake | `controlclient.Run` → `Node.verifySnapshot` → `Holder.Store`: nothing reaches the holder unverified; own-binding failure clears the holder |
-| Pinned files in the node state directory | `admin_keys` and `control.pin` (written once, root-only); replacing them re-roots the node's trust |
+| Pinned files in the node state directory | `admin_trust.json` (the admin key list: pinned once, then only moved along signed links, written before use) and `control.pin` (written once), root-only; replacing them re-roots the node's trust |
 
 * `internal/acl` (M3): builds the Cedar entities from the snapshot and is
   the only caller of the authorizer. A bug that attaches the wrong parents

@@ -795,8 +795,8 @@ func (h *Handlers) adminOverview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if sg, err := h.d.DB.ListSigners(ctx, true); err == nil {
-		o.Signers = len(sg)
+	if st, err := h.signerState(ctx); err == nil {
+		o.Signers = len(st.Keys)
 	}
 	o.SnapshotVersion, _ = h.d.DB.SnapshotVersion(ctx)
 	writeJSON(w, http.StatusOK, o)

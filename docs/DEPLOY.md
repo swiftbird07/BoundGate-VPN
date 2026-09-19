@@ -262,9 +262,15 @@ machine, and the UI is reachable only from approved devices from then on.
    `cat state/control/bootstrap.token`. After that the token is dead
    (ADMIN-AUTH.md); further administrators are approved by an existing one.
 3. *Admins › Admin signing keys*: add the public key of your signing key
-   (`~/.ssh/id_ed25519_sk.pub`). Nodes pin these keys at enrollment, so add
-   every key you want to be able to sign with **before** the first node
-   enrolls (R23).
+   (`~/.ssh/id_ed25519_sk.pub`). The list of signing keys is itself signed:
+   the page shows a `boundgatectl admin sign-signers …` command, run it
+   where the key is, compare the fingerprints it prints, type `yes`, touch
+   the key. The first list is signed by its own key; every later change
+   (a second YubiKey, a colleague, removing a lost key) by a key that is
+   already in the list. Nodes pin the list at enrollment and follow such
+   changes by themselves, nothing is re-enrolled (BINDINGS.md). Add a second
+   key soon: losing **all** keys of the list is the one thing that cannot
+   be repaired (R23).
 4. *Settings › Overlay network*: choose the overlay pool **before** the first
    approval. It must not collide with anything your clients already use;
    the default `10.21.0.0/16` does if another VPN of yours lives in 10.x.
@@ -350,7 +356,8 @@ and once UDP is allowed again the client moves back to QUIC.
 | Update | new bundle, `docker compose up -d --build`; the database migrates itself; nodes reconnect |
 | Logs | `logs/*/*.jsonl`, `docker compose logs`; audit and flows also in the UI |
 | Lost `nodes.key` | every node refuses the control plane until its pin is reset (`boundgatectl reset` on app nodes, delete `control.pin` elsewhere) and enrolls again |
-| Lost all signing keys | every node has to be re-enrolled (R23) |
+| New or lost signing key | add or remove it under *Admins*, sign the change with a key of the current list; nodes follow, nothing is re-enrolled. Nodes approved with a removed key need a new signature |
+| Lost **all** signing keys | every node has to be re-enrolled (R23) |
 
 ## Risks
 

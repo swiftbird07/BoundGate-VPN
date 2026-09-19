@@ -90,8 +90,8 @@ const tokens: T.ApiToken[] = [
   { id: 'a2', name: 'terraform (old)', created_by: 'ada', created_at: ago(86400 * 40), revoked_at: ago(86400 * 11), revoked_by: 'martin' },
 ];
 const signers: T.Signer[] = [
-  { id: 'g1', name: 'martin@yubikey-5c', subject: 'u-martin', public_key: 'sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIDemoDemoDemoDemoDemo martin@yubikey-5c', key_type: 'sk-ssh-ed25519@openssh.com', hardware: true, fingerprint: fp('signer1'), created_at: ago(86400 * 12) },
-  { id: 'g2', name: 'ada@yubikey-nano', subject: 'u-ada', public_key: 'sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAdaDemoAdaDemoAdaDemo ada@yubikey-nano', key_type: 'sk-ssh-ed25519@openssh.com', hardware: true, fingerprint: fp('signer2'), created_at: ago(86400 * 8) },
+  { id: 'g1', name: 'martin@yubikey-5c', subject: 'u-martin', public_key: 'sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIDemoDemoDemoDemoDemo martin@yubikey-5c', key_type: 'sk-ssh-ed25519@openssh.com', hardware: true, fingerprint: fp('signer1'), created_at: ago(86400 * 12), active: true },
+  { id: 'g2', name: 'ada@yubikey-nano', subject: 'u-ada', public_key: 'sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAdaDemoAdaDemoAdaDemo ada@yubikey-nano', key_type: 'sk-ssh-ed25519@openssh.com', hardware: true, fingerprint: fp('signer2'), created_at: ago(86400 * 8), active: true },
 ];
 
 function status(mode: string): T.AuthStatus {
@@ -127,6 +127,7 @@ function answer(method: string, path: string, query: URLSearchParams, body: any,
   if (path === '/admin/logs') return query.get('stream') === 'audit' ? audit.filter((e) => e.stream === 'audit') : audit;
   if (path === '/admin/passkeys') return passkeys;
   if (path === '/admin/tokens') return method === 'GET' ? tokens : { id: 'a3', name: body?.name, created_at: ago(0), token: 'bgapi_demo_not_a_real_token' };
+  if (path === '/admin/signers/set') return { version: 1, hash: 'demo', genesis_hash: 'demo', history: [] };
   if (path === '/admin/signers') return signers;
   if (path === '/admin/settings/network') return { pool: '10.21.0.0/16', max_age_seconds: 900, ...(body ?? {}) };
   if (path === '/admin/snapshot') return { version: 212, note: 'demo data' };

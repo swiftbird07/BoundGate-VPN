@@ -37,9 +37,13 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | POST | `/api/v1/admin/nodes/{id}/reject` | | 204; pending/confirmed only |
 | PATCH | `/api/v1/admin/nodes/{id}` | `Grant` (all fields optional) | `ConfirmResponse`; a signed field change demotes an approved node to confirmed and returns a new sign token |
 | DELETE | `/api/v1/admin/nodes/{id}` | | 204 (revoke, also ends the node's user session); 409 unless approved |
-| GET | `/api/v1/admin/signers` | | `[SignerView]` incl. revoked |
-| POST | `/api/v1/admin/signers` | `{name?, public_key}` (authorized_keys line) | 201 `SignerView`; 400 for a disallowed key type; 409 if registered |
-| DELETE | `/api/v1/admin/signers/{id}` | | 204 (revoke for future signatures) |
+| GET | `/api/v1/admin/signers` | | `[SignerView]` incl. removed; `active` = in the signed list |
+| GET | `/api/v1/admin/signers/set` | | `{version, hash, genesis_hash, history[]}` of the signed list |
+| POST | `/api/v1/admin/signers` | `{name?, public_key}` (authorized_keys line) | 202 `SignerChangeView` (a proposal: `sign_command`, `sign_token`, `added`, `removed`, `affected_nodes`, `signable_by`); 400 for a disallowed key type; 409 if already in the list |
+| DELETE | `/api/v1/admin/signers/{id}` | | 202 `SignerChangeView`; 409 if the list would become empty |
+| POST | `/api/v1/admin/signers/change` | `{add:[{name?, public_key}], remove:[id]}` | 202 `SignerChangeView`: several changes under one signature; empty body with no signed list yet proposes the registered keys as the first list |
+| GET | `/api/v1/sign/signers` | Bearer sign token | `{set, namespace, chain, names, expires_at}`: the canonical list to sign and the current chain |
+| POST | `/api/v1/sign/signers` | Bearer sign token, `{signature}` | 200 `{version, hash, signed_by, keys, demoted_nodes}`; 403 not a key of the current list; 409 token used or list changed meanwhile |
 | GET | `/api/v1/admin/sessions` | `?all=1` includes ended ones | `[SessionView]` |
 | DELETE | `/api/v1/admin/sessions/{id}` | | 204 (revoke; hubs close the node's tunnels); 409 if already ended |
 | GET/PUT | `/api/v1/admin/settings/network` | `{pool, max_age_seconds?}` | settings; PUT bumps the snapshot; 409 if an assigned address would fall outside the new pool |

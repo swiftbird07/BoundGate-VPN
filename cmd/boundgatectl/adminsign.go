@@ -31,8 +31,11 @@ import (
 //	boundgatectl admin sign --control https://control.example --node ID --fingerprint FP --token T
 //	    [--cacert FILE] [--key PRIVATE_KEY_FILE | --agent-key SUBSTRING | --signature FILE | --out FILE]
 func runAdmin(args []string, asJSON bool) error {
+	if len(args) > 0 && args[0] == "sign-signers" {
+		return runAdminSignSigners(args[1:], asJSON)
+	}
 	if len(args) == 0 || args[0] != "sign" {
-		return errors.New("usage: boundgatectl admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F | --agent-key S | --signature F | --out F]")
+		return errors.New("usage: boundgatectl admin sign-signers --control URL --token T [--cacert F] [--key F | --agent-key S | --signature F | --out F] [--yes]\n       boundgatectl admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F | --agent-key S | --signature F | --out F]")
 	}
 	fs := flag.NewFlagSet("admin sign", flag.ContinueOnError)
 	control := fs.String("control", "", "control plane URL (https://host[:port])")

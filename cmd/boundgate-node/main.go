@@ -36,6 +36,9 @@ type config struct {
 		// Pin is the hex SPKI hash of the control plane's node-channel key;
 		// empty = trust on first use (stored in state_dir/control.pin).
 		Pin string `yaml:"pin"`
+		// SignersGenesis is the hex SHA-256 of the genesis admin key list
+		// (shown in the admin UI); empty = pin the signed list on first use.
+		SignersGenesis string `yaml:"signers_genesis"`
 	} `yaml:"control"`
 	Roles      []string          `yaml:"roles"`
 	Prefixes   []registry.Prefix `yaml:"prefixes"`
@@ -169,6 +172,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		ControlAddr:       local.ControlAddr,
 		ControlServerName: local.ControlServerName,
 		ControlPin:        cfg.Control.Pin,
+		SignersGenesis:    cfg.Control.SignersGenesis,
 		Roles:             cfg.Roles,
 		Prefixes:          cfg.Prefixes,
 		PublicAddr:        cfg.PublicAddr,

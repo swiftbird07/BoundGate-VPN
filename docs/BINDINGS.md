@@ -120,27 +120,77 @@ in the control plane database makes every other node ignore that router
 within one long-poll round, and the router itself goes down because its own
 binding no longer verifies.
 
-## Admin keys on nodes
+## The admin key list is signed too
 
-The enrollment response carries the active admin signer keys
-(authorized_keys lines). The node stores them in `state_dir/admin_keys`
-**once** and never updates them: the set of keys a node trusts is fixed at
-enrollment. Consequences, decided deliberately:
+Which keys may sign bindings is itself a signed statement: a versioned list,
+every version signed by a key of the version before it
+(`internal/binding/signerset.go`, SSHSIG namespace `boundgate-signers`).
 
-* A key registered later can sign bindings, but nodes enrolled before it
-  will not accept them. Register all admin keys before enrolling nodes, or
-  re-enroll nodes when a key is added.
-* Revoking a key at the control plane stops it from signing *new*
-  bindings; nodes keep trusting it for the bindings they hold. Rotating
-  out a compromised admin key means re-enrolling every node.
-* Losing every admin key means re-enrolling every node.
-* The first delivery is trust-on-first-use over the pinned control-plane
-  channel (see below). An enterprise provisions `admin_keys` by
-  configuration management before the first start; the file is then
-  authoritative and the delivered list is ignored.
+```
+set 1 (genesis)  keys {A}      signed by A    a node pins it at enrollment
+set 2            keys {A, B}   signed by A    A adds B
+set 3            keys {B}      signed by B    B removes A
+```
 
-Enrollment is refused (503) while no admin key is registered, so no node
-ever pins an empty set.
+```json
+{"type":"boundgate-signer-set","version":3,"prev":"<sha256 of set 2>","keys":["sk-ssh-ed25519@openssh.com AAAA..."]}
+```
+
+Administrators can therefore add and remove keys **without re-enrolling any
+node**, and only they can: the control plane stores the chain and forwards
+it with the enrollment status and every snapshot, but it holds no admin key.
+A node (`state_dir/admin_trust.json`) accepts a new list only if
+
+* its version is exactly the pinned version + 1 and `prev` is the hash of
+  the pinned set (no gaps, no forks, no list from another deployment),
+* the signature verifies, in the `boundgate-signers` namespace, against a
+  key of the **pinned** set. A key that only the new set contains cannot
+  sign it, and a binding signature can never stand in for it,
+* the set is canonical (one hash per set), has a constant `type`, holds 1
+  to 32 keys of the allowed types, sorted and unique. The list can never
+  become empty.
+
+Anything else changes nothing: verification is all-or-nothing, the node
+keeps its list, reports `admin list: REFUSED …` in `boundgatectl status`
+and logs the reason. A version at or below the pinned one must be
+byte-identical to what the node has (rollback = refused). The new list is
+written to disk (fsync, rename) before it is used; a damaged trust file is
+an error, never a reason to pin again.
+
+Consequences:
+
+* **Adding a key**: propose it in the UI (Admins → Admin signing keys) or
+  `POST /api/v1/admin/signers`, run the printed `boundgatectl admin
+  sign-signers --control … --token …` with a key of the current list. Nodes
+  follow with their next snapshot (seconds).
+* **Removing a key** works the same way and is final for every node that
+  saw it: the key can no longer sign lists **or bindings**. Nodes whose
+  binding was signed by it go back to `confirmed` and need a new signature
+  (the proposal lists them). To rotate without a gap, re-sign those nodes
+  with another key first.
+* **The first list** is signed by one of its own keys. A node without a pin
+  takes the list of its first contact (trust on first use over the pinned
+  control-plane channel, R24) or, provisioned with `control.signers_genesis:
+  <hash>` (shown in the UI), only a chain that starts with exactly that set.
+* Losing **every** key of the current list still means re-enrolling every
+  node (R23). Keep at least two keys in the list.
+* What this cannot do: a node that never receives a removal (offline, or a
+  control plane that withholds it) keeps trusting the removed key. Together
+  with that key an attacker could fork the list for such nodes (R83).
+
+`boundgatectl admin sign-signers` trusts the control plane with nothing: it
+verifies the chain itself, checks that the proposal continues it, prints the
+resulting list (keep / ADD / DROP with fingerprints) from the very bytes it
+signs, asks for `yes`, verifies its own signature the way a node will, and
+keeps its own pin of the list per control plane
+(`~/.config/boundgate/signers/<host>.json`), so a control plane that shows
+another history to obtain a signature on a fork is caught on the admin's
+machine.
+
+Nodes that pinned a plain key list before lists were signed (`admin_keys`)
+refuse to start with an explanation; remove the file to pin the signed list
+or re-enroll. Enrollment is refused (503) while no signed list exists, so no
+node ever pins an empty set.
 
 ## Control-plane pin
 

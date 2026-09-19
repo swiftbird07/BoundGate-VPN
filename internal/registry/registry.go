@@ -176,10 +176,22 @@ type Snapshot struct {
 	Policies []Policy  `json:"policies,omitempty"`
 	// Pool is the overlay address range.
 	Pool netip.Prefix `json:"pool"`
+	// SignerChain is the signed history of the admin key list (package
+	// binding verifies it). The control plane only forwards it: every link is
+	// signed by an admin key of the link before.
+	SignerChain []SignerLink `json:"signer_chain,omitempty"`
 
 	bySPKI map[devicekey.SPKIHash]*Node
 	byID   map[transport.DeviceID]*Node
 	sessBy map[transport.DeviceID]*Session
+}
+
+// SignerLink is one signed version of the admin key list: the canonical
+// JSON of a binding.SignerSet and its SSHSIG. It lives here because the
+// snapshot carries it; only package binding interprets it.
+type SignerLink struct {
+	Set       string `json:"set"`
+	Signature string `json:"signature"`
 }
 
 // DefaultMaxAge is used when the snapshot carries no MaxAgeSeconds.

@@ -11,7 +11,9 @@ export interface Node {
   sign_token?: string; sign_expires_at?: string; sign_command?: string;
 }
 export interface Grant { fingerprint?: string; name?: string; kind?: string; roles?: Role[]; prefixes?: Prefix[]; overlay_ip?: string; public_addr?: string; hardware_bound?: boolean }
-export interface Signer { id: string; name: string; subject?: string; public_key: string; key_type: string; hardware: boolean; fingerprint: string; created_at: string; revoked_at?: string }
+export interface Signer { id: string; name: string; subject?: string; public_key: string; key_type: string; hardware: boolean; fingerprint: string; created_at: string; revoked_at?: string; active: boolean }
+export interface SignerChange { version: number; keys: Signer[]; added: string[]; removed: string[]; affected_nodes: { id: string; name: string }[]; signable_by: string[]; sign_token: string; sign_command: string; sign_expires_at: string }
+export interface SignerSet { version: number; hash?: string; genesis_hash?: string; history: { version: number; hash: string; signed_by: string; admin: string; created_at: string; added: string[]; removed: string[] }[] }
 export interface Session { id: string; node_id: string; node_name?: string; subject: string; email?: string; username?: string; groups: string[]; login_ip?: string; issued_at: string; expires_at: string; ended_at?: string; ended_by?: string; end_reason?: string }
 export interface Policy { id: string; name: string; description?: string; cedar: string; enabled: boolean; scope: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string }
 export interface PolicyBody { name: string; description: string; cedar: string; enabled: boolean; scope: string[] }

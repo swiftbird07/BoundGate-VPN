@@ -5,13 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/ssh"
-
-	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
@@ -54,6 +52,8 @@ func (h *Handlers) AdminMux() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/signers", h.adminListSigners)
 	mux.HandleFunc("POST /api/v1/admin/signers", h.adminAddSigner)
 	mux.HandleFunc("DELETE /api/v1/admin/signers/{id}", h.adminRevokeSigner)
+	mux.HandleFunc("POST /api/v1/admin/signers/change", h.adminChangeSigners)
+	mux.HandleFunc("GET /api/v1/admin/signers/set", h.adminSignerSet)
 	mux.HandleFunc("GET /api/v1/admin/settings/network", h.adminGetNetwork)
 	mux.HandleFunc("PUT /api/v1/admin/settings/network", h.adminPutNetwork)
 	mux.HandleFunc("GET /api/v1/admin/sessions", h.adminListSessions)
@@ -287,13 +287,13 @@ func (h *Handlers) adminConfirmNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "fingerprint does not match this node")
 		return
 	}
-	signers, err := h.d.DB.ListSigners(r.Context(), true)
+	st, err := h.signerState(r.Context())
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
 		return
 	}
-	if len(signers) == 0 {
-		writeError(w, http.StatusConflict, "no admin signing key registered; add one under /api/v1/admin/signers first")
+	if len(st.Keys) == 0 {
+		writeError(w, http.StatusConflict, "no signed admin key list yet; add a signing key and sign the list first")
 		return
 	}
 	g, err := body.grant()
@@ -418,6 +418,9 @@ type SignerView struct {
 	Fingerprint string     `json:"fingerprint"`
 	CreatedAt   time.Time  `json:"created_at"`
 	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	// Active: the key is in the signed list that nodes follow. A key that is
+	// neither active nor revoked was registered before lists were signed.
+	Active bool `json:"active"`
 }
 
 func signerView(s db.Signer) SignerView {
@@ -429,6 +432,11 @@ func signerView(s db.Signer) SignerView {
 }
 
 func (h *Handlers) adminListSigners(w http.ResponseWriter, r *http.Request) {
+	st, err := h.signerState(r.Context())
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
 	rows, err := h.d.DB.ListSigners(r.Context(), false)
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
@@ -436,70 +444,33 @@ func (h *Handlers) adminListSigners(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]SignerView, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, signerView(s))
+		v := signerView(s)
+		v.Active = slices.Contains(st.Trust.Keys, s.PublicKey)
+		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// SignerBody registers an admin key: an authorized_keys line (comment
-// optional; sk-* types are the point, software keys are for development).
+// SignerBody names an admin key: an authorized_keys line (comment optional;
+// sk-* types are the point, software keys are for development).
 type SignerBody struct {
 	Name      string `json:"name"`
 	PublicKey string `json:"public_key"`
 }
 
+// adminAddSigner and adminRevokeSigner do not change the list: they propose
+// the next one (202) and return the command that signs it. See signersets.go.
 func (h *Handlers) adminAddSigner(w http.ResponseWriter, r *http.Request) {
-	a, _ := AdminFrom(r.Context())
 	var body SignerBody
 	if err := readJSON(r, &body, 16<<10); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	pub, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(body.PublicKey)))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "public_key: not an OpenSSH public key")
-		return
-	}
-	if err := binding.CheckSignerType(pub); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" {
-		name = comment
-	}
-	s, err := h.d.DB.AddSigner(r.Context(), db.Signer{
-		Subject: a.Subject, Name: clip(name, 64), PublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))),
-		KeyType: pub.Type(), Hardware: binding.IsHardwareKey(pub), Fingerprint: ssh.FingerprintSHA256(pub),
-	})
-	if err != nil {
-		if errors.Is(err, db.ErrConflict) {
-			writeError(w, http.StatusConflict, "this key is already registered")
-			return
-		}
-		fail(w, err, h.d.Logs.System)
-		return
-	}
-	h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "admin signing key added", "",
-		map[string]any{"signer": s.ID, "name": s.Name, "key_type": s.KeyType, "hardware": s.Hardware, "fingerprint": s.Fingerprint})
-	writeJSON(w, http.StatusCreated, signerView(s))
+	h.proposeSigners(w, r, SignerChangeBody{Add: []SignerBody{body}})
 }
 
 func (h *Handlers) adminRevokeSigner(w http.ResponseWriter, r *http.Request) {
-	a, _ := AdminFrom(r.Context())
-	id := r.PathValue("id")
-	s, err := h.d.DB.SignerByID(r.Context(), id)
-	if err != nil {
-		fail(w, err, h.d.Logs.System)
-		return
-	}
-	if err := h.d.DB.RevokeSigner(r.Context(), id); err != nil {
-		fail(w, err, h.d.Logs.System)
-		return
-	}
-	h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "admin signing key revoked", "",
-		map[string]any{"signer": s.ID, "name": s.Name, "fingerprint": s.Fingerprint})
-	w.WriteHeader(http.StatusNoContent)
+	h.proposeSigners(w, r, SignerChangeBody{Remove: []string{r.PathValue("id")}})
 }
 
 func (h *Handlers) adminRevokeNode(w http.ResponseWriter, r *http.Request) {

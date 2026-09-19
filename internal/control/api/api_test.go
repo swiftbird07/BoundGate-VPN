@@ -44,6 +44,7 @@ type env struct {
 	handlers *api.Handlers
 	logs     *logging.Streams
 	signer   ssh.Signer // the registered admin key
+	dbPath   string
 }
 
 func newEnv(t *testing.T) *env {
@@ -72,7 +73,7 @@ func newEnv(t *testing.T) *env {
 	roots := x509.NewCertPool()
 	roots.AddCert(cert.Leaf)
 
-	e := &env{t: t, store: store, boot: boot, roots: roots, handlers: h, logs: logs}
+	e := &env{t: t, store: store, boot: boot, roots: roots, handlers: h, logs: logs, dbPath: filepath.Join(dir, "c.db")}
 	e.admin = httptest.NewServer(h.AdminMux())
 	e.node = httptest.NewUnstartedServer(h.NodeMux())
 	e.node.TLS = transport.ServerTLSConfigAnyDevice(cert)
@@ -83,13 +84,54 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-// registerSigner adds the env's admin key (a software ed25519 key; the
-// format is the same for sk-keys).
+// registerSigner puts the env's admin key (a software ed25519 key; the
+// format is the same for sk-keys) into the signed admin key list: proposed
+// through the admin API, signed by the key itself as the first list.
 func (e *env) registerSigner() api.SignerView {
 	e.t.Helper()
-	var sv api.SignerView
-	e.adminCall("POST", "/api/v1/admin/signers", `{"name":"test admin","public_key":"`+strings.TrimSpace(string(ssh.MarshalAuthorizedKey(e.signer.PublicKey())))+`"}`, http.StatusCreated, &sv)
-	return sv
+	var ch api.SignerChangeView
+	e.adminCall("POST", "/api/v1/admin/signers", `{"name":"test admin","public_key":"`+authorizedKey(e.signer)+`"}`, http.StatusAccepted, &ch)
+	if code, b := e.signSigners(ch.SignToken, e.signer, binding.SignersNamespace); code != http.StatusOK {
+		e.t.Fatalf("sign first admin key list: %d %s", code, b)
+	}
+	return e.signerByKey(e.signer)
+}
+
+func authorizedKey(s ssh.Signer) string {
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(s.PublicKey())))
+}
+
+func (e *env) signerByKey(s ssh.Signer) api.SignerView {
+	e.t.Helper()
+	var all []api.SignerView
+	e.adminCall("GET", "/api/v1/admin/signers", "", http.StatusOK, &all)
+	for _, v := range all {
+		if v.Fingerprint == ssh.FingerprintSHA256(s.PublicKey()) {
+			return v
+		}
+	}
+	e.t.Fatalf("key %s is not in the directory", ssh.FingerprintSHA256(s.PublicKey()))
+	return api.SignerView{}
+}
+
+// signSigners fetches the proposed list for token, signs it with signer in
+// namespace ns and posts the signature.
+func (e *env) signSigners(token string, signer ssh.Signer, ns string) (int, []byte) {
+	e.t.Helper()
+	code, b := e.signCall(token, "GET", "/api/v1/sign/signers", "")
+	if code != http.StatusOK {
+		return code, b
+	}
+	var p api.SignSigners
+	if err := json.Unmarshal(b, &p); err != nil {
+		e.t.Fatal(err)
+	}
+	sig, err := binding.Sign(signer, ns, []byte(p.Set))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	body, _ := json.Marshal(api.SignatureBody{Signature: sig})
+	return e.signCall(token, "POST", "/api/v1/sign/signers", string(body))
 }
 
 // signCall uses a sign token instead of the admin token.
@@ -259,7 +301,10 @@ func TestEnrollmentApprovalRevocationFlow(t *testing.T) {
 	// enroll -> pending, with requested roles and prefixes; the node learns
 	// the admin keys and the control key to pin
 	st := e.enroll(a, `{"name":"laptop","platform":"linux","key_kind":"softkey","roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}]}`)
-	if st.Status != "pending" || st.NodeID == "" || st.OverlayIP != "" || len(st.AdminSignerKeys) != 1 || !strings.HasPrefix(st.AdminSignerKeys[0], "ssh-ed25519 ") {
+	if tr, err := binding.VerifyChain(binding.Trust{}, st.SignerChain, ""); err != nil || tr.Version != 1 || len(tr.Keys) != 1 || tr.Keys[0] != authorizedKey(e.signer) {
+		t.Fatalf("enroll status carries no verifiable admin key list: %+v %v", tr, err)
+	}
+	if st.Status != "pending" || st.NodeID == "" || st.OverlayIP != "" {
 		t.Fatalf("%+v", st)
 	}
 	if again := e.enroll(a, `{}`); again.NodeID != st.NodeID || again.Status != "pending" {
@@ -409,7 +454,7 @@ func TestEnrollmentApprovalRevocationFlow(t *testing.T) {
 	if len(signers) != 1 || signers[0].ID != sv.ID {
 		t.Fatalf("%+v", signers)
 	}
-	e.adminCall("POST", "/api/v1/admin/signers", `{"public_key":"`+strings.TrimSpace(string(ssh.MarshalAuthorizedKey(e.signer.PublicKey())))+`"}`, http.StatusConflict, nil)
+	e.adminCall("POST", "/api/v1/admin/signers", `{"public_key":"`+authorizedKey(e.signer)+`"}`, http.StatusConflict, nil)
 	e.adminCall("POST", "/api/v1/admin/signers", `{"public_key":"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC0 x"}`, http.StatusBadRequest, nil)
 	if code, b := e.nodeCall(hub, "POST", "/api/v1/node/heartbeat", `{"version":`+strconv.FormatUint(hs.Version, 10)+`,"active_tunnels":3}`); code != http.StatusNoContent {
 		t.Fatalf("heartbeat: %d %s", code, b)
@@ -436,13 +481,9 @@ func TestEnrollmentApprovalRevocationFlow(t *testing.T) {
 	}
 	e.adminCall("DELETE", "/api/v1/admin/nodes/"+st.NodeID, "", http.StatusConflict, nil)
 
-	// with the only signer revoked, confirm refuses and enrollment is closed
-	e.adminCall("DELETE", "/api/v1/admin/signers/"+sv.ID, "", http.StatusNoContent, nil)
-	e.adminCall("DELETE", "/api/v1/admin/signers/"+sv.ID, "", http.StatusNotFound, nil)
-	d3 := e.device("later")
-	if code, _ := e.nodeCall(d3, "POST", "/api/v1/node/enroll", `{"roles":["endpoint"]}`); code != http.StatusServiceUnavailable {
-		t.Fatalf("enroll after last signer revoked: %d", code)
-	}
+	// the last key cannot be removed, and an unknown id is not a key of the list
+	e.adminCall("DELETE", "/api/v1/admin/signers/"+sv.ID, "", http.StatusConflict, nil)
+	e.adminCall("DELETE", "/api/v1/admin/signers/nope", "", http.StatusNotFound, nil)
 
 	// audit trail
 	var evs []db.LogEvent

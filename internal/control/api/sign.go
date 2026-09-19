@@ -53,6 +53,8 @@ func (h *Handlers) signMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/sign/binding", h.signGetBinding)
 	mux.HandleFunc("POST /api/v1/sign/signature", h.signPostSignature)
+	mux.HandleFunc("GET /api/v1/sign/signers", h.signGetSigners)
+	mux.HandleFunc("POST /api/v1/sign/signers", h.signPostSigners)
 	return mux
 }
 
@@ -111,17 +113,10 @@ func nodeToRegistry(n db.Node) registry.Node {
 	return registry.Node{ID: transport.DeviceID(n.ID), Name: n.Name, SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP, HardwareBound: n.HardwareBound}
 }
 
+// activeSigners are the keys of the verified head of the signed list.
 func (h *Handlers) activeSigners(r *http.Request) ([]db.Signer, binding.Signers, error) {
-	rows, err := h.d.DB.ListSigners(r.Context(), true)
-	if err != nil {
-		return nil, nil, err
-	}
-	var lines []string
-	for _, s := range rows {
-		lines = append(lines, s.AuthorizedKey())
-	}
-	keys, err := binding.ParseSigners([]byte(strings.Join(lines, "\n")))
-	return rows, keys, err
+	st, err := h.signerState(r.Context())
+	return st.Rows, st.Keys, err
 }
 
 func (h *Handlers) signGetBinding(w http.ResponseWriter, r *http.Request) {

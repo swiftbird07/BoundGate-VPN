@@ -77,12 +77,17 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 		}
 		if asJSON {
 			return dump(map[string]any{"node_name": s.NodeName, "node_id": s.NodeID, "spki": s.SPKI, "fingerprint": s.Fingerprint, "key_kind": s.KeyKind, "hardware_bound": s.HardwareBound,
-				"enrollment": s.Enrollment, "control": s.Control, "control_pin": s.ControlPin, "admin_keys": s.AdminKeys, "binding": s.Binding})
+				"enrollment": s.Enrollment, "control": s.Control, "control_pin": s.ControlPin, "admin_keys": s.AdminKeys, "admin_set_version": s.AdminSetVersion, "admin_trust_error": s.AdminTrustError, "binding": s.Binding})
 		}
 		fmt.Printf("node:         %s\nkey:          %s (hardware-bound: %v)\nspki:         %s\nfingerprint:  %s\nenrollment:   %s\n", s.NodeName, s.KeyKind, s.HardwareBound, s.SPKI, s.Fingerprint, s.Enrollment)
 		fmt.Printf("control:      %s\ncontrol pin:  %s\n", s.Control, orNone(s.ControlPin))
 		if len(s.AdminKeys) == 0 {
 			fmt.Println("admin keys:   none pinned yet (pinned at enrollment)")
+		} else {
+			fmt.Printf("admin list:   version %d (changes only with a signature of one of these keys)\n", s.AdminSetVersion)
+		}
+		if s.AdminTrustError != "" {
+			fmt.Printf("admin list:   REFUSED an update from the control plane: %s\n", s.AdminTrustError)
 		}
 		for i, k := range s.AdminKeys {
 			label := "admin keys:  "

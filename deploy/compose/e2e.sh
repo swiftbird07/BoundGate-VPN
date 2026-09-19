@@ -25,12 +25,20 @@ sql() { x control sqlite3 -cmd '.timeout 5000' /var/lib/boundgate/control.db "$1
 
 fresh_key() {  # fresh_key SVC: replace the node's key (a revoked key can never come back)
   $COMPOSE stop "$1" >/dev/null
-  rm -f "state/$1/device.key" "state/$1/device.crt" "state/$1/admin_keys"
+  rm -f "state/$1/device.key" "state/$1/device.crt" "state/$1/admin_trust.json"
   $COMPOSE start "$1" >/dev/null
   wait_for 15 sh -c "docker compose -f docker-compose.yml exec -T $1 boundgatectl -json status >/dev/null" || fail "$1 did not come back"
 }
 
 echo "== 0. a previous run may have left node-a revoked (then start with a fresh key) or logged in (then log out)"
+# a lab from before the admin key list was signed: its nodes hold a plain key
+# list and refuse to start until that pin is removed by hand, which for the
+# lab is here (they then pin the signed list on first contact)
+for n in hub1 hub2 node-r node-a node-t; do
+  if [ -f "state/$n/admin_keys" ] && [ ! -f "state/$n/admin_trust.json" ]; then
+    rm -f "state/$n/admin_keys"; $COMPOSE up -d "$n" >/dev/null 2>&1
+  fi
+done
 if wait_for 15 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll | jq -e ".status == \"revoked\""'; then
   fresh_key node-a
 fi
@@ -266,4 +274,54 @@ policy lab-allow-all 'permit(principal, action, resource);'
 wait_for 20 reach_r || fail "node-r cannot reach the target after restoring allow-all"
 x node-t boundgatectl down >/dev/null
 
-echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 + M6 end-to-end"
+echo "== 14. admin key list: a second key joins with the first key's signature, nodes follow without re-enrolling; nothing else moves the list"
+SS="boundgatectl -json admin sign-signers --control https://localhost:443 --cacert /var/lib/boundgate/control.crt --yes --pin-dir /var/lib/boundgate/signer-pins"
+K1=/var/lib/boundgate/admin_signer; K2=/var/lib/boundgate/admin_signer2
+x control sh -c "rm -f $K2 $K2.pub; ssh-keygen -q -t ed25519 -N '' -C second-admin -f $K2"
+for n in hub1 hub2 node-r node-a; do
+  status_is $n '.admin_set_version == 1 and (.admin_keys | length == 1)' || fail "$n has not pinned the signed list (version 1)"
+done
+STOK=$($S api POST /api/v1/admin/signers "$(jq -cn --arg k "$(x control cat $K2.pub)" '{name:"second-admin",public_key:$k}')" | jq -r .sign_token)
+$S api GET /api/v1/admin/signers | jq -e '[.[] | select(.active)] | length == 1' >/dev/null || fail "a proposed key is already active"
+if x control $SS --token "$STOK" --key $K2 >/dev/null 2>&1; then fail "the key being added signed itself into the list"; fi
+x control $SS --token "$STOK" --key $K1 | jq -e '.version == 2' >/dev/null || fail "first admin could not add the second key"
+if x control $SS --token "$STOK" --key $K1 >/dev/null 2>&1; then fail "signer change token accepted twice"; fi
+for n in hub1 hub2 node-r node-a; do
+  wait_for 45 status_is $n '.admin_set_version == 2 and (.admin_keys | length == 2) and .admin_trust_error == null and .binding == "verified"' || fail "$n did not follow the list to version 2"
+done
+# the new key approves a node, and every peer accepts that signature
+ID=$(x node-a boundgatectl -json identity | jq -r .node_id); FP=$(x node-a boundgatectl -json identity | jq -r .spki)
+TOKEN=$($S api PATCH "/api/v1/admin/nodes/$ID" '{"roles":["endpoint"],"prefixes":[]}' | jq -r .sign_token)
+x control boundgatectl admin sign --control https://localhost:443 --cacert /var/lib/boundgate/control.crt --node "$ID" --fingerprint "$FP" --token "$TOKEN" --key $K2 >/dev/null || fail "second admin key could not sign a node"
+wait_for 15 status_is node-a '.enrollment == "approved" and .binding == "verified"' || fail "node-a does not verify a binding signed by the new key"
+x node-a boundgatectl up >/dev/null
+wait_for 20 reach 10.60.0.10 target || fail "hubs refuse a node signed by the new admin key"
+# a control plane that writes its own list: forged link, signed by a key the nodes never trusted
+x control sh -c "rm -f /tmp/evil /tmp/evil.pub; ssh-keygen -q -t ed25519 -N '' -f /tmp/evil"
+HEAD=$(sql "SELECT hash FROM signer_sets WHERE version = 2;")
+EVIL=$(x control awk '{print $1" "$2}' /tmp/evil.pub)
+FORGED=$(jq -cnj --arg prev "$HEAD" --arg k "$EVIL" '{type:"boundgate-signer-set",version:3,prev:$prev,keys:[$k]}')
+x control sh -c "printf '%s' '$FORGED' > /tmp/forged && ssh-keygen -q -Y sign -n boundgate-signers -f /tmp/evil /tmp/forged"
+FSIG=$(x control cat /tmp/forged.sig)
+sql "INSERT INTO signer_sets (version, set_json, signature, hash, signed_by, admin, created_at) VALUES (3, '$FORGED', '$FSIG', 'forged', 'evil', 'root', '2026-01-01T00:00:00.000000000Z'); UPDATE snapshot_version SET version = version + 1;"
+for n in hub1 node-a; do
+  wait_for 45 status_is $n '.admin_trust_error != null and .admin_set_version == 2 and (.admin_keys | length == 2)' || fail "$n did not refuse a forged admin key list"
+done
+reach 10.60.0.10 target || fail "traffic stopped although the pinned list is still valid"
+sql "DELETE FROM signer_sets WHERE version = 3; UPDATE snapshot_version SET version = version + 1;"
+wait_for 45 status_is node-a '.admin_trust_error == null' || fail "node-a did not recover after the forged link was removed"
+# the first admin removes the second key again: node-a, signed by it, loses its approval until re-signed
+RID=$($S api GET /api/v1/admin/signers | jq -r '.[] | select(.name == "second-admin") | .id')
+STOK=$($S api DELETE "/api/v1/admin/signers/$RID" | jq -r .sign_token)
+if x control $SS --token "$STOK" --key /tmp/evil >/dev/null 2>&1; then fail "a stranger removed an admin key"; fi
+x control $SS --token "$STOK" --key $K1 | jq -e '.version == 3 and (.demoted_nodes | length == 1)' >/dev/null || fail "removing the second key"
+wait_for 20 status_is node-a '.state == "down"' || fail "node-a, signed by the removed key, is still up"
+wait_for 45 status_is hub1 '.admin_set_version == 3 and (.admin_keys | length == 1)' || fail "hub1 did not follow the list to version 3"
+TOKEN=$($S api POST "/api/v1/admin/nodes/$ID/confirm" "{\"fingerprint\":\"$FP\"}" | jq -r .sign_token)
+if x control boundgatectl admin sign --control https://localhost:443 --cacert /var/lib/boundgate/control.crt --node "$ID" --fingerprint "$FP" --token "$TOKEN" --key $K2 >/dev/null 2>&1; then fail "a removed admin key approved a node"; fi
+x control boundgatectl admin sign --control https://localhost:443 --cacert /var/lib/boundgate/control.crt --node "$ID" --fingerprint "$FP" --token "$TOKEN" --key $K1 >/dev/null || fail "re-sign with the remaining key"
+wait_for 15 status_is node-a '.enrollment == "approved" and .binding == "verified" and .admin_set_version == 3' || fail "node-a not re-approved"
+x node-a boundgatectl up >/dev/null
+wait_for 20 reach 10.60.0.10 target || fail "target unreachable after the key rotation"
+
+echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 + M6 + signed admin key list end-to-end"

@@ -65,6 +65,10 @@ type Config struct {
 	// key, if provisioned. Empty: trust on first use, stored in
 	// StateDir/control.pin and shown by `boundgatectl identity`.
 	ControlPin string
+	// SignersGenesis is the hex SHA-256 of the genesis admin key list, if
+	// provisioned. Empty: the signed list is pinned on first use. Either
+	// way later lists are only accepted along the signed chain.
+	SignersGenesis string
 	// Roles and Prefixes are what the node asks for at enrollment; an admin
 	// grants them (or not). PublicAddr is announced for the hub role.
 	Roles      []string
@@ -172,8 +176,13 @@ type Status struct {
 	ControlError string `json:"control_error,omitempty"`
 	// ControlPin is the fingerprint of the pinned control-plane key.
 	ControlPin string `json:"control_pin,omitempty"`
-	// AdminKeys are the pinned admin signing keys (type + SHA256 fingerprint).
-	AdminKeys []string `json:"admin_keys,omitempty"`
+	// AdminKeys are the admin signing keys this node accepts (type + SHA256
+	// fingerprint), AdminSetVersion the version of that signed list.
+	AdminKeys       []string `json:"admin_keys,omitempty"`
+	AdminSetVersion uint64   `json:"admin_set_version,omitempty"`
+	// AdminTrustError is set while the control plane delivers an admin key
+	// list that does not continue the pinned one (the node keeps its list).
+	AdminTrustError string `json:"admin_trust_error,omitempty"`
 	// Binding reports the state of the node's own signed binding:
 	// "verified", "" (no snapshot yet) or an error text.
 	Binding      string `json:"binding,omitempty"`
@@ -202,8 +211,7 @@ type Node struct {
 	holder  *registry.Holder
 	pins    transport.PinStore
 
-	keysMu    sync.Mutex
-	adminKeys binding.Signers
+	trust *trustStore
 
 	acl     atomic.Pointer[acl.Engine]
 	ship    *shipper
@@ -305,11 +313,8 @@ func New(cfg Config) (*Node, error) {
 	} else {
 		n.pins = &filePin{path: filepath.Join(cfg.StateDir, "control.pin")}
 	}
-	if keys, err := os.ReadFile(n.adminKeysPath()); err == nil {
-		n.adminKeys, err = binding.ParseSigners(keys)
-		if err != nil {
-			return nil, fmt.Errorf("node: %s: %w", n.adminKeysPath(), err)
-		}
+	if n.trust, err = loadTrust(cfg.StateDir, strings.ToLower(strings.TrimSpace(cfg.SignersGenesis))); err != nil {
+		return nil, err
 	}
 	onLearn := func(h devicekey.SPKIHash) {
 		cfg.Log.Warn("pinned control plane key on first use; compare this fingerprint with the operator's", "control", cfg.ControlAddr, "fingerprint", h.Fingerprint())
@@ -329,17 +334,16 @@ func New(cfg Config) (*Node, error) {
 		HardwareBound: key.HardwareBound(),
 		Enrollment:    "unknown",
 		Control:       cfg.ControlAddr,
-		AdminKeys:     n.adminKeys.Fingerprints(),
+		AdminKeys:     n.trust.signers().Fingerprints(),
 	}
+	n.status.AdminSetVersion = n.trust.current().Version
 	if pin, ok := n.pins.Pinned(); ok {
 		n.status.ControlPin = pin.Fingerprint()
 	}
 	cfg.Log.Info("node identity", "name", cfg.Name, "key_kind", key.Kind(), "hardware_bound", key.HardwareBound(), "spki", spki, "control", cfg.ControlAddr,
-		"control_pin", n.status.ControlPin, "admin_keys", len(n.adminKeys))
+		"control_pin", n.status.ControlPin, "admin_keys", len(n.status.AdminKeys), "admin_set_version", n.status.AdminSetVersion)
 	return n, nil
 }
-
-func (n *Node) adminKeysPath() string { return filepath.Join(n.cfg.StateDir, "admin_keys") }
 
 // controlError records the control channel state and explains a pin
 // mismatch once per episode.
@@ -357,44 +361,39 @@ func (n *Node) controlError(err error) {
 	}
 }
 
-// pinAdminKeys stores the admin signing keys delivered at enrollment, once.
-// Later deliveries are ignored: the keys a node trusts are fixed at
-// enrollment (losing all of them means re-enrolling).
-func (n *Node) pinAdminKeys(lines []string) {
-	if len(lines) == 0 {
+// followSigners applies the signed admin key list the control plane
+// forwards (at enrollment and with every snapshot). The first delivery is
+// pinned; afterwards the list only moves along links signed by one of its
+// own keys. A chain that does not verify changes nothing and is reported.
+func (n *Node) followSigners(chain []registry.SignerLink) {
+	if len(chain) == 0 {
 		return
 	}
-	n.keysMu.Lock()
-	defer n.keysMu.Unlock()
-	if len(n.adminKeys) > 0 {
-		return
-	}
-	text := strings.Join(lines, "\n") + "\n"
-	keys, err := binding.ParseSigners([]byte(text))
-	if err != nil || len(keys) == 0 {
-		n.log.Error("admin keys from the control plane are unusable", "err", err)
-		return
-	}
-	if err := os.WriteFile(n.adminKeysPath(), []byte(text), 0o600); err != nil {
-		n.log.Error("store admin keys", "err", err)
-		return
-	}
-	n.adminKeys = keys
+	moved, first, err := n.trust.apply(chain)
+	cur := n.trust.current()
+	keys := n.trust.signers().Fingerprints()
 	n.mu.Lock()
-	n.status.AdminKeys = keys.Fingerprints()
+	prevErr := n.status.AdminTrustError
+	n.status.AdminKeys, n.status.AdminSetVersion, n.status.AdminTrustError = keys, cur.Version, ""
+	if err != nil {
+		n.status.AdminTrustError = err.Error()
+	}
 	n.mu.Unlock()
-	n.log.Warn("pinned admin signing keys at enrollment; they are never updated", "keys", keys.Fingerprints())
+	switch {
+	case err != nil && err.Error() != prevErr:
+		n.log.Error("admin key list from the control plane refused; keeping the pinned list", "err", err, "pinned_version", cur.Version, "keys", keys)
+	case first:
+		n.log.Warn("pinned the signed admin key list on first use; compare these fingerprints with your administrator's", "version", cur.Version, "keys", keys)
+	case moved:
+		n.log.Warn("admin key list changed, signed by a key of the previous list", "version", cur.Version, "keys", keys)
+	}
 }
 
-func (n *Node) signers() binding.Signers {
-	n.keysMu.Lock()
-	defer n.keysMu.Unlock()
-	return n.adminKeys
-}
+func (n *Node) signers() binding.Signers { return n.trust.signers() }
 
 // applyEnrollStatus records what the control plane said and pins keys.
 func (n *Node) applyEnrollStatus(st api.EnrollStatus) {
-	n.pinAdminKeys(st.AdminSignerKeys)
+	n.followSigners(st.SignerChain)
 	if st.ControlSPKI != "" {
 		if want, err := devicekey.ParseSPKIHash(st.ControlSPKI); err == nil {
 			if pin, ok := n.pins.Pinned(); ok && pin != want {
@@ -414,6 +413,7 @@ func (n *Node) applyEnrollStatus(st api.EnrollStatus) {
 // that fail are dropped (and listed in the status); if the node's own
 // binding fails the snapshot is refused and the overlay goes down.
 func (n *Node) verifySnapshot(s *registry.Snapshot) error {
+	n.followSigners(s.SignerChain) // first: bindings are judged by the list this snapshot brings, if it is legitimate
 	rejected, err := binding.VerifySnapshot(s, n.signers())
 	n.mu.Lock()
 	n.status.IgnoredPeers = nil

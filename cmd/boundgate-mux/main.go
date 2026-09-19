@@ -26,7 +26,7 @@ type config struct {
 	Listen        string   `yaml:"listen"`         // default ":443", TCP and UDP
 	ListenTCP     string   `yaml:"listen_tcp"`     // TCP elsewhere than UDP: a reverse proxy in front delivers TLS to this private address
 	TrustedFronts []string `yaml:"trusted_fronts"` // those proxies: their PROXY header (v1/v2) carries the client address
-	Routes []struct {
+	Routes        []struct {
 		Name          string   `yaml:"name"`
 		SNI           []string `yaml:"sni"`
 		ID            int      `yaml:"id"`             // behind_mux.id of that server (UDP)

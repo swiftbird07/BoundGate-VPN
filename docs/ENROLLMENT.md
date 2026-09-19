@@ -118,10 +118,18 @@ gets 403; it forgets its snapshot, tears the overlay down and refuses
 
 ## Admin signing keys
 
-`POST /api/v1/admin/signers {name, public_key}` registers an OpenSSH public
-key (`sk-ssh-ed25519@openssh.com` from a YubiKey is the intended kind;
-`ssh-ed25519` for development). `DELETE /api/v1/admin/signers/{id}` revokes
-it for future signatures. Register every admin key **before** enrolling
-nodes: nodes pin the key set at enrollment and never update it
-(`BINDINGS.md`). With no active key, enrollment and confirmation are
+The list of admin keys is a signed chain (`BINDINGS.md`): adding or removing
+a key is a proposal that a key of the current list has to sign.
+
+```
+POST   /api/v1/admin/signers {name, public_key}   -> 202, sign_command
+DELETE /api/v1/admin/signers/{id}                 -> 202, sign_command
+boundgatectl admin sign-signers --control https://bg.example.com --token bgsigners_…
+```
+
+The first key signs the first list itself (`sk-ssh-ed25519@openssh.com` from
+a YubiKey is the intended kind; `ssh-ed25519` for development). Nodes pin
+the signed list at enrollment and afterwards follow only changes signed by
+a key of the list they hold, so keys can be added and removed at any time
+without re-enrolling. With no signed list, enrollment and confirmation are
 refused.
