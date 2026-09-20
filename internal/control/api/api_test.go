@@ -816,3 +816,64 @@ func TestHardwareBoundGrant(t *testing.T) {
 		t.Fatalf("distrusted at confirm: %+v", nv3)
 	}
 }
+
+// Changing the overlay pool with nodes in it: refused with the list of nodes
+// outside, unless "renumber" is asked for. Then every node keeps its host
+// number, approved nodes lose their signature (the address is signed) and
+// come back with the new address once the administrator signed again.
+func TestRenumberPool(t *testing.T) {
+	e := newEnv(t)
+	e.registerSigner()
+	hub, laptop := e.device("hub1"), e.device("laptop")
+	hst, lst := e.enroll(hub, `{}`), e.enroll(laptop, `{}`)
+	hv := e.approve(hst.NodeID, `{"kind":"workload","roles":["hub"]}`)
+	lv := e.approve(lst.NodeID, `{"roles":["endpoint"],"overlay_ip":"10.21.3.7"}`)
+	if hv.OverlayIP != "10.21.0.1" || lv.OverlayIP != "10.21.3.7" {
+		t.Fatalf("addresses before: %s %s", hv.OverlayIP, lv.OverlayIP)
+	}
+
+	var refusal struct {
+		Error   string           `json:"error"`
+		Outside []map[string]any `json:"outside"`
+	}
+	e.adminCall("PUT", "/api/v1/admin/settings/network", `{"pool":"10.25.0.0/16"}`, http.StatusConflict, &refusal)
+	if len(refusal.Outside) != 2 || !strings.Contains(refusal.Error, "renumber") {
+		t.Fatalf("refusal: %+v", refusal)
+	}
+	// a pool too small for a host number changes nothing
+	e.adminCall("PUT", "/api/v1/admin/settings/network", `{"pool":"10.25.0.0/24","renumber":true}`, http.StatusConflict, nil)
+	var nv api.NodeView
+	e.adminCall("GET", "/api/v1/admin/nodes/"+lst.NodeID, "", http.StatusOK, &nv)
+	if nv.OverlayIP != "10.21.3.7" || nv.Status != "approved" {
+		t.Fatalf("a refused renumbering changed the node: %+v", nv)
+	}
+
+	var done struct {
+		Renumbered []struct {
+			Name     string `json:"name"`
+			From, To string
+			Unsigned bool `json:"needs_signature"`
+		} `json:"renumbered"`
+	}
+	e.adminCall("PUT", "/api/v1/admin/settings/network", `{"pool":"10.25.0.0/16","renumber":true}`, http.StatusOK, &done)
+	if len(done.Renumbered) != 2 || !done.Renumbered[0].Unsigned {
+		t.Fatalf("renumbered: %+v", done)
+	}
+	e.adminCall("GET", "/api/v1/admin/nodes/"+lst.NodeID, "", http.StatusOK, &nv)
+	if nv.OverlayIP != "10.25.3.7" || nv.Status != "confirmed" {
+		t.Fatalf("laptop after renumbering: %s %s", nv.OverlayIP, nv.Status)
+	}
+	// without a signature over the new address the node is served nothing
+	if code, _ := e.snapshot(laptop, 0, "1s"); code == http.StatusOK {
+		t.Fatal("a renumbered node was served a snapshot before it was signed again")
+	}
+	e.approve(hst.NodeID, `{"kind":"workload","roles":["hub"]}`)
+	lv = e.approve(lst.NodeID, `{"roles":["endpoint"]}`)
+	if lv.OverlayIP != "10.25.3.7" || lv.Status != "approved" {
+		t.Fatalf("laptop signed again: %+v", lv)
+	}
+	_, snap := e.snapshot(laptop, 0, "1s")
+	if snap == nil || snap.Self.OverlayIP.String() != "10.25.3.7" || snap.Pool.String() != "10.25.0.0/16" || len(snap.Peers) != 1 || snap.Peers[0].OverlayIP.String() != "10.25.0.1" {
+		t.Fatalf("snapshot after renumbering: %+v", snap)
+	}
+}

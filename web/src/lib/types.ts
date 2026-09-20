@@ -26,3 +26,6 @@ export interface Passkey { id: string; subject: string; email?: string; label?: 
 export interface ApiToken { id: string; name: string; created_by?: string; created_at: string; expires_at?: string; last_used_at?: string; revoked_at?: string; revoked_by?: string; token?: string }
 export interface AuthStatus { level: 'none' | 'oidc_only' | 'full'; subject?: string; email?: string; name?: string; via?: string; own_passkeys: number; own_pending: number; total_passkeys: number; bootstrap_active: boolean; oidc_configured: boolean; passkeys_enabled: boolean; rp_id?: string; error?: string }
 export interface Overview { nodes: Record<string, number>; active_sessions: number; active_tunnels: number; policies: number; policies_enabled: number; denied_last_24h: number; pending_passkeys: number; signers: number; snapshot_version: number }
+
+/** A node that moved with the overlay pool; an approved one needs a new signature. */
+export interface Renumbered { id: string; name: string; from: string; to: string; needs_signature: boolean }

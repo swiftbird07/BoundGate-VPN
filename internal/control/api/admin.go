@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -517,38 +518,56 @@ func (h *Handlers) adminGetNetwork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, n)
 }
 
+// adminPutNetwork stores the network settings. A pool that leaves nodes
+// outside is refused, with the list of those nodes, unless the request says
+// "renumber": true: then they move to the same host number in the new pool,
+// and the approved ones need the administrator's signature again, because the
+// overlay address is part of the signed binding.
 func (h *Handlers) adminPutNetwork(w http.ResponseWriter, r *http.Request) {
 	a, _ := AdminFrom(r.Context())
-	var n db.NetworkSettings
-	if err := readJSON(r, &n, 64<<10); err != nil {
+	var req struct {
+		db.NetworkSettings
+		Renumber bool `json:"renumber"`
+	}
+	if err := readJSON(r, &req, 64<<10); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
+	n := req.NetworkSettings
 	if err := n.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// every assigned overlay address must still fit the pool
-	nodes, err := h.d.DB.ApprovedNodes(r.Context())
+	nodes, err := h.d.DB.ListNodes(r.Context(), "")
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
 		return
 	}
+	var outside []map[string]any
 	for _, nd := range nodes {
-		if nd.OverlayIP.IsValid() && !n.Pool.Contains(nd.OverlayIP) {
-			writeError(w, http.StatusConflict, "node "+nd.Name+" has overlay ip "+nd.OverlayIP.String()+" outside the new pool")
-			return
+		if (nd.Status == db.StatusApproved || nd.Status == db.StatusConfirmed) && nd.OverlayIP.IsValid() && !n.Pool.Contains(nd.OverlayIP) {
+			outside = append(outside, map[string]any{"id": nd.ID, "name": nd.Name, "overlay_ip": nd.OverlayIP.String(), "status": nd.Status})
 		}
 	}
-	version, err := h.d.DB.PutSetting(r.Context(), db.SettingNetwork, n, a.Subject, true)
+	if len(outside) > 0 && !req.Renumber {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   fmt.Sprintf("%d node(s) have an overlay address outside %s. With \"renumber\" they move to the same host number in the new pool; approved nodes then need your signature again", len(outside), n.Pool),
+			"outside": outside})
+		return
+	}
+	version, moved, err := h.d.DB.RenumberNetwork(r.Context(), n, a.Subject)
 	if err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		fail(w, err, h.d.Logs.System)
 		return
 	}
 	h.d.Snap.Notify(version)
 	h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "network settings changed", "",
-		map[string]any{"pool": n.Pool.String(), "max_age_seconds": n.MaxAgeSeconds, "snapshot_version": version})
-	writeJSON(w, http.StatusOK, n)
+		map[string]any{"pool": n.Pool.String(), "max_age_seconds": n.MaxAgeSeconds, "snapshot_version": version, "renumbered": moved})
+	writeJSON(w, http.StatusOK, map[string]any{"pool": n.Pool, "max_age_seconds": n.MaxAgeSeconds, "renumbered": moved})
 }
 
 // adminSnapshot returns the global view, or the view of one node with

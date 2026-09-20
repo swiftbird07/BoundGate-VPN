@@ -47,7 +47,7 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | GET | `/api/v1/admin/sessions` | `?all=1` includes ended ones | `[SessionView]` |
 | DELETE | `/api/v1/admin/sessions/{id}` | | 204 (revoke; hubs close the node's tunnels); 409 if already ended |
 | GET | `/api/v1/admin/identity` | | `{control_pin, spki}`: fingerprint of the node-channel key, what a device shows and asks about at its first contact (ENROLLMENT.md) |
-| GET/PUT | `/api/v1/admin/settings/network` | `{pool, max_age_seconds?}` | settings; PUT bumps the snapshot; 409 if an assigned address would fall outside the new pool |
+| GET/PUT | `/api/v1/admin/settings/network` | `{pool, max_age_seconds?, renumber?}` | settings; PUT bumps the snapshot. A pool that leaves nodes outside: 409 `{error, outside: [{id, name, overlay_ip, status}]}`, unless `renumber: true`: every such node moves to the same host number in the new pool (10.21.3.7 → 10.25.3.7; 409 and no change if one does not fit), and approved ones go back to `confirmed`, because the overlay address is part of the signed binding: they are out of the network until signed again. Answer: `{pool, max_age_seconds, renumbered: [{id, name, from, to, needs_signature}]}` |
 | GET | `/api/v1/admin/snapshot` | `?node=<id>` | the global view, or what that node receives |
 | GET | `/api/v1/admin/logs` | `?stream=&node=&actor=&q=&from=&to=&before=&limit=` | `[LogEvent]` newest first |
 | GET | `/api/v1/admin/policies` | | `[PolicyView]` |
