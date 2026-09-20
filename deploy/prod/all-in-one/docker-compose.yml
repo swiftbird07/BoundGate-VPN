@@ -19,7 +19,7 @@
 # Updating: docker compose --profile mux pull && docker compose --profile mux up -d
 name: boundgate
 
-x-image: &image ${BOUNDGATE_IMAGE:-gitlab.net407.com/sbh/boundgate:latest}
+x-image: &image ${BOUNDGATE_IMAGE:-ghcr.io/swiftbird07/boundgate:latest}
 
 services:
   mux:

@@ -54,6 +54,11 @@ run env | grep -q 'updated unknown -> v1.0.0' || fail "no update"
 grep -q "^BOUNDGATE_IMAGE=registry.test/boundgate@$DIGEST\$" "$T/kit/.env" && grep -q '^BOUNDGATE_RELEASE=v1.0.0$' "$T/kit/.env" && grep -q '^KEEP=me$' "$T/kit/.env" || fail ".env: $(cat "$T/kit/.env")"
 grep -q "^pull -q registry.test/boundgate@$DIGEST\$" "$T/log" && grep -q '^compose up -d' "$T/log" || fail "docker calls: $(cat "$T/log")"
 
+# pin: the same checks, .env written, nothing started
+rm -rf "$T/kit2"; mkdir "$T/kit2"; cp "$T/kit/docker-compose.yml" "$T/kit2/"; : > "$T/log"
+(cd "$T/kit2" && LOG="$T/log" STATE="$T/state" DOCKER="$T/docker" RELEASE_KEYS="$T/release_keys" BOUNDGATE_UPDATE_URL=http://127.0.0.1:$PORT BOUNDGATE_UPDATE_REPO=o/r "$REPO_DIR/deploy/prod/update.sh" pin) | grep -q 'pinned v1.0.0' || fail "pin"
+grep -q "^BOUNDGATE_IMAGE=registry.test/boundgate@$DIGEST\$" "$T/kit2/.env" && grep -q '^pull -q' "$T/log" && ! grep -q 'compose up' "$T/log" || fail "pin: $(cat "$T/kit2/.env" "$T/log")"
+
 echo "== 2. the same release again: nothing happens; check reports a newer one"
 : > "$T/log"; run env | grep -q 'up to date: v1.0.0' || fail "not up to date"
 [ ! -s "$T/log" ] || fail "docker was called for nothing"

@@ -1,7 +1,7 @@
 # Deploying with Docker (control plane, hubs, nodes)
 
 Everything server-side runs as containers from **one prebuilt image**,
-`gitlab.net407.com/sbh/boundgate:latest` (control plane, node, CLI and mux
+`ghcr.io/swiftbird07/boundgate:latest` (control plane, node, CLI and mux
 in one image; amd64 and arm64). Two compose kits under `deploy/prod/`:
 
 | Kit | Runs | For |
@@ -12,6 +12,33 @@ in one image; amd64 and arm64). Two compose kits under `deploy/prod/`:
 Clients are nodes like the Mac app (MACOS-APP.md); the dev lab in
 `deploy/compose` builds its own images and is not for production. This is
 a prototype deployment: read SECURITY.md before you depend on it.
+
+## The short way
+
+On a Linux server with Docker:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/swiftbird07/BoundGate-VPN/main/deploy/prod/setup.sh | sh
+```
+
+`setup.sh` asks what this server is to be (control plane with a hub, or a
+node: subnet router, exit node, another hub, workload endpoint), the names,
+the OIDC application, and how the server is to be updated; it writes the kit
+described below into a directory (`/opt/boundgate`), with the files of the
+latest release, and starts it. It keeps every file that already exists, so it
+can be run again, and it touches nothing outside that directory except, if
+you agree, `/etc/cron.d/boundgate-update`. To read it first: download it
+(`curl -fsSLO …/setup.sh`), then `sh setup.sh`. The rest of this page is what
+it does, by hand, and the layouts it does not ask about (a reverse proxy in
+front, two addresses, certificates by DNS challenge). Tested by
+`make setup-test`.
+
+**Two ways to stay current**, asked by `setup.sh` and yours to change later:
+
+| | how | what the server trusts |
+|---|---|---|
+| signed releases | `./update.sh` (cron): verifies the release signature here, pins the image by digest in `.env` | the release keys next to `update.sh`, nothing else ([RELEASES.md](RELEASES.md)) |
+| the tag `latest` | `docker compose pull && docker compose up -d`, Dockhand, Watchtower: `BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:latest` (the kits' default) | the registry and whoever can push to it (R99). CI moves `latest` only to the image of a published, signed release |
 
 ## What you need
 
@@ -200,7 +227,7 @@ docker compose logs -f control
 Compose does not build anything: it pulls `:latest`, which the CI job
 (`.gitea/workflows/image.yml`) pushes for every commit on `main`, tagged
 also `sha-<commit>`, and every `v*` tag as `:<tag>`. Pin one of those in
-`.env` (`BOUNDGATE_IMAGE=gitlab.net407.com/sbh/boundgate:sha-abc1234`) when
+`.env` (`BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:v0.1.2`) when
 "whatever is on main" is not what you want on a server. Updating is
 `docker compose pull && docker compose up -d`. Without a CI runner,
 `make image-push` on the Mac does the same build (both architectures,

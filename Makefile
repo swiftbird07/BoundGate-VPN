@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -110,6 +110,14 @@ release-key:
 # deploy/prod/update.sh against a stand-in for Gitea and docker
 update-test:
 	deploy/prod/update_test.sh
+
+# deploy/prod/setup.sh (the curl | sh installer) with answers from a file
+setup-test:
+	deploy/prod/setup_test.sh
+
+# deploy/release/tag-latest.sh against a registry in a container
+tag-latest-test:
+	deploy/release/tag-latest_test.sh
 
 # The Secure Enclave bridge of a macOS node (key_kind secure-enclave / auto),
 # for installs without the app (deploy/macos/install.sh). Swift, so it builds

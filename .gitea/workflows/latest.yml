@@ -1,0 +1,52 @@
+# When a release is published (the maintainer's `make release` does that, after
+# signing), the image tag `latest` on ghcr.io moves to it, for people and tools
+# that follow a tag instead of running deploy/prod/update.sh.
+#
+# The tag only moves to the digest a release key signed: deploy/release/tag-latest.sh
+# checks the manifest's signature and the registry's bytes. It moves for the
+# newest release only, so re-publishing an old one changes nothing. No docker
+# is involved: two requests to the registry.
+#
+# By hand (Actions > latest > Run workflow), with the version to point at.
+#
+# Secrets: GHCR_USER, GHCR_TOKEN as for release.yml; RELEASE_TOKEN only if the
+# job's own token may not read releases.
+name: latest
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'release to point latest at (vMAJOR.MINOR.PATCH)'
+        required: true
+
+concurrency:
+  group: latest
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: move latest
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ secrets.GHCR_USER }}
+          REGISTRY_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          V: ${{ gitea.event.release.tag_name || inputs.version }}
+        run: |
+          set -eu
+          echo "$V" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || { echo "not a release version: $V"; exit 0; }
+          API=${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}
+          printf 'header = "Authorization: token %s"\n' "$TOKEN" > "$RUNNER_TEMP/auth"; chmod 600 "$RUNNER_TEMP/auth"
+          newest=$(curl -fsS -K "$RUNNER_TEMP/auth" "$API/releases/latest" | jq -r .tag_name)
+          [ "$newest" = "$V" ] || { echo "$V is not the newest release ($newest): latest stays where it is"; exit 0; }
+          curl -fsS -K "$RUNNER_TEMP/auth" "$API/releases/tags/$V" > "$RUNNER_TEMP/release.json"
+          for f in manifest.json manifest.json.sig; do
+            url=$(jq -r --arg n $f '.assets[] | select(.name == $n) | .browser_download_url' "$RUNNER_TEMP/release.json")
+            case "$url" in "${{ gitea.server_url }}"/*) ;; *) echo "release $V has no $f"; exit 1 ;; esac
+            curl -fsS -K "$RUNNER_TEMP/auth" -o "$RUNNER_TEMP/$f" "$url"
+          done
+          deploy/release/tag-latest.sh "$RUNNER_TEMP/manifest.json" "$RUNNER_TEMP/manifest.json.sig"

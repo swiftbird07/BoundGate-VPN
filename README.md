@@ -7,7 +7,7 @@ cannot leave it (TPM 2.0, later Secure Enclave), a user only with OIDC, and
 every flow only if a Cedar policy says so. The tunnel is standard HTTP/3:
 CONNECT-IP (RFC 9484) over QUIC on UDP/443.
 
-Status: prototype, milestone M8 stage 1 (macOS menu-bar app, see `docs/MACOS-APP.md`; tunnel fallback over TCP/443 for networks that block UDP (M8.2, same mTLS, back to QUIC automatically); fully containerized deployment from one prebuilt image (`gitlab.net407.com/sbh/boundgate:latest`, amd64+arm64, CI-built): all-in-one kit with control plane and hub sharing port 443 through `boundgate-mux`, single-node kit for every further machine, built-in Let's Encrypt, see `docs/DEPLOY.md`; TPM 2.0 device keys incl. VM vTPMs, `hardware_bound` as a signed binding field, see `docs/TPM.md`; macOS endpoint, see `docs/MACOS.md`; node model: control plane on port 443,
+Status: prototype, milestone M8 stage 1 (macOS menu-bar app, see `docs/MACOS-APP.md`; tunnel fallback over TCP/443 for networks that block UDP (M8.2, same mTLS, back to QUIC automatically); fully containerized deployment from one prebuilt image (`ghcr.io/swiftbird07/boundgate:latest`, amd64+arm64, CI-built): all-in-one kit with control plane and hub sharing port 443 through `boundgate-mux`, single-node kit for every further machine, built-in Let's Encrypt, see `docs/DEPLOY.md`; TPM 2.0 device keys incl. VM vTPMs, `hardware_bound` as a signed binding field, see `docs/TPM.md`; macOS endpoint, see `docs/MACOS.md`; node model: control plane on port 443,
 one `boundgate-node` binary with the roles endpoint / subnet-router / hub /
 exit-node, hub-and-spoke overlay with HA; enrollment with manual admin
 confirmation and an admin-signed binding (SSHSIG, YubiKey) that every node
@@ -29,6 +29,14 @@ cd deploy/compose && docker compose exec node-a boundgatectl up && ./setup-dev.s
 make e2e                            # up -> login -> targets -> ACL -> hub failover -> session revoke -> node revoke -> re-enroll -> sign flow -> tampering -> key pin -> admin UI/auth
 open http://localhost:18080         # admin UI through the lab's devproxy; first passkey needs deploy/compose/state/control/bootstrap.token
 ```
+
+## Install on a server
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/swiftbird07/BoundGate-VPN/main/deploy/prod/setup.sh | sh
+```
+
+Interactive; control plane with a hub, or a single node. What it does, and everything it does not ask: [docs/DEPLOY.md](docs/DEPLOY.md). The macOS app: [latest release](https://github.com/swiftbird07/BoundGate-VPN/releases/latest).
 
 ## License
 

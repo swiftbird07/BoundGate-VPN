@@ -37,6 +37,13 @@ and the container image, pushed by CI to `ghcr.io/swiftbird07/boundgate:<v>`
 (public) and `gitlab.net407.com/sbh/boundgate:<v>` in one push, so both hold the
 same digest. The manifest names the public one, **by digest**.
 
+The tag `latest` on ghcr.io follows the newest published release: when
+`make release` publishes the draft, `.gitea/workflows/latest.yml` runs
+`deploy/release/tag-latest.sh`, which checks the manifest's signature, hashes
+what the registry holds under the signed digest, and puts the same bytes under
+`latest` (two requests to the registry, no docker; `make tag-latest-test`). It is
+for people and tools that follow a tag; `update.sh` never looks at it.
+
 ## Where things are, and who is trusted with what
 
 | | what it holds | what it is trusted with |

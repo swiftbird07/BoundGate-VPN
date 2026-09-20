@@ -4,8 +4,10 @@
 #
 #   17 3 * * *  /opt/boundgate/update.sh -q            # in the kit directory
 #
-#   update.sh [-q] [check|apply]      default: apply; -q: silent unless something
-#                                     was updated or went wrong
+#   update.sh [-q] [check|apply|pin]  default: apply; -q: silent unless something
+#                                     was updated or went wrong. pin (compose):
+#                                     verify, pull and write .env, but start
+#                                     nothing: what setup.sh does first
 #
 # What it does: looks up the latest release (on GitHub, anonymously; or through
 # the release API of a Gitea instance), downloads manifest.json and manifest.json.sig, verifies the signature against the
@@ -60,7 +62,8 @@ say() { [ -n "$QUIET" ] || echo "$*"; }
 die() { echo "update: $*" >&2; exit 1; }
 for t in curl jq ssh-keygen; do command -v $t >/dev/null 2>&1 || die "$t is needed"; done
 case "$URL" in https://*|http://127.0.0.1*|http://localhost*) ;; *) die "BOUNDGATE_UPDATE_URL must be https" ;; esac
-case "$ACTION" in check|apply) ;; *) die "usage: update.sh [-q] [check|apply]" ;; esac
+case "$ACTION" in check|apply|pin) ;; *) die "usage: update.sh [-q] [check|apply|pin]" ;; esac
+[ "$ACTION" != pin ] || [ "$MODE" = compose ] || die "pin is for MODE=compose"
 
 WORK=$(mktemp -d); LOCK="$COMPOSE_DIR/.update.lock"
 mkdir "$LOCK" 2>/dev/null || die "another update is running ($LOCK)"
@@ -150,6 +153,7 @@ IMAGE="$REF@$DIGEST"
 $DOCKER pull -q "$IMAGE" >/dev/null || die "cannot pull $IMAGE"
 touch "$ENVFILE"; cp "$ENVFILE" "$ENVFILE.before-update"
 { grep -v '^BOUNDGATE_IMAGE=\|^BOUNDGATE_RELEASE=' "$ENVFILE.before-update" || true; echo "BOUNDGATE_IMAGE=$IMAGE"; echo "BOUNDGATE_RELEASE=$VERSION"; } > "$ENVFILE"
+if [ "$ACTION" = pin ]; then rm -f "$ENVFILE.before-update"; echo "pinned $VERSION ($IMAGE)"; exit 0; fi
 up() { (cd "$COMPOSE_DIR" && $DOCKER compose up -d --remove-orphans >/dev/null 2>&1); }
 healthy() { # every container of the project running, none restarting
   sleep "${SETTLE:-20}"
