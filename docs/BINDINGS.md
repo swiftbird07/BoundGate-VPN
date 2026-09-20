@@ -238,6 +238,11 @@ ssh-keygen -t ed25519-sk -O resident -O verify-required -C "martin yubikey" -f ~
 boundgatectl admin sign --key ~/.ssh/id_boundgate_sk --control https://127.0.0.1:18443 --cacert deploy/compose/state/control/control.crt --node … --fingerprint … --token …
 ```
 
+A further key (a second YubiKey, a colleague's): the Admins page shows the
+commands under "Create a new signing key". `-O application=ssh:boundgate-admin`
+gives the resident credential its own slot: a second resident key with the
+same application and user on the same token would replace the first.
+
 `--key` signs then and there and leaves nothing loaded: a plain key file is
 used directly; a passphrase protected file or a security key's handle is
 handed to `ssh-keygen -Y sign`, which asks on the terminal for the passphrase,

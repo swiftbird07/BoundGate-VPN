@@ -15,6 +15,9 @@
   let tokens = $state<ApiToken[]>([]);
   let showRevoked = $state(false);
   let newSigner = $state({ name: '', key: '' });
+  // a second file name, so an existing ~/.ssh/id_boundgate_sk is not overwritten
+  const keygenCmd = 'ssh-keygen -t ed25519-sk -O resident -O verify-required -O application=ssh:boundgate-admin -C "boundgate admin $(whoami)" -f ~/.ssh/id_boundgate_sk2';
+  const pubCmd = 'cat ~/.ssh/id_boundgate_sk2.pub';
   let newToken = $state({ name: '', expires: '720h' });
   let minted = $state<ApiToken | null>(null);
   let pkLabel = $state('');
@@ -101,6 +104,15 @@
         {:else}<tr><td colspan="5" class="empty">No signing key: nodes cannot be enrolled or approved.</td></tr>{/each}
       </tbody>
     </table>
+    <details class="howto">
+      <summary>Create a new signing key on a YubiKey (or another FIDO2 key)</summary>
+      <p class="small muted">On the machine the key is plugged into. It asks for the key's FIDO PIN and a touch; the private part never leaves the key, the file is only a handle to it.</p>
+      <div class="cmd"><pre>{keygenCmd}</pre><Copy text={keygenCmd} /></div>
+      <p class="small muted">Then paste the public half below and press "Add key…":</p>
+      <div class="cmd"><pre>{pubCmd}</pre><Copy text={pubCmd} /></div>
+      <p class="small muted">The new list is valid once a key that is already in it signs it (the dialog shows that command); for the first key, the key itself. Sign nodes with <code>boundgatectl admin sign … --key ~/.ssh/id_boundgate_sk2</code>.
+        On macOS use Homebrew's OpenSSH (<code>brew install openssh</code>): the system's is built without security key support. Keep at least two keys in the list: losing all of them means enrolling every node again.</p>
+    </details>
     <div class="row" style="margin-top:12px; align-items:flex-end">
       <label class="field">Name <input placeholder="Martin's YubiKey" bind:value={newSigner.name} /></label>
       <label class="field grow">Public key (authorized_keys line) <input class="mono" placeholder="sk-ssh-ed25519@openssh.com AAAA… comment" bind:value={newSigner.key} /></label>
@@ -162,3 +174,11 @@
     {#snippet footer()}<button class="btn primary" onclick={() => (minted = null)}>Done</button>{/snippet}
   </Dialog>
 {/if}
+
+<style>
+  .howto { margin-top: 14px; }
+  .howto summary { cursor: pointer; font-size: 13px; font-weight: 550; color: var(--text-2); }
+  .howto summary:hover { color: var(--text); }
+  .howto[open] summary { margin-bottom: 8px; }
+  .howto .cmd { margin: 6px 0; }
+</style>
