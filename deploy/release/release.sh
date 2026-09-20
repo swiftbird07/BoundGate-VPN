@@ -12,6 +12,8 @@
 #   3. downloads what CI built, writes the manifest over all of it and signs it
 #      with the release key, which exists only here (docs/RELEASES.md)
 #   4. uploads Mac app, manifest and signature, and publishes the draft
+#   5. puts the same files on GitHub, the public mirror that updaters read
+#      (deploy/release/mirror-github.sh)
 #
 # Every step can be repeated: run it again with VERSION=... after a failure.
 #
@@ -23,6 +25,9 @@
 #                 (default private/release_signing_key; passphrase or a FIDO2
 #                 "sk" key are fine: ssh-keygen asks)
 #   NO_MAC=1      a release without the Mac app
+#   NO_GITHUB=1   do not mirror to GitHub (updaters read GitHub by default: they
+#                 will not see this release); otherwise GITHUB_TOKEN(_FILE) and
+#                 GITHUB_REPO as in mirror-github.sh
 #   NO_GO_VERIFY=1  skip the second signature check (with the updater's Go code, in the box)
 #   GITEA_URL, GITEA_REPO, WAIT_MINUTES (40)
 set -eu
@@ -93,6 +98,7 @@ api() { # api METHOD PATH [curl args]: JSON on stdout
 
 # a pushed tag starts CI and is seen by everyone: find out now what would stop this run later
 [ "$(api GET "" | jq -r '.permissions.push')" = true ] || die "the access token does not get write access to $GITEA_REPO at $GITEA_URL (curl's message above: 401 = wrong or expired token, 404 = the token's user does not see the repository)"
+[ -n "${NO_GITHUB:-}" ] || deploy/release/mirror-github.sh --check
 PLAIN=${V#v}
 ZIP=dist/BoundGate-$PLAIN-macos.zip; DMG=dist/BoundGate-$PLAIN.dmg
 if [ -n "${NO_MAC:-}" ]; then MAC=none
@@ -137,6 +143,16 @@ else
   apps/macos/notarize.sh
   [ -f "$ZIP" ] && [ -f "$DMG" ] || die "the Mac build did not leave $ZIP and $DMG"
   echo "$V $HEAD" > dist/.release-built
+fi
+
+mirror() {
+  if [ -n "${NO_GITHUB:-}" ]; then say "NO_GITHUB: not mirrored; updaters that read GitHub do not see $V"; else deploy/release/mirror-github.sh "$V"; fi
+}
+# a run that got as far as publishing here only has the mirror left to do
+if [ "$(api GET "/releases/tags/$V" 2>/dev/null | jq -r '.draft')" = false ]; then
+  say "$V is published on $GITEA_URL already"
+  mirror
+  exit 0
 fi
 
 # ---- 3. what CI built ----
@@ -211,3 +227,6 @@ for id in $(echo "$REL" | jq -r '.assets[] | select(.name == "build.json") | .id
 [ "$(api GET /releases/latest | jq -r .tag_name)" = "$V" ] || die "published, but releases/latest does not answer $V: check the release page"
 say "released $V: $GITEA_URL/$GITEA_REPO/releases/tag/$V"
 jq -r '.assets[] | "   \(.name)  \(.sha256)"' "$OUT/manifest.json"
+
+# ---- 6. the public mirror ----
+mirror

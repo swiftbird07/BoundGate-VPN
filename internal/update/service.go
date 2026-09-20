@@ -15,10 +15,12 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 )
 
-// Where releases of this distribution are published.
+// Where releases of this distribution are published: the public mirror, which
+// anyone can read (docs/RELEASES.md). The Gitea instance the project lives on
+// wants a login.
 const (
-	DefaultBaseURL = "https://gitlab.net407.com"
-	DefaultRepo    = "SBH/BoundGate-VPN"
+	DefaultKind = KindGitHub
+	DefaultRepo = "swiftbird07/BoundGate-VPN"
 )
 
 // Status is what the daemon tells the app and the CLI about updates.

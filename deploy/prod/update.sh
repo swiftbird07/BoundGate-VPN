@@ -7,8 +7,8 @@
 #   update.sh [-q] [check|apply]      default: apply; -q: silent unless something
 #                                     was updated or went wrong
 #
-# What it does: asks the Gitea release API for the latest release, downloads
-# manifest.json and manifest.json.sig, verifies the signature against the
+# What it does: looks up the latest release (on GitHub, anonymously; or through
+# the release API of a Gitea instance), downloads manifest.json and manifest.json.sig, verifies the signature against the
 # release keys next to this script (ssh-keygen -Y verify, namespace
 # boundgate-release) and refuses anything else. Then, only if that release is
 # newer than what runs here:
@@ -22,9 +22,13 @@
 # The server is trusted with nothing but being reachable.
 #
 # Settings: environment, or a file update.env next to the compose file:
-#   BOUNDGATE_UPDATE_URL         Gitea instance      (https://gitlab.net407.com)
-#   BOUNDGATE_UPDATE_REPO        owner/name          (SBH/BoundGate-VPN)
-#   BOUNDGATE_UPDATE_TOKEN_FILE  read token, if the instance wants a login
+#   BOUNDGATE_UPDATE_SOURCE      github or gitea     (github; gitea if only a URL is set)
+#   BOUNDGATE_UPDATE_URL         the Gitea instance  (github: https://github.com)
+#   BOUNDGATE_UPDATE_REPO        owner/name          (swiftbird07/BoundGate-VPN)
+#   BOUNDGATE_UPDATE_TOKEN_FILE  gitea: read token, if the instance wants a login
+#   BOUNDGATE_IMAGE_REPO         pull the image from this repository instead of the one
+#                                the manifest names (a mirror, your own registry); the
+#                                digest is the signed one either way
 #   RELEASE_KEYS                 public keys         (release_keys next to this script)
 #   COMPOSE_DIR                  the kit directory   (the current directory)
 #   MODE, INSTALL_DIR (/usr/local/bin), RESTART_CMD (systemctl restart boundgate-node)
@@ -36,8 +40,15 @@ ACTION=${1:-apply}
 HERE=$(cd "$(dirname "$0")" && pwd)
 COMPOSE_DIR=${COMPOSE_DIR:-$PWD}
 [ ! -f "$COMPOSE_DIR/update.env" ] || . "$COMPOSE_DIR/update.env"
-URL=${BOUNDGATE_UPDATE_URL:-https://gitlab.net407.com}; URL=${URL%/}
-REPO=${BOUNDGATE_UPDATE_REPO:-SBH/BoundGate-VPN}
+SOURCE=${BOUNDGATE_UPDATE_SOURCE:-}
+[ -n "$SOURCE" ] || { SOURCE=github; [ -z "${BOUNDGATE_UPDATE_URL:-}" ] || SOURCE=gitea; } # a URL alone meant Gitea before there was GitHub
+case "$SOURCE" in
+  github) URL=${BOUNDGATE_UPDATE_URL:-https://github.com} ;;
+  gitea) URL=${BOUNDGATE_UPDATE_URL:-}; [ -n "$URL" ] || { echo "update: source gitea needs BOUNDGATE_UPDATE_URL" >&2; exit 1; } ;;
+  *) echo "update: BOUNDGATE_UPDATE_SOURCE must be github or gitea" >&2; exit 1 ;;
+esac
+URL=${URL%/}
+REPO=${BOUNDGATE_UPDATE_REPO:-swiftbird07/BoundGate-VPN}
 TOKEN_FILE=${BOUNDGATE_UPDATE_TOKEN_FILE:-}
 RELEASE_KEYS=${RELEASE_KEYS:-$HERE/release_keys}
 MODE=${MODE:-compose}
@@ -55,21 +66,32 @@ WORK=$(mktemp -d); LOCK="$COMPOSE_DIR/.update.lock"
 mkdir "$LOCK" 2>/dev/null || die "another update is running ($LOCK)"
 trap 'rm -rf "$WORK" "$LOCK"' EXIT INT TERM
 
-# the token goes to the configured instance only, never to where an asset link points
+# the token goes to the configured Gitea instance only, never to where an asset
+# link points, and never to GitHub, which is read anonymously
 fetch() { # fetch URL FILE
-  case "$1" in
-    "$URL"/*) if [ -n "$TOKEN_FILE" ]; then
+  case "$SOURCE $1" in
+    "gitea $URL"/*) if [ -n "$TOKEN_FILE" ]; then
         curl -fsSL --proto '=https,http' --max-time 300 -H "Authorization: token $(tr -d '\n' < "$TOKEN_FILE")" -o "$2" "$1"; return
       fi ;;
   esac
   curl -fsSL --proto '=https,http' --max-time 300 -o "$2" "$1"
 }
-fetch "$URL/api/v1/repos/$REPO/releases/latest" "$WORK/release.json" || die "cannot read the latest release from $URL (does it want a login? BOUNDGATE_UPDATE_TOKEN_FILE)"
-TAG=$(jq -r '.tag_name // empty' "$WORK/release.json")
-asset_url() { jq -r --arg n "$1" '.assets[]? | select(.name == $n) | .browser_download_url' "$WORK/release.json" | head -1; }
+VPAT='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+if [ "$SOURCE" = github ]; then
+  # the website, not the API: <repo>/releases/latest redirects to the tag, the
+  # files are at <repo>/releases/download/<tag>/<name>. No token, no rate limit.
+  LOC=$(curl -fsS --proto '=https,http' --max-time 60 -o /dev/null -w '%{redirect_url}' "$URL/$REPO/releases/latest") || die "cannot reach $URL/$REPO (no such repository, or it is private)"
+  case "$LOC" in */releases/tag/*) TAG=${LOC##*/releases/tag/} ;; *) die "$URL/$REPO has no release yet" ;; esac
+  echo "$TAG" | grep -Eq "$VPAT" || die "the latest release of $REPO is not a version: $TAG"
+  asset_url() { echo "$URL/$REPO/releases/download/$TAG/$1"; }
+else
+  fetch "$URL/api/v1/repos/$REPO/releases/latest" "$WORK/release.json" || die "cannot read the latest release from $URL (does it want a login? BOUNDGATE_UPDATE_TOKEN_FILE)"
+  TAG=$(jq -r '.tag_name // empty' "$WORK/release.json")
+  asset_url() { jq -r --arg n "$1" '.assets[]? | select(.name == $n) | .browser_download_url' "$WORK/release.json" | head -1; }
+fi
 MURL=$(asset_url manifest.json); SURL=$(asset_url manifest.json.sig)
 [ -n "$TAG" ] && [ -n "$MURL" ] && [ -n "$SURL" ] || die "release ${TAG:-?} has no signed manifest"
-fetch "$MURL" "$WORK/manifest.json"; fetch "$SURL" "$WORK/manifest.json.sig"
+fetch "$MURL" "$WORK/manifest.json" && fetch "$SURL" "$WORK/manifest.json.sig" || die "release $TAG has no signed manifest"
 
 # -- the one place where trust comes from
 [ -s "$RELEASE_KEYS" ] || die "no release keys at $RELEASE_KEYS"
@@ -79,7 +101,7 @@ ssh-keygen -Y verify -f "$WORK/allowed" -I boundgate-release -n boundgate-releas
   || die "the manifest of $TAG is not signed by a release key: refusing"
 M="$WORK/manifest.json"
 VERSION=$(jq -r 'select(.type == "boundgate-release") | .version // empty' "$M")
-echo "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || die "the signed manifest has no usable version"
+echo "$VERSION" | grep -Eq "$VPAT" || die "the signed manifest has no usable version"
 [ "$VERSION" = "$TAG" ] || die "release $TAG carries the signed manifest of $VERSION: refusing"
 
 newer() { # newer CURRENT CANDIDATE
@@ -121,6 +143,7 @@ fi
 
 REF=$(jq -r '.image.ref // empty' "$M"); DIGEST=$(jq -r '.image.digest // empty' "$M")
 echo "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' && [ -n "$REF" ] || die "the signed manifest names no image"
+REF=${BOUNDGATE_IMAGE_REPO:-$REF}
 case "$REF" in *[!A-Za-z0-9./:_-]*) die "bad image reference" ;; esac
 [ -f "$COMPOSE_DIR/docker-compose.yml" ] || die "no docker-compose.yml in $COMPOSE_DIR (COMPOSE_DIR, or MODE=binaries)"
 IMAGE="$REF@$DIGEST"

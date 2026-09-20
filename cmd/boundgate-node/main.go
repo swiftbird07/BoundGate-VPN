@@ -78,9 +78,10 @@ type config struct {
 	// Release builds check by default; `check: false` turns that off.
 	Update struct {
 		Check     *bool         `yaml:"check"`
-		URL       string        `yaml:"url"`        // Gitea instance, default the project's
-		Repo      string        `yaml:"repo"`       // owner/name
-		TokenFile string        `yaml:"token_file"` // read token, for instances without anonymous access
+		Source    string        `yaml:"source"`     // github (default) or gitea; a url alone means gitea
+		URL       string        `yaml:"url"`        // the Gitea instance; for github only to point at another host
+		Repo      string        `yaml:"repo"`       // owner/name, default the project's
+		TokenFile string        `yaml:"token_file"` // gitea: read token for instances without anonymous access; default update.token in state_dir
 		Interval  time.Duration `yaml:"interval"`   // default 6h
 	} `yaml:"update"`
 }
@@ -285,12 +286,10 @@ func newUpdater(cfg config, log *slog.Logger, idle func() bool) *update.Service 
 	if (u.Check != nil && !*u.Check) || !version.IsRelease() {
 		interval = 0 // no background checks; a manual check still works
 	}
-	src := update.Source{BaseURL: u.URL, Repo: u.Repo}
-	if src.BaseURL == "" {
-		src.BaseURL = update.DefaultBaseURL
-	}
-	if src.Repo == "" {
-		src.Repo = update.DefaultRepo
+	src, err := update.ResolveSource(u.Source, u.URL, u.Repo)
+	if err != nil {
+		log.Warn("updates are off", "reason", err)
+		return nil
 	}
 	tokenFile := u.TokenFile
 	if tokenFile == "" {

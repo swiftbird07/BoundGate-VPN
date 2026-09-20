@@ -276,3 +276,124 @@ func TestReleaseKeyCopiesAgree(t *testing.T) {
 		t.Fatal("deploy/prod/release_keys differs from internal/update/release_keys (make release-key keeps them equal)")
 	}
 }
+
+// fakeGitHub behaves like github.com's release pages: /latest redirects to
+// the tag, downloads redirect to another host that holds the files.
+func newFakeGitHub(t *testing.T, g *fakeGitea) (site *httptest.Server, sawAuth *[]string) {
+	var mu sync.Mutex
+	seen := []string{}
+	note := func(r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if a := r.Header.Get("Authorization"); a != "" {
+			seen = append(seen, r.URL.Path+": "+a)
+		}
+	}
+	objects := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		note(r)
+		g.mu.Lock()
+		b, ok := g.files[strings.TrimPrefix(r.URL.Path, "/objects/")]
+		g.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(b)
+	}))
+	t.Cleanup(objects.Close)
+	site = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		note(r)
+		g.mu.Lock()
+		tag := g.tag
+		g.mu.Unlock()
+		switch {
+		case r.URL.Path == "/o/r/releases/latest" && tag == "":
+			http.Redirect(w, r, "/o/r/releases", http.StatusFound)
+		case r.URL.Path == "/o/r/releases/latest":
+			http.Redirect(w, r, "/o/r/releases/tag/"+tag, http.StatusFound)
+		case strings.HasPrefix(r.URL.Path, "/o/r/releases/download/"+tag+"/"):
+			http.Redirect(w, r, objects.URL+"/objects/"+strings.TrimPrefix(r.URL.Path, "/o/r/releases/download/"+tag+"/"), http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(site.Close)
+	return site, &seen
+}
+
+func TestGitHubSource(t *testing.T) {
+	signer, keys := newKey(t)
+	g := newFakeGitea(t) // holds the files and the tag
+	site, sawAuth := newFakeGitHub(t, g)
+	src := Source{Kind: KindGitHub, BaseURL: site.URL, Repo: "o/r", Token: "sekrit"}
+
+	if _, err := src.Latest(context.Background(), keys); err == nil || !strings.Contains(err.Error(), "no release yet") {
+		t.Fatalf("repository without releases: %v", err)
+	}
+	app := []byte("pretend this is BoundGate.app.zip")
+	m := Manifest{Type: ManifestType, Version: "v1.2.3", Created: time.Now().UTC(), Assets: []Asset{asset("BoundGate-1.2.3-macos.zip", app)}}
+	g.publish(t, signer, Namespace, m, map[string][]byte{"BoundGate-1.2.3-macos.zip": app})
+	r, err := src.Latest(context.Background(), keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Manifest.Version != "v1.2.3" || r.PageURL != site.URL+"/o/r/releases/tag/v1.2.3" {
+		t.Fatalf("release: %+v, page %s", r.Manifest, r.PageURL)
+	}
+	path, err := src.Download(context.Background(), r, r.Manifest.Assets[0], t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != string(app) {
+		t.Fatal("downloaded file differs")
+	}
+	if len(*sawAuth) != 0 {
+		t.Fatalf("GitHub is read anonymously, but a token went out: %v", *sawAuth)
+	}
+
+	// an old, validly signed manifest under a newer tag is not that release
+	g.mu.Lock()
+	g.tag = "v9.0.0"
+	g.mu.Unlock()
+	if _, err := src.Latest(context.Background(), keys); err == nil || !strings.Contains(err.Error(), "carries the manifest of v1.2.3") {
+		t.Fatalf("old manifest under a new tag: %v", err)
+	}
+	// a tag that is not a version never becomes part of a URL
+	g.mu.Lock()
+	g.tag = "nightly"
+	g.mu.Unlock()
+	if _, err := src.Latest(context.Background(), keys); err == nil || !strings.Contains(err.Error(), "not a version") {
+		t.Fatalf("tag nightly: %v", err)
+	}
+	// a release nobody signed
+	g.mu.Lock()
+	g.tag = "v1.2.3"
+	delete(g.files, "manifest.json.sig")
+	g.mu.Unlock()
+	if _, err := src.Latest(context.Background(), keys); err == nil {
+		t.Fatal("a release without a signature was accepted")
+	}
+	if _, err := (Source{Kind: KindGitHub, BaseURL: "http://github.example", Repo: "o/r"}).Latest(context.Background(), keys); err == nil {
+		t.Fatal("plain http was accepted")
+	}
+}
+
+func TestResolveSource(t *testing.T) {
+	for _, c := range []struct{ kind, url, repo, wantKind, wantURL, wantRepo string }{
+		{"", "", "", KindGitHub, "https://github.com", DefaultRepo},
+		{"", "https://git.example", "a/b", KindGitea, "https://git.example", "a/b"}, // configurations from before GitHub
+		{"github", "", "a/b", KindGitHub, "https://github.com", "a/b"},
+		{"gitea", "https://git.example", "", KindGitea, "https://git.example", DefaultRepo},
+	} {
+		s, err := ResolveSource(c.kind, c.url, c.repo)
+		if err != nil || s.Kind != c.wantKind || s.BaseURL != c.wantURL || s.Repo != c.wantRepo {
+			t.Errorf("ResolveSource(%q, %q, %q) = %+v, %v", c.kind, c.url, c.repo, s, err)
+		}
+	}
+	if _, err := ResolveSource("gitea", "", ""); err == nil {
+		t.Error("gitea without a url")
+	}
+	if _, err := ResolveSource("gitlab", "", ""); err == nil {
+		t.Error("unknown kind")
+	}
+}

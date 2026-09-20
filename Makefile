@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: image image-push rehearsal mac-app mac-sekey release release-next release-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -78,6 +78,10 @@ mac-app:
 BUMP ?= patch
 release:
 	BUMP=$(BUMP) deploy/release/release.sh $(filter-out dev,$(VERSION))
+
+# only the last step of `make release`: the same signed files onto GitHub
+release-mirror:
+	deploy/release/mirror-github.sh $(filter-out dev,$(VERSION))
 
 # which version `make release` would make
 release-next:

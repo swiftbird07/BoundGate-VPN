@@ -183,14 +183,28 @@ func Newer(current, candidate string) bool {
 	return false
 }
 
-// Source is where releases are looked up: a Gitea instance and repository.
+// Kinds of release sources. Either one is trusted with nothing but being
+// reachable: what gets installed is decided by the signed manifest.
+const (
+	// KindGitHub reads github.com's release pages: anonymous, without the API
+	// and so without its rate limit.
+	KindGitHub = "github"
+	// KindGitea asks the release API of a Gitea or Forgejo instance, with a
+	// token where the instance wants a login.
+	KindGitea = "gitea"
+)
+
+// Source is where releases are looked up: a repository on GitHub or on a
+// Gitea instance.
 type Source struct {
-	// BaseURL of the Gitea instance, e.g. https://gitlab.net407.com
+	// Kind is KindGitHub or KindGitea ("" means KindGitea).
+	Kind string
+	// BaseURL is https://github.com, or the Gitea instance, e.g. https://gitlab.net407.com
 	BaseURL string
 	// Repo is owner/name.
 	Repo string
-	// Token is an optional access token (read), for instances that do not
-	// serve anonymous visitors.
+	// Token is an optional access token (read), for Gitea instances that do
+	// not serve anonymous visitors. GitHub is only ever read anonymously.
 	Token string
 	HTTP  *http.Client
 }
@@ -224,10 +238,46 @@ func (s Source) client() *http.Client {
 	return &http.Client{Timeout: 60 * time.Second}
 }
 
-func (s Source) get(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+// ResolveSource turns what a configuration says (any of it may be empty) into
+// a Source: this distribution's GitHub repository by default; a url alone
+// means a Gitea instance, which is what that setting meant before GitHub.
+func ResolveSource(kind, baseURL, repo string) (Source, error) {
+	if kind == "" {
+		kind = DefaultKind
+		if baseURL != "" {
+			kind = KindGitea
+		}
+	}
+	switch kind {
+	case KindGitHub:
+		if baseURL == "" {
+			baseURL = "https://github.com"
+		}
+	case KindGitea:
+		if baseURL == "" {
+			return Source{}, errors.New("update: source gitea needs update.url, the address of the instance")
+		}
+	default:
+		return Source{}, fmt.Errorf("update: unknown source %q (github, gitea)", kind)
+	}
+	if repo == "" {
+		repo = DefaultRepo
+	}
+	return Source{Kind: kind, BaseURL: baseURL, Repo: repo}, nil
+}
+
+func (s Source) base() (*url.URL, error) {
 	base, err := url.Parse(s.BaseURL)
 	if err != nil || base.Scheme != "https" && base.Hostname() != "127.0.0.1" && base.Hostname() != "localhost" {
 		return nil, fmt.Errorf("update: source %q must be an https URL", s.BaseURL)
+	}
+	return base, nil
+}
+
+func (s Source) get(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+	base, err := s.base()
+	if err != nil {
+		return nil, err
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -239,7 +289,7 @@ func (s Source) get(ctx context.Context, rawURL string, limit int64) ([]byte, er
 	}
 	// the token goes to the configured instance only, never to where a
 	// release's asset links may point
-	if s.Token != "" && u.Host == base.Host && u.Scheme == base.Scheme {
+	if s.Token != "" && s.Kind != KindGitHub && u.Host == base.Host && u.Scheme == base.Scheme {
 		req.Header.Set("Authorization", "token "+s.Token)
 	}
 	rsp, err := s.client().Do(req)
@@ -268,27 +318,22 @@ func (s Source) Latest(ctx context.Context, keys binding.Signers) (*Release, err
 	if len(keys) == 0 {
 		return nil, ErrNoReleaseKeys
 	}
-	api := strings.TrimRight(s.BaseURL, "/") + "/api/v1/repos/" + s.Repo + "/releases/latest"
-	raw, err := s.get(ctx, api, maxManifest)
+	find := s.giteaLatest
+	if s.Kind == KindGitHub {
+		find = s.githubLatest
+	}
+	tag, page, link, err := find(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var gr giteaRelease
-	if err := json.Unmarshal(raw, &gr); err != nil {
-		return nil, fmt.Errorf("update: release list: %w", err)
+	if link("manifest.json") == "" || link("manifest.json.sig") == "" {
+		return nil, fmt.Errorf("%w (%s)", ErrNotSigned, tag)
 	}
-	urls := map[string]string{}
-	for _, a := range gr.Assets {
-		urls[a.Name] = a.URL
-	}
-	if urls["manifest.json"] == "" || urls["manifest.json.sig"] == "" {
-		return nil, fmt.Errorf("%w (%s)", ErrNotSigned, gr.TagName)
-	}
-	manifest, err := s.get(ctx, urls["manifest.json"], maxManifest)
+	manifest, err := s.get(ctx, link("manifest.json"), maxManifest)
 	if err != nil {
 		return nil, err
 	}
-	sig, err := s.get(ctx, urls["manifest.json.sig"], maxManifest)
+	sig, err := s.get(ctx, link("manifest.json.sig"), maxManifest)
 	if err != nil {
 		return nil, err
 	}
@@ -298,10 +343,72 @@ func (s Source) Latest(ctx context.Context, keys binding.Signers) (*Release, err
 	}
 	// The tag is the server's claim, the manifest is the signer's: a signed
 	// manifest of an old release offered under a new tag is not that release.
-	if m.Version != gr.TagName {
-		return nil, fmt.Errorf("update: release %s carries the manifest of %s", gr.TagName, m.Version)
+	if m.Version != tag {
+		return nil, fmt.Errorf("update: release %s carries the manifest of %s", tag, m.Version)
 	}
-	return &Release{Manifest: m, PageURL: gr.HTMLURL, urls: urls}, nil
+	urls := map[string]string{}
+	for _, a := range m.Assets {
+		urls[a.Name] = link(a.Name)
+	}
+	return &Release{Manifest: m, PageURL: page, urls: urls}, nil
+}
+
+// giteaLatest asks the release API; link knows the files that release lists.
+func (s Source) giteaLatest(ctx context.Context) (tag, page string, link func(string) string, err error) {
+	api := strings.TrimRight(s.BaseURL, "/") + "/api/v1/repos/" + s.Repo + "/releases/latest"
+	raw, err := s.get(ctx, api, maxManifest)
+	if err != nil {
+		return "", "", nil, err
+	}
+	var gr giteaRelease
+	if err := json.Unmarshal(raw, &gr); err != nil {
+		return "", "", nil, fmt.Errorf("update: release list: %w", err)
+	}
+	urls := map[string]string{}
+	for _, a := range gr.Assets {
+		urls[a.Name] = a.URL
+	}
+	return gr.TagName, gr.HTMLURL, func(name string) string { return urls[name] }, nil
+}
+
+// githubLatest follows <repo>/releases/latest to the tag it redirects to; the
+// files of a release are at <repo>/releases/download/<tag>/<name>. That is
+// GitHub's website, not its API: no token, no rate limit of 60 an hour.
+func (s Source) githubLatest(ctx context.Context) (tag, page string, link func(string) string, err error) {
+	if _, err := s.base(); err != nil {
+		return "", "", nil, err
+	}
+	releases := strings.TrimRight(s.BaseURL, "/") + "/" + s.Repo + "/releases"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releases+"/latest", nil)
+	if err != nil {
+		return "", "", nil, err
+	}
+	c := *s.client()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	rsp, err := c.Do(req)
+	if err != nil {
+		return "", "", nil, err
+	}
+	rsp.Body.Close()
+	if rsp.StatusCode == http.StatusNotFound {
+		return "", "", nil, fmt.Errorf("update: %s: no such repository (or it is private)", releases)
+	}
+	loc, err := rsp.Location()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("update: %s/latest: %s, expected a redirect to the latest release", releases, rsp.Status)
+	}
+	// .../releases/tag/v1.2.3; a repository without releases redirects to .../releases
+	const marker = "/releases/tag/"
+	i := strings.LastIndex(loc.Path, marker)
+	if i < 0 {
+		return "", "", nil, fmt.Errorf("update: %s has no release yet", s.Repo)
+	}
+	tag = loc.Path[i+len(marker):]
+	if _, err := parseVersion(tag); err != nil {
+		return "", "", nil, fmt.Errorf("update: the latest release of %s is %q, not a version", s.Repo, tag)
+	}
+	link = func(name string) string { return releases + "/download/" + tag + "/" + url.PathEscape(name) }
+	return tag, releases + "/tag/" + tag, link, nil
 }
 
 // Download fetches an asset of the release into dir and returns its path. The

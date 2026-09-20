@@ -9,8 +9,16 @@
 # (deploy/release/release.sh, docs/RELEASES.md). Clients install only what a
 # signed manifest names, so a draft that nobody signs is just files.
 #
+# The image goes to two registries in one push, so both hold the same digest:
+# the project's own, and ghcr.io, which anyone can pull from. The manifest
+# names the public one; update.sh pulls by the signed digest from either
+# (BOUNDGATE_IMAGE_REPO).
+#
 # Secrets (Settings > Actions > Secrets):
 #   REGISTRY_TOKEN   as for image.yml
+#   GHCR_USER        GitHub user that owns the package
+#   GHCR_TOKEN       classic GitHub token with write:packages (fine-grained
+#                    tokens cannot push packages)
 #   RELEASE_TOKEN    optional: access token with write:repository, if the
 #                    job's own token may not create releases
 name: release
@@ -24,6 +32,7 @@ concurrency:
 
 env:
   IMAGE: gitlab.net407.com/sbh/boundgate
+  PUBLIC_IMAGE: ghcr.io/swiftbird07/boundgate
   VPKG: gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 
 jobs:
@@ -71,6 +80,11 @@ jobs:
           registry: gitlab.net407.com
           username: ${{ gitea.actor }}
           password: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USER }}
+          password: ${{ secrets.GHCR_TOKEN }}
       - uses: docker/build-push-action@v6
         id: image
         with:
@@ -79,7 +93,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           # the release is pinned by digest in the manifest; the tag is for people
-          tags: ${{ env.IMAGE }}:${{ gitea.ref_name }}
+          tags: |
+            ${{ env.IMAGE }}:${{ gitea.ref_name }}
+            ${{ env.PUBLIC_IMAGE }}:${{ gitea.ref_name }}
           build-args: REVISION=${{ gitea.sha }}
       - name: draft release with what was built
         env:
@@ -89,7 +105,7 @@ jobs:
           V=${{ gitea.ref_name }}
           API=${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}
           # the record the maintainer's side checks its downloads against
-          COMMIT=${{ gitea.sha }} deploy/release/manifest.sh "$V" dist/release "$IMAGE" "${{ steps.image.outputs.digest }}" \
+          COMMIT=${{ gitea.sha }} deploy/release/manifest.sh "$V" dist/release "$PUBLIC_IMAGE" "${{ steps.image.outputs.digest }}" \
             | jq '.type = "boundgate-build"' > build.json
           cat build.json
           auth() { curl -fsS -H "Authorization: token $TOKEN" "$@"; }

@@ -88,4 +88,30 @@ publish v1.3.0 "$T/key"; for f in "$T"/www/dl/*.tar.gz; do echo tampered >> "$f"
 if run env MODE=binaries INSTALL_DIR="$T/inst" RESTART_CMD=true >/dev/null 2>&1; then fail "a tampered tarball was installed"; fi
 grep -q 'node v1.2.0' "$T/inst/boundgate-node" || fail "tampered tarball reached the install dir"
 
+echo "== 6. source github: the tag from the redirect of releases/latest, files from releases/download/<tag>/, no token"
+# busybox httpd runs /cgi-bin/gh with the rest of the path in PATH_INFO: enough to play github.com's redirects
+mkdir -p "$T/www/cgi-bin"
+cat > "$T/www/cgi-bin/gh" <<'EOS'
+#!/bin/sh
+[ -z "${HTTP_AUTHORIZATION:-}" ] || { printf 'Status: 500 a token was sent\r\n\r\n'; exit 0; }
+tag=$(cat /www/tag 2>/dev/null)
+case "$PATH_INFO" in
+  /o/r/releases/latest) if [ -n "$tag" ]; then to=/cgi-bin/gh/o/r/releases/tag/$tag; else to=/cgi-bin/gh/o/r/releases; fi ;;
+  /o/r/releases/download/"$tag"/*) to=/dl/${PATH_INFO##*/} ;;
+  *) printf 'Status: 404 Not Found\r\n\r\n'; exit 0 ;;
+esac
+printf 'Status: 302 Found\r\nLocation: %s\r\n\r\n' "$to"
+EOS
+chmod +x "$T/www/cgi-bin/gh"
+gh() { (cd "$T/kit" && LOG="$T/log" STATE="$T/state" DOCKER="$T/docker" SETTLE=0 RELEASE_KEYS="$T/release_keys" BOUNDGATE_UPDATE_TOKEN_FILE="$T/key.pub" \
+  BOUNDGATE_UPDATE_SOURCE=github BOUNDGATE_UPDATE_URL=http://127.0.0.1:$PORT/cgi-bin/gh BOUNDGATE_UPDATE_REPO=o/r "$@" "$REPO_DIR/deploy/prod/update.sh"); }
+settle() { for i in $(seq 1 40); do [ "$(curl -s -o /dev/null -w '%{redirect_url}' http://127.0.0.1:$PORT/cgi-bin/gh/o/r/releases/latest)" = "http://127.0.0.1:$PORT/cgi-bin/gh/o/r/releases$1" ] && return 0; sleep 0.25; done; fail "the test web server does not redirect to releases$1"; }
+settle ""; out=$(gh env 2>&1) && fail "a repository without releases: $out"; echo "$out" | grep -q 'no release yet' || fail "no releases: $out"
+publish v1.4.0 "$T/key"; echo v1.4.0 > "$T/www/tag"; settle /tag/v1.4.0; : > "$T/log"
+gh env BOUNDGATE_IMAGE_REPO=ghcr.test/o/boundgate | grep -q "updated v1.0.1 -> v1.4.0 (ghcr.test/o/boundgate@$DIGEST)" || fail "github source"
+grep -q "^pull -q ghcr.test/o/boundgate@$DIGEST\$" "$T/log" || fail "BOUNDGATE_IMAGE_REPO: $(cat "$T/log")"
+echo v9.9.9 > "$T/www/tag"; settle /tag/v9.9.9 # the files of v1.4.0 offered as v9.9.9
+if gh env >/dev/null 2>&1; then fail "github: an old manifest under a new tag was installed"; fi
+echo nightly > "$T/www/tag"; settle /tag/nightly; out=$(gh env 2>&1) && fail "tag nightly"; echo "$out" | grep -q 'not a version' || fail "nightly: $out"
+
 echo "PASS: update.sh"
