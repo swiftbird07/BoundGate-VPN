@@ -37,6 +37,12 @@ type Client struct {
 	log     *slog.Logger
 	verify  func(*registry.Snapshot) error
 	onError func(error)
+
+	// gen ends when Reconnect is called: requests in flight belong to
+	// connections that may no longer lead anywhere
+	mu        sync.Mutex
+	gen       context.Context
+	genCancel context.CancelFunc
 }
 
 // Config for New.
@@ -61,25 +67,57 @@ func New(cfg Config) *Client {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	tlsCfg := cfg.TLS
+	rt := &dualTransport{tls: cfg.TLS, log: cfg.Log}
+	rt.h3, rt.tcp = rt.transports()
+	c := &Client{URL: "https://" + cfg.Addr, http: &http.Client{Transport: rt}, log: cfg.Log, verify: cfg.Verify, onError: cfg.OnError}
+	c.gen, c.genCancel = context.WithCancel(context.Background())
+	return c
+}
+
+// transports makes a fresh pair. A path that stopped carrying packets (the
+// machine changed networks, another VPN took over the route) is noticed
+// within 30 s instead of only by the request deadline: keep-alives go out
+// every 10 s, on QUIC and as HTTP/2 pings, and long-polls are quiet for 30 s.
+func (d *dualTransport) transports() (*http3.Transport, *http.Transport) {
 	h3 := &http3.Transport{
-		TLSClientConfig: tlsCfg.Clone(),
-		QUICConfig:      &quic.Config{MaxIdleTimeout: 90 * time.Second, KeepAlivePeriod: 20 * time.Second},
+		TLSClientConfig: d.tls.Clone(),
+		QUICConfig:      &quic.Config{MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second},
 	}
-	tcp := &http.Transport{TLSClientConfig: tlsCfg.Clone(), ForceAttemptHTTP2: true}
-	rt := &dualTransport{h3: h3, tcp: tcp, log: cfg.Log}
-	return &Client{URL: "https://" + cfg.Addr, http: &http.Client{Transport: rt}, log: cfg.Log, verify: cfg.Verify, onError: cfg.OnError}
+	tcp := &http.Transport{TLSClientConfig: d.tls.Clone(), ForceAttemptHTTP2: true,
+		HTTP2: &http.HTTP2Config{SendPingTimeout: 10 * time.Second, PingTimeout: 15 * time.Second}}
+	return h3, tcp
+}
+
+// errReconnected ends the requests that were in flight at Reconnect.
+var errReconnected = errors.New("controlclient: connections were reset after a route change")
+
+// Reconnect drops every connection to the control plane and ends the
+// requests waiting on them; the snapshot loop asks again at once. The node
+// calls it whenever it changed the machine's routes (overlay up and down
+// add and remove the bypass route to the control plane): a connection made
+// over the old route keeps its source address and would sit there unanswered
+// until its deadline, up to 50 s for a long-poll.
+func (c *Client) Reconnect() {
+	c.mu.Lock()
+	cancel := c.genCancel
+	c.gen, c.genCancel = context.WithCancel(context.Background())
+	c.mu.Unlock()
+	cancel()
+	if rt, ok := c.http.Transport.(*dualTransport); ok {
+		rt.reset()
+	}
 }
 
 // dualTransport prefers HTTP/3 and falls back to TCP when the QUIC dial or
 // request fails before a response arrived. It retries HTTP/3 periodically
 // so a temporary UDP problem does not stick.
 type dualTransport struct {
-	h3  *http3.Transport
-	tcp *http.Transport
+	tls *tls.Config
 	log *slog.Logger
 
 	mu           sync.Mutex
+	h3           *http3.Transport
+	tcp          *http.Transport
 	tcpUntil     time.Time
 	fallbackSeen bool
 }
@@ -89,11 +127,12 @@ const h3RetryAfter = 5 * time.Minute
 func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	d.mu.Lock()
 	useTCP := time.Now().Before(d.tcpUntil)
+	h3, tcp := d.h3, d.tcp
 	d.mu.Unlock()
 	if useTCP {
-		return d.tcp.RoundTrip(req)
+		return tcp.RoundTrip(req)
 	}
-	rsp, err := d.h3.RoundTrip(req)
+	rsp, err := h3.RoundTrip(req)
 	if err == nil {
 		d.mu.Lock()
 		if d.fallbackSeen {
@@ -120,14 +159,29 @@ func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		d.fallbackSeen = true
 	}
 	d.mu.Unlock()
-	return d.tcp.RoundTrip(req)
+	return tcp.RoundTrip(req)
+}
+
+// reset replaces both transports and gives HTTP/3 another try: what made it
+// fail may have been the old route.
+func (d *dualTransport) reset() {
+	d.mu.Lock()
+	oldH3, oldTCP := d.h3, d.tcp
+	d.h3, d.tcp = d.transports()
+	d.tcpUntil = time.Time{}
+	d.mu.Unlock()
+	_ = oldH3.Close()
+	oldTCP.CloseIdleConnections()
 }
 
 // Close releases connections.
 func (c *Client) Close() {
 	if rt, ok := c.http.Transport.(*dualTransport); ok {
-		_ = rt.h3.Close()
-		rt.tcp.CloseIdleConnections()
+		rt.mu.Lock()
+		h3, tcp := rt.h3, rt.tcp
+		rt.mu.Unlock()
+		_ = h3.Close()
+		tcp.CloseIdleConnections()
 	}
 }
 
@@ -146,6 +200,17 @@ func (e *APIError) Error() string {
 var ErrNotApproved = errors.New("controlclient: node not approved")
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any, timeout time.Duration) (int, error) {
+	// a request cut off by Reconnect goes out again over the new connections;
+	// every request of this API may be repeated
+	for range 2 {
+		if status, err := c.doOnce(ctx, method, path, in, out, timeout); !errors.Is(err, errReconnected) {
+			return status, err
+		}
+	}
+	return c.doOnce(ctx, method, path, in, out, timeout)
+}
+
+func (c *Client) doOnce(ctx context.Context, method, path string, in, out any, timeout time.Duration) (int, error) {
 	var rd io.Reader
 	var raw []byte
 	if in != nil {
@@ -157,8 +222,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, timeo
 		rd = bytes.NewReader(b)
 	}
 	parent := ctx
+	c.mu.Lock()
+	gen := c.gen
+	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	defer context.AfterFunc(gen, cancel)()
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, rd)
 	if err != nil {
 		return 0, err
@@ -169,6 +238,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, timeo
 	}
 	rsp, err := c.http.Do(req)
 	if err != nil {
+		if gen.Err() != nil && parent.Err() == nil {
+			return 0, errReconnected
+		}
 		// our own deadline, not the caller's: say what happened instead of
 		// `Get "https://…/snapshot?since=4&wait=30s": context deadline exceeded`
 		if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
@@ -287,6 +359,9 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 			}
 			if errors.Is(err, ErrNotApproved) {
 				return err
+			}
+			if errors.Is(err, errReconnected) {
+				continue // nothing is wrong: ask again over the new route
 			}
 			if c.onError != nil {
 				c.onError(err)

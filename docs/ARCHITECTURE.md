@@ -102,6 +102,12 @@ See `ACL.md` for the entity model, the enforcement points and the flow log.
 * Only port 443. UDP/443 carries tunnels (hubs) and the HTTP/3 node channel
   (control plane); TCP/443 carries the admin API and, for nodes, the
   fallback when UDP is blocked, for the node channel and for the tunnel.
+  The node channel drops its connections whenever the node changed the
+  machine's routes (overlay up and down add and remove the bypass route to
+  the control plane) and repeats what was in flight: a connection from
+  before the change keeps its old path and would wait out its deadline.
+  Keep-alives every 10 s (QUIC, HTTP/2 pings) end a connection whose path
+  went away for another reason (network change, a second VPN) within 30 s.
 * **Tunnel over TCP (the fallback, M8.2).** Hotel, guest and corporate
   networks often drop UDP. A hub therefore also serves the tunnel on
   TCP/443: the same mTLS with the same device certificates and the same

@@ -938,8 +938,13 @@ func (n *Node) Up(ctx context.Context, profileName string) error {
 	n.status.State, n.status.LastError, n.status.Profile = StateStarting, "", prof.Name
 	n.mu.Unlock()
 
-	if err := s.apply(ctx); err != nil {
+	err = s.apply(ctx)
+	// the routes changed (at least the bypass route to the control plane):
+	// connections made before would wait on a path that is gone
+	n.control.Reconnect()
+	if err != nil {
 		s.teardown()
+		n.control.Reconnect()
 		n.mu.Lock()
 		if n.sess == s {
 			n.sess = nil
@@ -992,6 +997,7 @@ func (n *Node) Close() {
 
 func (n *Node) watch(s *session) {
 	<-s.done
+	n.control.Reconnect() // the bypass routes are gone
 	n.mu.Lock()
 	if n.sess == s {
 		n.sess = nil
