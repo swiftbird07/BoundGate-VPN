@@ -139,7 +139,28 @@ public final class AppModel: ObservableObject {
 
     public func configure(control: String) { run("Saving…") { try $0.configure(DaemonSettings(controlAddr: control)) } }
     public func forgetControlPlane() { run("Resetting…") { c in _ = try? c.down(); try c.reset() } }
-    public func enroll() { run("Requesting access…") { _ = try $0.enroll() } }
+    /// First contact with a control plane: the key it presents, waiting for
+    /// the person to compare and accept it (EnrollCard).
+    @Published public var pinToConfirm: String?
+
+    public func enroll(acceptPin: String? = nil) {
+        guard busy == nil else { return }
+        busy = "Requesting access…"; actionError = nil
+        let client = self.client
+        Task.detached {
+            let result = Result { try client.enroll(acceptPin: acceptPin) }
+            await MainActor.run {
+                self.busy = nil
+                switch result {
+                case .success: self.pinToConfirm = nil
+                case .failure(DaemonError.pinUnconfirmed(let fp)): self.pinToConfirm = fp
+                case .failure(let e): self.pinToConfirm = nil; self.actionError = e.localizedDescription
+                }
+                self.refresh()
+            }
+        }
+    }
+    public func declinePin() { pinToConfirm = nil }
     public func disconnect() { run("Disconnecting…") { _ = try $0.down() } }
     public func logout() { run("Signing out…") { _ = try $0.logout() } }
 

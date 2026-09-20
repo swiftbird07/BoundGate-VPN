@@ -332,9 +332,8 @@ func New(cfg Config) (*Node, error) {
 	if n.trust, err = loadTrust(cfg.StateDir, strings.ToLower(strings.TrimSpace(cfg.SignersGenesis))); err != nil {
 		return nil, err
 	}
-	onLearn := func(h devicekey.SPKIHash) {
-		cfg.Log.Warn("pinned control plane key on first use; compare this fingerprint with the operator's", "control", cfg.ControlAddr, "fingerprint", h.Fingerprint())
-	}
+	// filePin never learns by itself (Enroll asks), so nothing to report here
+	var onLearn func(devicekey.SPKIHash)
 	n.control = controlclient.New(controlclient.Config{
 		Addr: cfg.ControlAddr,
 		TLS:  transport.ClientTLSConfigControl(cert, cfg.ControlServerName, n.pins, onLearn),
@@ -453,10 +452,27 @@ func (n *Node) verifySnapshot(s *registry.Snapshot) error {
 	return nil
 }
 
-// filePin stores the control-plane pin in the state directory.
+// filePin stores the control-plane pin in the state directory. It does not
+// pin on first use by itself: the first key a control plane presents is only
+// remembered (seen), the connection is refused, and Enroll pins what the
+// person at the keyboard accepted. Whoever answers at the configured address
+// first would otherwise be this node's control plane for good.
 type filePin struct {
-	mu   sync.Mutex
-	path string
+	mu      sync.Mutex
+	path    string
+	seen    devicekey.SPKIHash
+	hasSeen bool
+}
+
+// ErrPinUnconfirmed refuses a control plane whose key nobody has accepted yet.
+var ErrPinUnconfirmed = errors.New("the key of this control plane has not been accepted yet; enrolling shows it for comparison")
+
+// PinUnconfirmedError is Enroll's answer while no key is pinned: the
+// fingerprint the control plane presented, for a person to compare.
+type PinUnconfirmedError struct{ Fingerprint string }
+
+func (e *PinUnconfirmedError) Error() string {
+	return "the control plane presents a key that is not pinned yet: " + e.Fingerprint
 }
 
 func (f *filePin) Pinned() (devicekey.SPKIHash, bool) {
@@ -473,7 +489,23 @@ func (f *filePin) Pinned() (devicekey.SPKIHash, bool) {
 	return h, true
 }
 
+// Learn implements transport.PinStore: remember, do not trust.
 func (f *filePin) Learn(h devicekey.SPKIHash) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen, f.hasSeen = h, true
+	return ErrPinUnconfirmed
+}
+
+// Seen returns the key the control plane presented while none was pinned.
+func (f *filePin) Seen() (devicekey.SPKIHash, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.seen, f.hasSeen
+}
+
+// Accept pins h.
+func (f *filePin) Accept(h devicekey.SPKIHash) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return os.WriteFile(f.path, []byte(h.String()+"\n"), 0o600)
@@ -641,9 +673,49 @@ func (n *Node) Flows() []FlowView {
 	return out
 }
 
+// AcceptNewPin as acceptPin pins whatever key the control plane presents
+// (trust on first use without a person: scripts, the lab).
+const AcceptNewPin = "new"
+
+// confirmPin makes sure a control plane key is pinned before anything is
+// sent. Without a pin: acceptPin "" reports the presented fingerprint as
+// *PinUnconfirmedError, a fingerprint pins exactly that key (the handshake
+// then enforces it), AcceptNewPin pins what is presented.
+func (n *Node) confirmPin(ctx context.Context, acceptPin string) error {
+	fp, ok := n.pins.(*filePin)
+	if !ok {
+		return nil // provisioned by configuration
+	}
+	if _, pinned := fp.Pinned(); pinned {
+		return nil
+	}
+	if acceptPin != "" && acceptPin != AcceptNewPin {
+		h, err := devicekey.ParseSPKIHash(acceptPin)
+		if err != nil {
+			return fmt.Errorf("node: accept pin: %w", err)
+		}
+		n.log.Warn("control plane key pinned as accepted at enrollment", "control", n.cfg.ControlAddr, "fingerprint", h.Fingerprint())
+		return fp.Accept(h)
+	}
+	// look at the key: the handshake stops at it, nothing of ours is sent
+	_, probeErr := n.control.EnrollStatus(ctx)
+	h, seen := fp.Seen()
+	if !seen {
+		return fmt.Errorf("node: control plane not reachable: %w", probeErr)
+	}
+	if acceptPin == AcceptNewPin {
+		n.log.Warn("control plane key pinned on first use, unseen by a person", "control", n.cfg.ControlAddr, "fingerprint", h.Fingerprint())
+		return fp.Accept(h)
+	}
+	return &PinUnconfirmedError{Fingerprint: h.Fingerprint()}
+}
+
 // Enroll submits the enrollment request and returns the control plane's
-// answer. It is idempotent.
-func (n *Node) Enroll(ctx context.Context, name string) (api.EnrollStatus, error) {
+// answer. It is idempotent. acceptPin: see confirmPin.
+func (n *Node) Enroll(ctx context.Context, name, acceptPin string) (api.EnrollStatus, error) {
+	if err := n.confirmPin(ctx, acceptPin); err != nil {
+		return api.EnrollStatus{}, err
+	}
 	if name == "" {
 		name = n.cfg.Name
 	}

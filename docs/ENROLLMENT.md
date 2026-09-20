@@ -63,6 +63,31 @@ boundgatectl up               (hubs accept it, spokes dial it if it is a hub)
   request. A mismatch is a 409. The CLI sign step checks the fingerprint a
   second time, independently, against what the admin typed.
 
+## What the user must do at the first contact
+
+A device that has never talked to this control plane shows the key the
+control plane presents and asks before it pins it:
+
+```
+This node has not talked to this control plane before. It presents the key
+
+  5c1f aa42 0702 4bc8 …
+
+Compare it with the fingerprint your administrator gave you (admin UI, Nodes page).
+Pin this key? Type yes:
+```
+
+The Mac app shows the same with "It matches: trust this key and request
+access". The administrator reads the fingerprint from the top of the Nodes
+page in the admin UI (`GET /api/v1/admin/identity`) and gives it to the user
+over a channel they trust - the same channel, the other direction, as the
+device fingerprint below. Until a key is pinned the node refuses the control
+plane at its certificate and sends nothing of its own. Without a terminal
+(scripts, `-json`): `boundgatectl enroll -pin '<fingerprint>'`, or
+`-accept-new-pin` to pin unseen (the lab does; then it is plain trust on
+first use). A pin provisioned in the configuration (`control.pin`) skips all
+of this.
+
 ## What the admin must do
 
 1. Ask the user for the fingerprint shown by `boundgatectl enroll` (or
@@ -72,7 +97,8 @@ boundgatectl up               (hubs accept it, spokes dial it if it is a hub)
 3. Check that the claimed platform and key kind make sense for the device
    in front of you. A software key (`softkey`) can be copied by whoever reads
    the node's state directory: approve it only for development or if policy
-   allows it. A node that "reports a hardware key" (`tpm2`) gets
+   allows it. A node that "reports a hardware key" (`tpm2`, a Mac's
+   `secure-enclave`) gets
    `hardware_bound` with your confirmation unless you untick it; the report
    is not proven remotely, so grant it for machines you know, and think
    twice for VMs on a hypervisor others administer (TPM.md).

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -120,6 +121,11 @@ func run(cfgPath string) error {
 	// one, the user decides (boundgatectl configure, or the app): setup mode
 	// until then, and `reset` leads back here.
 	fromFile := cfg.Control.Addr != ""
+	if underLaunchd() {
+		// also in setup mode, where no node runs
+		idle := func() bool { n := running.Load(); return n == nil || n.Status().State == node.StateDown }
+		go restartWhenReplaced(ctx, logs.System, idle, 15*time.Second)
+	}
 	settingsPath := filepath.Join(cfg.StateDir, "settings.json")
 	for ctx.Err() == nil {
 		local := ipc.Settings{ControlAddr: cfg.Control.Addr, ControlServerName: cfg.Control.ServerName, Name: cfg.Name}
@@ -202,6 +208,8 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go n.Run(ctx)
+	running.Store(n)
+	defer running.Store(nil)
 	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", cfg.AutoUp)
 	opt := ipc.Options{Group: cfg.SocketGroup}
 	if !fromFile {
@@ -232,3 +240,6 @@ func forget(stateDir, settingsPath string, newIdentity bool) error {
 	}
 	return nil
 }
+
+// running is the node of the current runNode, for restartWhenReplaced.
+var running atomic.Pointer[node.Node]

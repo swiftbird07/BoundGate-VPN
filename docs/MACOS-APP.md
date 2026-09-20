@@ -85,6 +85,14 @@ changed, an approval that does not verify.
   out of a mistyped address, which would otherwise be pinned forever. With
   `{"new_identity": true}` (`boundgatectl reset -new-identity`) the device key
   goes as well: the way from a software key to a Secure Enclave key.
+* **App updates.** Replacing `BoundGate.app` does not restart its
+  LaunchDaemon; the old process would run on from the deleted file. The
+  daemon checks every 15 s whether its executable is still the file it was
+  started from and, once the node is down, ends itself; launchd (`KeepAlive`)
+  starts the new one. A node that is up is left alone until it is down.
+* **First contact.** "Request access" first shows the key the control plane
+  presents; the daemon pins it only after "It matches"
+  ([ENROLLMENT.md](ENROLLMENT.md)).
 * **Device key.** The bundle's `node.yaml` says `key_kind: auto`: a key in the
   Secure Enclave on Macs that have one, through the bundled helper
   `Contents/MacOS/boundgate-sekey`; a Mac that already enrolled keeps its key

@@ -112,8 +112,8 @@ approve() {  # approve ENROLL_JSON GRANT
 }
 
 echo "== 3. the hub enrolls over HTTP/3 on UDP/443 (through the mux) and is approved"
-wait_for 30 hub boundgatectl -json enroll || fail "hub cannot enroll: $($C logs hub | tail -3)"
-approve "$(hub boundgatectl -json enroll)" '"kind":"workload","roles":["hub"],"public_addr":"bg.test:443"'
+wait_for 30 hub boundgatectl -json enroll -accept-new-pin || fail "hub cannot enroll: $($C logs hub | tail -3)"
+approve "$(hub boundgatectl -json enroll -accept-new-pin)" '"kind":"workload","roles":["hub"],"public_addr":"bg.test:443"'
 wait_for 40 sh -c "$C exec -T hub boundgatectl -json status | jq -e '.state == \"up\"'" || fail "hub did not come up"
 if $C logs hub 2>&1 | grep -q 'falling back to TCP'; then fail "the hub fell back to TCP: HTTP/3 through the mux does not work"; fi
 HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
@@ -121,8 +121,8 @@ HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
 echo "== 4. a client in its own network namespace: same address, same port, other server name"
 docker run -d --name $P-client --cap-add NET_ADMIN --device /dev/net/tun -v "$W/client.yaml:/etc/boundgate/node.yaml:ro" "$IMAGE" boundgate-node -config /etc/boundgate/node.yaml >/dev/null
 cl() { docker exec $P-client "$@"; }
-wait_for 30 cl boundgatectl -json enroll || fail "client cannot enroll: $(docker logs $P-client 2>&1 | tail -3)"
-approve "$(cl boundgatectl -json enroll)" '"kind":"workload","roles":["endpoint"]'
+wait_for 30 cl boundgatectl -json enroll -accept-new-pin || fail "client cannot enroll: $(docker logs $P-client 2>&1 | tail -3)"
+approve "$(cl boundgatectl -json enroll -accept-new-pin)" '"kind":"workload","roles":["endpoint"]'
 wait_for 30 cl boundgatectl up || fail "client up: $(cl boundgatectl status | tail -5)"
 wait_for 20 sh -c "docker exec $P-client boundgatectl -json status | jq -e '[.hubs[] | select(.state == \"connected\")] | length == 1'" || fail "no tunnel: $(cl boundgatectl status)"
 if docker logs $P-client 2>&1 | grep -q 'falling back to TCP'; then fail "the client fell back to TCP"; fi

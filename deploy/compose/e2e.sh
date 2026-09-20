@@ -39,7 +39,7 @@ for n in hub1 hub2 node-r node-a node-t; do
     rm -f "state/$n/admin_keys"; $COMPOSE up -d "$n" >/dev/null 2>&1
   fi
 done
-if wait_for 15 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll | jq -e ".status == \"revoked\""'; then
+if wait_for 15 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll -accept-new-pin | jq -e ".status == \"revoked\""'; then
   fresh_key node-a
 fi
 x node-a boundgatectl logout >/dev/null 2>&1 || true
@@ -143,16 +143,16 @@ $S revoke node-a >/dev/null
 wait_for 5 status_is node-a '.state == "down"' || fail "node-a not down after revocation"
 status_is node-a '.last_close | test("revoked|no longer approved")' || fail "unexpected close reason"
 if x node-a boundgatectl up >/dev/null 2>&1; then fail "revoked node came up"; fi
-x node-a boundgatectl -json enroll | jq -e '.status == "revoked"' >/dev/null || fail "revoked key got a new status"
+x node-a boundgatectl -json enroll -accept-new-pin | jq -e '.status == "revoked"' >/dev/null || fail "revoked key got a new status"
 status_is hub1 '.tunnels == 1' || fail "hub1 still has node-a's tunnel"
 wait_for 20 sh -c "$S api GET '/api/v1/admin/tunnels?node=$OLD_ID' | jq -e '[.[] | select(.closed_at != null and (.close_reason | test(\"revoked\")))] | length >= 1'" || fail "revoked node's tunnels not closed in the history"
 
 echo "== 7. fresh key: enroll -> pending -> confirm (not enough) -> sign -> approved -> up; token is single use"
 fresh_key node-a
-wait_for 10 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll | jq -e ".status == \"pending\""' || fail "new key not pending"
+wait_for 10 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll -accept-new-pin | jq -e ".status == \"pending\""' || fail "new key not pending"
 if x node-a boundgatectl up >/dev/null 2>&1; then fail "pending node came up"; fi
 $S confirm node-a >/dev/null
-wait_for 10 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll | jq -e ".status == \"confirmed\""' || fail "node-a not confirmed"
+wait_for 10 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll -accept-new-pin | jq -e ".status == \"confirmed\""' || fail "node-a not confirmed"
 if x node-a boundgatectl up >/dev/null 2>&1; then fail "confirmed but unsigned node came up"; fi
 $S api GET /api/v1/admin/snapshot | jq -e '[.peers[] | select(.name == "node-a")] | length == 0' >/dev/null || fail "unsigned node in the snapshot"
 # sign by hand so the token can be replayed

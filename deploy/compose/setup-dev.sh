@@ -142,7 +142,7 @@ grant_for() {
 enroll_node() {  # prints the enroll status JSON
   st=""
   for _ in $(seq 1 15); do
-    st=$(nodectl "$1" -json enroll 2>/dev/null) && break
+    st=$(nodectl "$1" -json enroll -accept-new-pin 2>/dev/null) && break
     sleep 1
   done
   [ -n "$st" ] || { echo "$1: node daemon not reachable" >&2; exit 1; }

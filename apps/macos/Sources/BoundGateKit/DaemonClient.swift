@@ -15,7 +15,11 @@ public struct DaemonClient: Sendable {
     public func profiles() throws -> [String] { try call("GET", "/v1/profiles", timeout: 5) }
     public func configure(_ s: DaemonSettings) throws { let _: [String: String] = try call("POST", "/v1/configure", body: s, timeout: 10) }
     public func reset() throws { let _: [String: String] = try call("POST", "/v1/reset", timeout: 10) }
-    public func enroll() throws -> EnrollStatus { try call("POST", "/v1/enroll", body: [String: String](), timeout: 40) }
+    /// acceptPin: the control plane fingerprint the user accepted. Without a
+    /// pinned key and without it, the daemon answers `.pinUnconfirmed`.
+    public func enroll(acceptPin: String? = nil) throws -> EnrollStatus {
+        try call("POST", "/v1/enroll", body: acceptPin.map { ["accept_pin": $0] } ?? [:], timeout: 40)
+    }
     public func up(profile: String?) throws -> NodeStatus {
         try call("POST", "/v1/up", body: ["profile": profile ?? ""], timeout: 45)
     }
@@ -50,8 +54,9 @@ public struct DaemonClient: Sendable {
         guard parts.count >= 2, let code = Int(parts[1]) else { throw DaemonError.protocolError(String(statusLine)) }
         let bodyData = raw[sep.upperBound...]
         if code != 200 {
-            let msg = (try? JSONDecoder().decode(ErrorBody.self, from: bodyData))?.error ?? "HTTP \(code)"
-            throw DaemonError.refused(msg)
+            let err = try? JSONDecoder().decode(ErrorBody.self, from: bodyData)
+            if let pin = err?.controlPin, !pin.isEmpty { throw DaemonError.pinUnconfirmed(pin) }
+            throw DaemonError.refused(err?.error ?? "HTTP \(code)")
         }
         do { return try JSONDecoder.daemon.decode(Out.self, from: bodyData) } catch {
             throw DaemonError.protocolError("\(error)")

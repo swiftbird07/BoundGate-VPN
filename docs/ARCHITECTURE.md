@@ -166,9 +166,12 @@ One port, two audiences, told apart by the TLS server name:
 | `control.example` | WebPKI (dev: self-signed) | none | admin API (cookie sessions from OIDC + passkey, API tokens; ADMIN-AUTH.md), the embedded admin SPA, the OIDC browser callback |
 | `nodes.control.example` | the control plane's own long-lived key | device certificate required | node API: enroll, snapshot long-poll, heartbeat |
 
-Nodes pin the node-channel key's SPKI (trust on first use into
-`control.pin`, or provisioned in the config) so a fake root in the system
-trust store cannot impersonate the control plane; a changed key is refused.
+Nodes pin the node-channel key's SPKI (into `control.pin` at the first
+enrollment, after the person at the device accepted the fingerprint, or
+provisioned in the config) so a fake root in the system trust store cannot
+impersonate the control plane; a changed key is refused. Until a key is
+pinned the node refuses the connection at the certificate, before its own
+certificate is sent. The admin UI shows the fingerprint to compare (Nodes).
 
 The control plane keeps one `snapshot_version`; every approval, revocation,
 grant change and network-settings change bumps it in the same transaction.

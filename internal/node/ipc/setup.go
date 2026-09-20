@@ -155,15 +155,15 @@ func ServeSetup(ctx context.Context, socketPath, group string, status node.Statu
 	mux.HandleFunc("POST /v1/configure", func(w http.ResponseWriter, r *http.Request) {
 		var s Settings
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&s); err != nil {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{"invalid body"})
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid body"})
 			return
 		}
 		if err := s.Validate(); err != nil {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 			return
 		}
 		if err := save(s); err != nil {
-			writeJSON(w, http.StatusInternalServerError, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
 		mu.Lock()
@@ -173,7 +173,7 @@ func ServeSetup(ctx context.Context, socketPath, group string, status node.Statu
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first, then hand over to the node
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusConflict, ErrorResponse{"this node has no control plane yet; run `boundgatectl configure -control HOST`"})
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "this node has no control plane yet; run `boundgatectl configure -control HOST`"})
 	})
 	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
 		return Settings{}, err

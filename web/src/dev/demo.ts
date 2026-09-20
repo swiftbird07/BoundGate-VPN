@@ -129,6 +129,7 @@ function answer(method: string, path: string, query: URLSearchParams, body: any,
   if (path === '/admin/tokens') return method === 'GET' ? tokens : { id: 'a3', name: body?.name, created_at: ago(0), token: 'bgapi_demo_not_a_real_token' };
   if (path === '/admin/signers/set') return { version: 1, hash: 'demo', genesis_hash: 'demo', history: [] };
   if (path === '/admin/signers') return signers;
+  if (path === '/admin/identity') return { control_pin: '5c1f aa42 0702 4bc8 c981 a780 ff32 7b82 8156 9d8c 512a 53d4 8c4a 5df5 0add 4db5', spki: '5c1faa4207024bc8c981a780ff327b8281569d8c512a53d48c4a5df50add4db5' };
   if (path === '/admin/settings/network') return { pool: '10.21.0.0/16', max_age_seconds: 900, ...(body ?? {}) };
   if (path === '/admin/snapshot') return { version: 212, note: 'demo data' };
   return method === 'GET' ? [] : undefined;

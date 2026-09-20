@@ -3,8 +3,8 @@
 //	boundgatectl status
 //	boundgatectl identity
 //	boundgatectl configure -control HOST[:PORT]   a node without a configured control plane (setup mode)
-//	boundgatectl reset                     forget the control plane (keeps the device key)
-//	boundgatectl enroll [-name NAME]
+//	boundgatectl reset [-new-identity]     forget the control plane (keeps the device key unless -new-identity)
+//	boundgatectl enroll [-name NAME] [-pin FINGERPRINT | -accept-new-pin]   first contact: shows the control plane's key and asks
 //	boundgatectl profiles
 //	boundgatectl up [-profile NAME]
 //	boundgatectl down
@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -103,10 +104,31 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 	case "enroll":
 		fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
 		name := fs.String("name", "", "node name shown to the admin (default: configured name)")
+		pin := fs.String("pin", "", "control plane fingerprint to pin, as your administrator gave it to you (first enrollment)")
+		acceptNew := fs.Bool("accept-new-pin", false, "pin whatever key the control plane presents, unseen (scripts, the lab)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		st, err := c.Enroll(*name)
+		accept := *pin
+		if *acceptNew && accept == "" {
+			accept = node.AcceptNewPin
+		}
+		st, err := c.Enroll(*name, accept)
+		var unconfirmed *ipc.PinUnconfirmedError
+		if errors.As(err, &unconfirmed) {
+			// First contact: the control plane's key becomes this node's
+			// anchor for everything that follows, so a person looks at it.
+			fi, _ := os.Stdin.Stat()
+			if asJSON || fi == nil || fi.Mode()&os.ModeCharDevice == 0 {
+				return fmt.Errorf("the control plane presents a key that is not pinned yet:\n  %s\ncompare it with your administrator's (admin UI, Nodes), then: boundgatectl enroll -pin '%s'", unconfirmed.Fingerprint, unconfirmed.Fingerprint)
+			}
+			fmt.Printf("This node has not talked to this control plane before. It presents the key\n\n  %s\n\nCompare it with the fingerprint your administrator gave you (admin UI, Nodes page).\nIf it differs, somebody else is answering at that address.\nPin this key? Type yes: ", unconfirmed.Fingerprint)
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if strings.TrimSpace(line) != "yes" {
+				return errors.New("not pinned, not enrolled")
+			}
+			st, err = c.Enroll(*name, unconfirmed.Fingerprint)
+		}
 		if err != nil {
 			return err
 		}

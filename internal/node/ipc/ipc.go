@@ -28,11 +28,25 @@ type UpRequest struct {
 // EnrollRequest names the node for the admin.
 type EnrollRequest struct {
 	Name string `json:"name"`
+	// AcceptPin: the control plane fingerprint the user accepted, or "new"
+	// to pin whatever is presented (scripts). Only used while nothing is
+	// pinned; see node.Enroll.
+	AcceptPin string `json:"accept_pin,omitempty"`
 }
 
 // ErrorResponse is returned for failures.
 type ErrorResponse struct {
 	Error string `json:"error"`
+	// ControlPin is set (status 409) when enrollment needs the user to accept
+	// this control plane fingerprint first.
+	ControlPin string `json:"control_pin,omitempty"`
+}
+
+// PinUnconfirmedError is what Client.Enroll returns in that case.
+type PinUnconfirmedError struct{ Fingerprint string }
+
+func (e *PinUnconfirmedError) Error() string {
+	return "the control plane presents a key that is not pinned yet: " + e.Fingerprint
 }
 
 // Options of the node socket.
@@ -67,26 +81,26 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 	var wasReset atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/configure", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusConflict, ErrorResponse{"this node already has a control plane; `boundgatectl reset` forgets it"})
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "this node already has a control plane; `boundgatectl reset` forgets it"})
 	})
 	mux.HandleFunc("POST /v1/reset", func(w http.ResponseWriter, r *http.Request) {
 		if opt.Reset == nil {
-			writeJSON(w, http.StatusConflict, ErrorResponse{"the control plane of this node is set in its configuration file"})
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: "the control plane of this node is set in its configuration file"})
 			return
 		}
 		if n.Status().State != node.StateDown {
-			writeJSON(w, http.StatusConflict, ErrorResponse{"disconnect first (boundgatectl down)"})
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: "disconnect first (boundgatectl down)"})
 			return
 		}
 		var body ResetRequest
 		if r.ContentLength != 0 {
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
-				writeJSON(w, http.StatusBadRequest, ErrorResponse{"bad request body"})
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "bad request body"})
 				return
 			}
 		}
 		if err := opt.Reset(body.NewIdentity); err != nil {
-			writeJSON(w, http.StatusInternalServerError, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
 		wasReset.Store(true)
@@ -106,7 +120,7 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 	mux.HandleFunc("GET /v1/profiles", func(w http.ResponseWriter, r *http.Request) {
 		names, err := n.Profiles()
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, names)
@@ -115,15 +129,20 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		var req EnrollRequest
 		if r.ContentLength != 0 {
 			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-				writeJSON(w, http.StatusBadRequest, ErrorResponse{"invalid body"})
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid body"})
 				return
 			}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		st, err := n.Enroll(ctx, req.Name)
+		st, err := n.Enroll(ctx, req.Name, req.AcceptPin)
+		var unconfirmed *node.PinUnconfirmedError
+		if errors.As(err, &unconfirmed) {
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error(), ControlPin: unconfirmed.Fingerprint})
+			return
+		}
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, st)
@@ -132,14 +151,14 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		var req UpRequest
 		if r.ContentLength != 0 {
 			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-				writeJSON(w, http.StatusBadRequest, ErrorResponse{"invalid body"})
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid body"})
 				return
 			}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		if err := n.Up(ctx, req.Profile); err != nil {
-			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, n.Status())
@@ -153,7 +172,7 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		defer cancel()
 		st, err := n.Login(ctx)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, st)
@@ -167,7 +186,7 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		}
 		st, err := n.LoginWait(r.Context(), r.PathValue("flow"), wait)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, st)
@@ -176,7 +195,7 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		if err := n.Logout(ctx); err != nil {
-			writeJSON(w, http.StatusBadGateway, ErrorResponse{err.Error()})
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, n.Status())
@@ -240,6 +259,9 @@ func (c *Client) do(method, path string, in, out any) error {
 		if e.Error == "" {
 			e.Error = rsp.Status
 		}
+		if e.ControlPin != "" {
+			return &PinUnconfirmedError{Fingerprint: e.ControlPin}
+		}
 		return errors.New(e.Error)
 	}
 	if out != nil {
@@ -270,9 +292,9 @@ func (c *Client) Profiles() ([]string, error) {
 }
 
 // Enroll submits the enrollment request.
-func (c *Client) Enroll(name string) (api.EnrollStatus, error) {
+func (c *Client) Enroll(name, acceptPin string) (api.EnrollStatus, error) {
 	var st api.EnrollStatus
-	err := c.do(http.MethodPost, "/v1/enroll", EnrollRequest{Name: name}, &st)
+	err := c.do(http.MethodPost, "/v1/enroll", EnrollRequest{Name: name, AcceptPin: acceptPin}, &st)
 	return st, err
 }
 

@@ -60,6 +60,7 @@ export const admin = {
   signerSet: () => api<T.SignerSet>('GET', '/admin/signers/set'),
   sessions: (all = false) => api<T.Session[]>('GET', '/admin/sessions' + q({ all: all ? 1 : undefined })),
   revokeSession: (id: string) => api('DELETE', '/admin/sessions/' + id),
+  identity: () => api<{ control_pin: string; spki: string }>('GET', '/admin/identity'),
   network: () => api<T.NetworkSettings>('GET', '/admin/settings/network'),
   putNetwork: (n: T.NetworkSettings) => api<T.NetworkSettings>('PUT', '/admin/settings/network', n),
   policies: () => api<T.Policy[]>('GET', '/admin/policies'),

@@ -95,15 +95,23 @@ public struct DaemonSettings: Codable, Sendable {
     }
 }
 
-struct ErrorBody: Codable { var error: String }
+struct ErrorBody: Codable {
+    var error: String
+    /// set when enrolling needs the user to accept this control plane key first
+    var controlPin: String?
+    enum CodingKeys: String, CodingKey { case error; case controlPin = "control_pin" }
+}
 
 public enum DaemonError: Error, LocalizedError, Equatable {
     case unreachable(String)  // no socket, no permission, daemon not running
     case refused(String)      // the daemon answered with an error
     case protocolError(String)
+    /// first contact: the control plane presents this key, nothing is pinned yet
+    case pinUnconfirmed(String)
 
     public var errorDescription: String? {
         switch self {
+        case .pinUnconfirmed(let fp): return "the control plane presents a key that is not pinned yet: \(fp)"
         case .unreachable(let s): return s
         case .refused(let s): return s
         case .protocolError(let s): return "unexpected answer from the daemon: \(s)"

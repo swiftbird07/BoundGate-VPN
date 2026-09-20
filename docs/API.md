@@ -46,6 +46,7 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | POST | `/api/v1/sign/signers` | Bearer sign token, `{signature}` | 200 `{version, hash, signed_by, keys, demoted_nodes}`; 403 not a key of the current list; 409 token used or list changed meanwhile |
 | GET | `/api/v1/admin/sessions` | `?all=1` includes ended ones | `[SessionView]` |
 | DELETE | `/api/v1/admin/sessions/{id}` | | 204 (revoke; hubs close the node's tunnels); 409 if already ended |
+| GET | `/api/v1/admin/identity` | | `{control_pin, spki}`: fingerprint of the node-channel key, what a device shows and asks about at its first contact (ENROLLMENT.md) |
 | GET/PUT | `/api/v1/admin/settings/network` | `{pool, max_age_seconds?}` | settings; PUT bumps the snapshot; 409 if an assigned address would fall outside the new pool |
 | GET | `/api/v1/admin/snapshot` | `?node=<id>` | the global view, or what that node receives |
 | GET | `/api/v1/admin/logs` | `?stream=&node=&actor=&q=&from=&to=&before=&limit=` | `[LogEvent]` newest first |

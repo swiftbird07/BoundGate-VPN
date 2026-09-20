@@ -54,6 +54,7 @@ func (h *Handlers) AdminMux() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/admin/signers/{id}", h.adminRevokeSigner)
 	mux.HandleFunc("POST /api/v1/admin/signers/change", h.adminChangeSigners)
 	mux.HandleFunc("GET /api/v1/admin/signers/set", h.adminSignerSet)
+	mux.HandleFunc("GET /api/v1/admin/identity", h.adminIdentity)
 	mux.HandleFunc("GET /api/v1/admin/settings/network", h.adminGetNetwork)
 	mux.HandleFunc("PUT /api/v1/admin/settings/network", h.adminPutNetwork)
 	mux.HandleFunc("GET /api/v1/admin/sessions", h.adminListSessions)
@@ -494,6 +495,17 @@ func (h *Handlers) adminRevokeNode(w http.ResponseWriter, r *http.Request) {
 	h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, a.Subject, "node revoked", id,
 		map[string]any{"name": n.Name, "spki": n.SPKI.String(), "snapshot_version": version})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminIdentity tells the admin the fingerprint of the node-channel key: what
+// a device shows at its first contact (`boundgatectl enroll`, the app) and
+// what its user compares before pinning it. The admin UI is the out-of-band
+// source for that comparison.
+func (h *Handlers) adminIdentity(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"control_pin": h.d.ControlSPKI.Fingerprint(),
+		"spki":        h.d.ControlSPKI.String(),
+	})
 }
 
 func (h *Handlers) adminGetNetwork(w http.ResponseWriter, r *http.Request) {

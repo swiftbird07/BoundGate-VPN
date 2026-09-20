@@ -28,6 +28,9 @@
       if (want && !selected) selected = nodes.find((n) => n.id === want) ?? null;
     } catch (e) { fail(e); }
   }
+  // what a device shows at its first contact; its user compares it with this
+  let controlPin = $state('');
+  onMount(() => { admin.identity().then((i) => (controlPin = i.control_pin)).catch(() => {}); });
   onMount(() => { void load(); const t = setInterval(load, 8000); return () => clearInterval(t); });
   const shown = $derived(nodes.filter((n) => filter === 'all' ? n.status !== 'revoked' : n.status === filter));
   const counts = $derived({ pending: nodes.filter((n) => n.status === 'pending').length, confirmed: nodes.filter((n) => n.status === 'confirmed').length, approved: nodes.filter((n) => n.status === 'approved').length, revoked: nodes.filter((n) => n.status === 'revoked').length });
@@ -74,6 +77,13 @@
     {/each}
   </div>
 </div>
+{#if controlPin}
+  <div class="pinline small">
+    <span class="muted">Control plane fingerprint</span>
+    <span class="mono">{controlPin}</span><Copy text={controlPin} />
+    <span class="faint">A device shows this at its first contact (<code>boundgatectl enroll</code>, the app) and pins it. Give it to the device's user; if theirs differs, they must not continue.</span>
+  </div>
+{/if}
 
 <div class="card flush table-wrap">
   <table>
@@ -184,3 +194,7 @@
     {/snippet}
   </Dialog>
 {/if}
+
+<style>
+  .pinline { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: -0.25rem 0 1rem; }
+</style>

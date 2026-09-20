@@ -172,13 +172,22 @@ struct EnrollCard: View {
                 InfoRow(label: "Control plane", value: s.control ?? "–", mono: true)
                 if let pin = s.controlPin, !pin.isEmpty {
                     FingerprintView(title: "Key of the control plane", fingerprint: pin)
-                    Text("This Mac trusts that key from now on. If your administrator gave you its fingerprint, compare it before you continue.")
+                    Text("This Mac trusts that key.")
                         .font(.body(11.5)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
                 }
                 if let e = s.controlError, !e.isEmpty { Notice(tone: .warn, text: e) }
                 else if let e = s.enrollmentError, !e.isEmpty { Notice(tone: .warn, text: e) }
             }
-            Button("Request access") { model.enroll() }.buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
+            if let pin = model.pinToConfirm {
+                FingerprintView(title: "The control plane presents this key", fingerprint: pin)
+                Text("This Mac has not talked to this control plane before and will trust this key from now on. Compare it with the fingerprint your administrator gave you (admin UI, Nodes). If it differs, somebody else is answering at that address: do not continue.")
+                    .font(.body(11.5)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
+                Button("It matches: trust this key and request access") { model.enroll(acceptPin: pin) }
+                    .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
+                Button("Cancel") { model.declinePin() }.buttonStyle(BGButtonStyle(kind: .secondary)).disabled(model.busy != nil)
+            } else {
+                Button("Request access") { model.enroll() }.buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
+            }
         }
     }
 }
