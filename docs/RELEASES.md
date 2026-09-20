@@ -89,7 +89,9 @@ sha256sum -c <(jq -r '.assets[] | "\(.sha256)  \(.name)"' manifest.json)
 5. **Anonymous downloads**: this Gitea answers visitors with "Only signed in
    user is allowed to call APIs" (`REQUIRE_SIGNIN_VIEW`). For third parties the
    repository must be public and that setting off (or releases mirrored to a
-   public place, `update.url`). Until then every updater needs a read token:
+   public place, `update.url`). Until then every updater needs a read token
+   (`read:repository`): the Mac app reads `/var/db/boundgate/update.token`
+   (`update.token` in the state directory, root, 0600, one line), other nodes that or
    `update.token_file` in `node.yaml`, `BOUNDGATE_UPDATE_TOKEN_FILE` for
    `update.sh`.
 

@@ -292,7 +292,13 @@ func newUpdater(cfg config, log *slog.Logger, idle func() bool) *update.Service 
 	if src.Repo == "" {
 		src.Repo = update.DefaultRepo
 	}
-	s := &update.Service{Source: src, TokenFile: u.TokenFile, Keys: keys, Current: version.Version, Interval: interval,
+	tokenFile := u.TokenFile
+	if tokenFile == "" {
+		// the app's node.yaml is part of the signed bundle and cannot name a file:
+		// a read token for an instance that wants a login goes here (root, 0600)
+		tokenFile = filepath.Join(cfg.StateDir, "update.token")
+	}
+	s := &update.Service{Source: src, TokenFile: tokenFile, Keys: keys, Current: version.Version, Interval: interval,
 		Idle: idle, WorkDir: filepath.Join(cfg.StateDir, "update"), Mac: update.MacApp{Run: update.SystemRun}, Log: log}
 	if exe, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {

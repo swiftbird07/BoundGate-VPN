@@ -249,7 +249,7 @@ func (s Source) get(ctx context.Context, rawURL string, limit int64) ([]byte, er
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
 		if rsp.StatusCode == http.StatusUnauthorized || rsp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("update: %s answers %s (the instance wants a signed-in user: configure update.token_file)", u.Host, rsp.Status)
+			return nil, fmt.Errorf("update: %s answers %s (the instance wants a signed-in user: put a read token into update.token in the state directory, or configure update.token_file)", u.Host, rsp.Status)
 		}
 		return nil, fmt.Errorf("update: %s: %s", u.Path, rsp.Status)
 	}
