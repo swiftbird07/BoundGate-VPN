@@ -8,6 +8,7 @@
     "build": "vite build && touch ../internal/control/web/dist/.gitkeep",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "node scripts/cedar-selftest.ts",
+    "test:mesh": "node scripts/mesh-selftest.ts",
     "preview": "vite preview"
   },
   "devDependencies": {

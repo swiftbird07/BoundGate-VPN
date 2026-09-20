@@ -266,7 +266,7 @@ internal/binding        admin-signed node bindings: canonical JSON, SSHSIG, veri
 internal/transport      mTLS verification, AuthenticatedPeer, pinned hub client config, pinned control-plane client config, QUIC/CONNECT-IP server + client
 internal/registry       per-node Snapshot (self, peers, hubs, sessions, pool), Holder (stale = fail closed), Diff
 internal/control        control plane: db/ (SQLite + migrations), snapshot/ (per-node views incl. sessions), api/ (admin, adminauth, node, login, sign, acl, nodelogs), oidc/ (code flow; oidctest/ fake IdP), web/ (embedded SPA build), SNI split
-web/                    admin UI: Svelte 5 + Vite + TypeScript (policy builder, sanity check, nodes, sessions, logs, admins)
+web/                    admin UI: Svelte 5 + Vite + TypeScript (policy builder, sanity check, nodes, mesh view (MESH.md), sessions, logs, admins)
 internal/node           daemon: control loop, session (up/down), dataplane (TUN + table + uplink), hub service, spoke manager
 internal/node/forward   packet buffer conventions, destination table (hosts + longest prefix)
 internal/node/netcfg    TUN, addresses, routes, bypass routes, forwarding, nftables NAT (Linux); utun, ifconfig/route (macOS, endpoint only); crash-recovery journal

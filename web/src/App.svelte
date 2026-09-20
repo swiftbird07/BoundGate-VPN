@@ -10,6 +10,7 @@
   import Login from './pages/Login.svelte';
   import OverviewPage from './pages/Overview.svelte';
   import Nodes from './pages/Nodes.svelte';
+  import Mesh from './pages/Mesh.svelte';
   import Sessions from './pages/Sessions.svelte';
   import Policies from './pages/Policies.svelte';
   import PolicyEditor from './pages/PolicyEditor.svelte';
@@ -43,6 +44,7 @@
   const nav: { href: string; label: string; icon: IconName; badge?: () => number }[] = [
     { href: '/', label: 'Overview', icon: 'overview' },
     { href: '/nodes', label: 'Nodes', icon: 'nodes', badge: () => (counts?.nodes?.pending ?? 0) + (counts?.nodes?.confirmed ?? 0) },
+    { href: '/mesh', label: 'Mesh', icon: 'mesh' },
     { href: '/sessions', label: 'Sessions', icon: 'sessions' },
     { href: '/policies', label: 'Policies', icon: 'policies' },
     { href: '/logs', label: 'Logs', icon: 'logs' },
@@ -56,6 +58,7 @@
     const p = route.path;
     if (p === '/') return OverviewPage;
     if (p.startsWith('/nodes')) return Nodes;
+    if (p.startsWith('/mesh')) return Mesh;
     if (p.startsWith('/sessions')) return Sessions;
     if (p.startsWith('/policies/')) return PolicyEditor;
     if (p.startsWith('/policies')) return Policies;

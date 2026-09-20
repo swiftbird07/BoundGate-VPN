@@ -3,6 +3,7 @@
   const paths = {
     overview: '<rect x="3.5" y="3.5" width="7" height="7" rx="2.2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2.2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2.2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2.2"/>',
     nodes: '<circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M8.4 10.8l7.2-3.6M8.4 13.2l7.2 3.6"/>',
+    mesh: '<circle cx="12" cy="12" r="2.8"/><circle cx="5" cy="5.5" r="2"/><circle cx="19" cy="5.5" r="2"/><circle cx="5" cy="18.5" r="2"/><circle cx="19" cy="18.5" r="2"/><path d="M6.5 7l3.4 3.1M17.5 7l-3.4 3.1M6.5 17l3.4-3.1M17.5 17l-3.4-3.1"/>',
     sessions: '<circle cx="12" cy="8" r="3.8"/><path d="M4.5 20c.4-3.8 3.4-5.8 7.5-5.8s7.1 2 7.5 5.8"/>',
     policies: '<path d="M12 3l7.5 2.8v5.7c0 4.8-3.2 8-7.5 9.5-4.3-1.5-7.5-4.7-7.5-9.5V5.8z"/><path d="M8.8 12l2.2 2.2 4.2-4.4"/>',
     logs: '<path d="M8.5 6.5h11M8.5 12h11M8.5 17.5h11"/><path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/>',

@@ -49,7 +49,8 @@ make web-dev        # Vite in the box image, http://localhost:5183
 ```
 
 `/?demo` answers the admin API from memory (`web/src/dev/demo.ts`): a small
-fleet with pending and confirmed nodes, tunnels, sessions, policies, logs.
+fleet with pending and confirmed nodes, tunnels, sessions, policies, logs;
+tunnel counters move and one tunnel flaps, for the mesh view (MESH.md).
 `?demo=login`, `?demo=first` and `?demo=passkey` show the sign-in steps,
 `?demo=off` returns to the real API (proxied to the lab, see
 `web/vite.config.ts`). The demo layer is loaded in dev builds only; `make web`

@@ -29,9 +29,10 @@ web-dev:
 web-check:
 	box sh -c 'cd web && npx svelte-check --tsconfig ./tsconfig.json'
 
-# policy builder: every generated rule parses back into the same model
+# policy builder: every generated rule parses back into the same model;
+# mesh view: the graph at a moment, rates, timeline and layout (docs/MESH.md)
 web-test:
-	box sh -c 'cd web && npm test --silent >/dev/null'
+	box sh -c 'cd web && npm test --silent >/dev/null && npm run --silent test:mesh'
 
 build-linux: web
 	@mkdir -p bin/linux_$(GOARCH)

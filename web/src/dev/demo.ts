@@ -28,6 +28,7 @@ const nodes: T.Node[] = [
   node(6, 'build-runner-07', 'confirmed', ['endpoint'], { key_kind: 'tpm2', hardware_bound: true, hardware_claimed: true, requested_at: ago(5400), confirmed_at: ago(1800) }),
   node(7, 'lenas-thinkpad', 'pending', ['endpoint'], { kind: 'interactive', platform: 'linux/amd64', key_kind: 'tpm2', hardware_bound: false, hardware_claimed: true, requested_at: ago(420) }),
   node(8, 'old-laptop', 'revoked', ['endpoint'], { kind: 'interactive', revoked_at: ago(86400 * 9), revoked_by: 'martin', overlay_ip: '10.21.0.31' }),
+  node(9, 'adas-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', key_kind: 'secure-enclave', hardware_bound: true, hardware_claimed: true, active_tunnels: 2 }),
 ];
 nodes[5].sign_command = `boundgatectl admin sign --control https://control.example.net --node ${nodes[5].id} --fingerprint ${nodes[5].fingerprint} --token st_4be1c0a97d`;
 nodes[5].sign_expires_at = new Date(Date.now() + 480e3).toISOString();
@@ -40,11 +41,36 @@ const tunnels: T.Tunnel[] = [
   tunnel(1, nodes[0], nodes[3], 7200), tunnel(2, nodes[0], nodes[4], 3100), tunnel(3, nodes[0], nodes[2], 86000),
   tunnel(4, nodes[1], nodes[3], 7190), tunnel(5, nodes[1], nodes[4], 3090), tunnel(6, nodes[1], nodes[2], 85000),
   tunnel(7, nodes[0], nodes[7], 86400 * 9 + 4000, 86400 * 9, 'peer revoked'), tunnel(8, nodes[0], nodes[3], 90000, 7300, 'hub restarted'),
+  // the last day, for the mesh timeline
+  tunnel(9, nodes[1], nodes[3], 80000, 52000, 'client down'), tunnel(10, nodes[0], nodes[4], 70000, 41000, 'client down'), tunnel(11, nodes[1], nodes[4], 69990, 41000, 'client down'),
+  tunnel(12, nodes[0], nodes[4], 30000, 21000, 'session expired'), tunnel(13, nodes[1], nodes[4], 29990, 21000, 'session expired'), tunnel(14, nodes[0], nodes[8], 50000, 9000, 'client down'),
+  tunnel(15, nodes[1], nodes[3], 40000, 7300, 'hub restarted'), tunnel(16, nodes[0], nodes[8], 2400), tunnel(17, nodes[1], nodes[8], 2390),
 ];
+// Counters move and one tunnel flaps, so the demo shows rates and the pulse of a tunnel opening and closing.
+const pace: Record<string, number> = { t1: 2.4e6, t2: 9e6, t3: 3e5, t4: 4e4, t5: 1.2e6, t6: 0, t16: 6e5, t17: 2e4 };
+let lastTick = Date.now(), flapAt = Date.now() + 25_000, flapSeq = 100;
+function tickTunnels() {
+  const t = Date.now(), dt = (t - lastTick) / 1000;
+  if (dt < 1) return;
+  lastTick = t;
+  for (const tu of tunnels) {
+    if (tu.closed_at) continue;
+    const b = (pace[tu.id] ?? 5e4) * dt * (0.6 + Math.random() * 0.8);
+    tu.bytes_in += Math.round(b * 0.2); tu.bytes_out += Math.round(b * 0.8); tu.packets_out += Math.round(b / 1200); tu.last_report_at = new Date(t).toISOString();
+  }
+  if (t < flapAt) return;
+  flapAt = t + 20_000;
+  const open = tunnels.find((x) => !x.closed_at && x.hub_id === nodes[1].id && x.peer_id === nodes[4].id);
+  if (open) { open.closed_at = new Date(t).toISOString(); open.close_reason = 'path lost'; return; }
+  const fresh = tunnel(flapSeq++, nodes[1], nodes[4], 0);
+  tunnels.unshift({ ...fresh, transport: flapSeq % 2 ? 'tcp' : 'quic', bytes_in: 0, bytes_out: 0, packets_in: 0, packets_out: 0 });
+  pace[fresh.id] = 1.2e6;
+}
 
 const sessions: T.Session[] = [
   { id: 's1', node_id: nodes[3].id, node_name: nodes[3].name, subject: 'u-ada', email: 'ada@example.net', username: 'ada', groups: ['staff', 'engineering'], login_ip: '203.0.113.21', issued_at: ago(7000), expires_at: new Date(Date.now() + 21_000e3).toISOString() },
   { id: 's2', node_id: nodes[4].id, node_name: nodes[4].name, subject: 'u-martin', email: 'martin@example.net', username: 'martin', groups: ['staff', 'boundgate-admins'], login_ip: '203.0.113.22', issued_at: ago(3000), expires_at: new Date(Date.now() + 25_000e3).toISOString() },
+  { id: 's4', node_id: nodes[8].id, node_name: nodes[8].name, subject: 'u-ada', email: 'ada@example.net', username: 'ada', groups: ['staff', 'engineering'], login_ip: '203.0.113.36', issued_at: ago(2500), expires_at: new Date(Date.now() + 30_000e3).toISOString() },
   { id: 's3', node_id: nodes[7].id, node_name: nodes[7].name, subject: 'u-lena', email: 'lena@example.net', username: 'lena', groups: ['staff'], issued_at: ago(86400 * 10), expires_at: ago(86400 * 9.6), ended_at: ago(86400 * 9), ended_by: 'martin', end_reason: 'node revoked' },
 ];
 
@@ -114,6 +140,7 @@ function answer(method: string, path: string, query: URLSearchParams, body: any,
     if (method !== 'GET') Object.assign(n, body ?? {}, m[2] ? { status: 'confirmed', sign_command: nodes[5].sign_command, sign_expires_at: nodes[5].sign_expires_at } : {});
     return n;
   }
+  if (path === '/admin/tunnels') tickTunnels();
   if (path === '/admin/tunnels') return tunnels.filter((t) => !query.get('active') || !t.closed_at);
   if (path === '/admin/sessions') return sessions.filter((s) => query.get('all') || !s.ended_at);
   if (path === '/admin/policies') return method === 'GET' ? policies : { ...policies[0], ...body, id: 'p' + (policies.length + 1) };

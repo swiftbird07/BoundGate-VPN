@@ -15,10 +15,10 @@ verifies, so the control plane cannot invent or upgrade nodes; pinned
 control-plane key; OIDC user login with sessions bound to the node and
 enforced by hubs; Cedar access policies with per-flow decisions, SNI/DNS
 inspection and shipped flow and tunnel logs; an embedded admin UI (Svelte)
-behind OIDC + passkey admin logins, with a policy builder and a live
-sanity check; local compose lab). See `docs/ARCHITECTURE.md`,
+behind OIDC + passkey admin logins, with a policy builder, a live
+sanity check and a mesh view with a day of history; local compose lab). See `docs/ARCHITECTURE.md`,
 `docs/TCB.md`, `docs/SECURITY.md`, `docs/BINDINGS.md`, `docs/OIDC.md`,
-`docs/ACL.md`, `docs/ADMIN-AUTH.md`, `docs/MACOS.md`, `docs/DESIGN.md` and `docs/DEV.md`.
+`docs/ACL.md`, `docs/ADMIN-AUTH.md`, `docs/MACOS.md`, `docs/MESH.md`, `docs/DESIGN.md` and `docs/DEV.md`.
 
 ```bash
 make test
