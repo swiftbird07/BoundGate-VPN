@@ -114,6 +114,9 @@ type softAuth struct {
 	id     []byte
 	count  uint32
 	origin string
+	// ext is what the browser reports as clientExtensionResults; some report
+	// outputs nobody asked for ({"appid": false} with a security key)
+	ext map[string]any
 }
 
 func newSoftAuth(origin string) *softAuth {
@@ -183,8 +186,12 @@ func (a *softAuth) get(challenge string, userHandle []byte) string {
 	if err != nil {
 		panic(err)
 	}
-	b, _ := json.Marshal(map[string]any{"id": b64(a.id), "rawId": b64(a.id), "type": "public-key",
-		"response": map[string]any{"authenticatorData": b64(ad), "clientDataJSON": b64(cd), "signature": b64(sig), "userHandle": b64(userHandle)}})
+	cred := map[string]any{"id": b64(a.id), "rawId": b64(a.id), "type": "public-key",
+		"response": map[string]any{"authenticatorData": b64(ad), "clientDataJSON": b64(cd), "signature": b64(sig), "userHandle": b64(userHandle)}}
+	if a.ext != nil {
+		cred["clientExtensionResults"] = a.ext
+	}
+	b, _ := json.Marshal(cred)
 	return string(b)
 }
 
@@ -415,5 +422,35 @@ func TestAdminLoginRefusals(t *testing.T) {
 	rsp.Body.Close()
 	if rsp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "Wrong browser") {
 		t.Fatalf("foreign callback: %d %s", rsp.StatusCode, b)
+	}
+}
+
+// A browser may report extension outputs the server never asked for: with a
+// security key, {"appid": false} ("the legacy U2F AppID was not used"). The
+// server requests no extension and acts on no output, so that is no reason to
+// refuse the login (seen in production: "Client returned the "appid" extension
+// output which was not requested").
+func TestPasskeyLoginWithUnsolicitedExtensionOutput(t *testing.T) {
+	e := newEnv(t)
+	e.withAdminIdP(t, oidctest.User{Subject: "ada", Email: "ada@example.test", Username: "ada", Groups: []string{"admins"}})
+	c := browserClient()
+	if code, _ := e.adminLogin(c, "/"); code != http.StatusFound {
+		t.Fatalf("oidc login: %d", code)
+	}
+	a := newSoftAuth(e.admin.URL)
+	if code, b := e.registerPasskey(c, a, e.boot); code != http.StatusCreated {
+		t.Fatalf("register: %d %s", code, b)
+	}
+	// a second browser session of the same admin: OIDC, then the passkey
+	c2 := browserClient()
+	if code, _ := e.adminLogin(c2, "/"); code != http.StatusFound {
+		t.Fatalf("second oidc login: %d", code)
+	}
+	a.ext = map[string]any{"appid": false}
+	if code, b := e.loginPasskey(c2, a); code != http.StatusOK {
+		t.Fatalf("login with an unsolicited appid output: %d %s", code, b)
+	}
+	if st := e.status(c2); st.Level != "full" {
+		t.Fatalf("status after the passkey login: %+v", st)
 	}
 }

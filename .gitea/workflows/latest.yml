@@ -14,7 +14,10 @@
 name: latest
 on:
   release:
-    types: [published]
+    # `make release` publishes a draft through the API, which this server may report as an
+    # edit, not a publication. Extra runs are harmless: the job only acts for the newest
+    # release, checks its signature, and putting the same digest under the tag again changes nothing
+    types: [published, edited]
   workflow_dispatch:
     inputs:
       version:

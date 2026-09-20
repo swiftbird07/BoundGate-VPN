@@ -79,7 +79,14 @@ func (h *Handlers) newWebAuthn() (*webauthn.WebAuthn, error) {
 	if len(origins) == 0 {
 		origins = []string{"https://" + c.RPID}
 	}
-	return webauthn.New(&webauthn.Config{RPID: c.RPID, RPDisplayName: "BoundGate", RPOrigins: origins})
+	return webauthn.New(&webauthn.Config{RPID: c.RPID, RPDisplayName: "BoundGate", RPOrigins: origins,
+		// Browsers report extension outputs nobody asked for (with a security
+		// key: {"appid": false}, "the legacy U2F AppID was not used"). This
+		// server requests no extension and acts on no output, so an unsolicited
+		// one is ignored, not a reason to refuse the login. Everything that
+		// decides (challenge, origin, RP ID hash, signature, user presence and
+		// verification flags, counter) is checked as before.
+		ExtensionsUnsolicitedOutputPolicy: protocol.UnsolicitedOutputPolicyIgnore})
 }
 
 // secureCookie: cookies are Secure on TLS requests, except when the browser
