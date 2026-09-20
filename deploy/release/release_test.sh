@@ -49,6 +49,7 @@ url=$1
 grep -q 'Authorization: token test-token' "$auth" 2>/dev/null || { echo "curl: 401" >&2; exit 22; }
 echo "$method $url" >> "$FAKE/calls"
 case "$method $url" in
+  "GET "*"/repos/o/r") echo "{\"permissions\":{\"push\":${FAKE_PUSH:-true}}}" ;;
   "GET "*"/releases?draft=true"*) cat "$FAKE/releases.json" ;;
   "GET "*"/releases/latest") cat "$FAKE/latest.json" ;;
   "GET "*"/dl/"*) cp "$FAKE/assets/${url##*/}" "$out" ;;
@@ -124,6 +125,8 @@ ssh-keygen -q -t ed25519 -N '' -f "$T/other"
 if RELEASE_KEY=$T/other $R > "$T/out" 2>&1; then fail "signed with a key no build knows"; fi
 grep -q "is not in internal/update/release_keys" "$T/out" || fail "unknown key: $(cat "$T/out")"
 if GITEA_TOKEN= GITEA_TOKEN_FILE=$T/none $R > "$T/out" 2>&1; then fail "ran without a token"; fi
+if FAKE_PUSH=false $R > "$T/out" 2>&1; then fail "went on with a token that may not write"; fi
+grep -q "does not get write access" "$T/out" || fail "read-only token: $(cat "$T/out")"
 [ -z "$(git tag -l v0.1.12)" ] || fail "a refused run left a tag behind"
 # the token goes to the configured host only
 ci_draft one; mac_built

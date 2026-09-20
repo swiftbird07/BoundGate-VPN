@@ -3,13 +3,16 @@
 # with a "Developer ID Application" identity and notarytool credentials in the
 # keychain, stored once by you:
 #
-#   xcrun notarytool store-credentials boundgate-notary --apple-id YOU@example.com --team-id TEAMID
+#   xcrun notarytool store-credentials boundgate-notary --key AuthKey_KEYID.p8 --key-id KEYID --issuer ISSUER-UUID
 #
-# (it asks for an app-specific password from appleid.apple.com). Nothing here
-# ever sees that password.
+# That is an App Store Connect API key (appstoreconnect.apple.com > Users and
+# Access > Integrations > Team Keys, access "Developer"): it belongs to the
+# team and reaches App Store Connect and the notary service, nothing else.
+# `--apple-id YOU --team-id TEAMID` with an app-specific password works too,
+# but that password also opens the mail, contacts and calendars of a personal
+# Apple account. Nothing here ever sees either secret.
 #
-# Where there is no keychain profile (a build machine), an App Store Connect
-# API key does instead:
+# Without a keychain profile (a build machine), the key file does directly:
 #   NOTARY_KEY_FILE=AuthKey_XXXX.p8 NOTARY_KEY_ID=XXXX NOTARY_ISSUER=uuid apps/macos/notarize.sh
 #
 # Results: dist/BoundGate-<version>.dmg for people, and

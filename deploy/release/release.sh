@@ -91,6 +91,25 @@ api() { # api METHOD PATH [curl args]: JSON on stdout
   curl -fsS -K "$TMP/auth" -X "$m" -H 'Content-Type: application/json' "$@" "$API$p"
 }
 
+# a pushed tag starts CI and is seen by everyone: find out now what would stop this run later
+[ "$(api GET "" | jq -r '.permissions.push')" = true ] || die "the access token does not get write access to $GITEA_REPO at $GITEA_URL (curl's message above: 401 = wrong or expired token, 404 = the token's user does not see the repository)"
+PLAIN=${V#v}
+ZIP=dist/BoundGate-$PLAIN-macos.zip; DMG=dist/BoundGate-$PLAIN.dmg
+if [ -n "${NO_MAC:-}" ]; then MAC=none
+elif [ -f "$ZIP" ] && [ -f "$DMG" ] && [ "$(cat dist/.release-built 2>/dev/null)" = "$V $HEAD" ]; then MAC=built
+else
+  MAC=build
+  case "${SIGN_IDENTITY:-}" in
+    "") security find-identity -v -p codesigning | grep -q '"Developer ID Application: ' || die "no \"Developer ID Application\" identity in the keychain (an \"Apple Development\" one cannot be notarized); NO_MAC=1 releases without the Mac app" ;;
+    "Developer ID Application: "*) ;;
+    *) die "SIGN_IDENTITY=$SIGN_IDENTITY cannot be notarized: a release needs a \"Developer ID Application\" identity" ;;
+  esac
+  if [ -z "${NOTARY_KEY_FILE:-}" ]; then
+    xcrun notarytool history --keychain-profile "${NOTARY_PROFILE:-boundgate-notary}" >/dev/null 2>"$TMP/notary" \
+      || die "notarytool cannot use the keychain profile ${NOTARY_PROFILE:-boundgate-notary} (apps/macos/notarize.sh says how to store it): $(tail -1 "$TMP/notary")"
+  fi
+fi
+
 # ---- 1. tag ----
 if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
   [ "$(git rev-parse "$V^{commit}")" = "$HEAD" ] || die "tag $V exists and is not the commit checked out; check it out to resume, or pick another version"
@@ -108,11 +127,9 @@ if [ -z "$(git ls-remote --tags origin "refs/tags/$V")" ]; then
 fi
 
 # ---- 2. Mac app, while CI works ----
-PLAIN=${V#v}
-ZIP=dist/BoundGate-$PLAIN-macos.zip; DMG=dist/BoundGate-$PLAIN.dmg
-if [ -n "${NO_MAC:-}" ]; then
+if [ $MAC = none ]; then
   say "NO_MAC: this release gets no Mac app"
-elif [ -f "$ZIP" ] && [ -f "$DMG" ] && [ "$(cat dist/.release-built 2>/dev/null)" = "$V $HEAD" ]; then
+elif [ $MAC = built ]; then
   say "Mac app of $V is built already"
 else
   say "building, signing and notarizing the Mac app"

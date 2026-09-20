@@ -79,7 +79,7 @@ sha256sum -c <(jq -r '.assets[] | "\(.sha256)  \(.name)"' manifest.json)
    `GITEA_TOKEN` in the environment. The script hands it to curl in a file, not
    on a command line, and sends it to the configured Gitea only.
 3. **Mac app**: a *Developer ID Application* certificate in your keychain and
-   notarytool credentials stored once
+   notarytool credentials stored once, best an App Store Connect team API key
    (`xcrun notarytool store-credentials boundgate-notary …`, see
    `apps/macos/notarize.sh`). An "Apple Development" certificate is not enough:
    other people's Macs only run Developer ID signed, notarized apps.
@@ -92,6 +92,11 @@ sha256sum -c <(jq -r '.assets[] | "\(.sha256)  \(.name)"' manifest.json)
    public place, `update.url`). Until then every updater needs a read token:
    `update.token_file` in `node.yaml`, `BOUNDGATE_UPDATE_TOKEN_FILE` for
    `update.sh`.
+
+Before it tags anything, the script checks what would stop it later: that the
+token gets write access to the repository, that the keychain has a Developer ID
+identity, and that notarytool can use its profile. What it cannot see in
+advance is the token's scope: a read-only token fails at the first upload.
 
 If something fails on the way (CI red, notarization slow, no network), fix it
 and run `make release VERSION=<that version>` again: the tag exists, a finished
