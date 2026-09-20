@@ -78,6 +78,8 @@
     if (!original || !window.confirm(`Delete policy “${original.name}”?`)) return;
     try { await admin.deletePolicy(original.id); toast('Deleted', 'ok'); navigate('/policies'); } catch (e) { fail(e); }
   }
+  // A policy that only hubs get is not in the way of two spokes that have a path of their own (docs/PATHS.md).
+  const hubsOnly = $derived(scope.length > 0 && scope.every((id) => nodes.find((n) => n.id === id)?.roles.includes('hub')));
   function toggleScope(nid: string) { scope = scope.includes(nid) ? scope.filter((x) => x !== nid) : [...scope, nid]; }
 </script>
 
@@ -108,6 +110,9 @@
             {/each}
           </div>
           <div class="hint" style="margin-top:6px">Scoped policies are only sent to (and enforced on) the selected nodes. Leave empty for every node.</div>
+          {#if hubsOnly}
+            <div class="callout small" style="margin-top:8px"><b>Hubs only.</b> Two nodes that open a path with each other, directly or through a relay, are not decided by a hub: there the receiving node decides, and it does not get this policy. A rule that must hold between nodes needs the receiving nodes in its scope, or no scope.</div>
+          {/if}
         </details>
       </div>
     </div>
