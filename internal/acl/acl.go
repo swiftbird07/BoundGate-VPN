@@ -41,6 +41,7 @@ const (
 	TypeUser    types.EntityType = "BoundGate::User"
 	TypeGroup   types.EntityType = "BoundGate::Group"
 	TypeRole    types.EntityType = "BoundGate::Role"
+	TypeTag     types.EntityType = "BoundGate::Tag"
 	TypeHost    types.EntityType = "BoundGate::Host"
 	TypeNetwork types.EntityType = "BoundGate::Network"
 	TypeAction  types.EntityType = "BoundGate::Action"
@@ -185,6 +186,10 @@ func (e *Engine) buildEntities() {
 		for _, r := range n.Roles {
 			roles[r] = true
 		}
+		for _, t := range n.Tags {
+			uid := types.NewEntityUID(TypeTag, types.String(t))
+			e.base[uid] = types.Entity{UID: uid}
+		}
 		for _, p := range n.Prefixes {
 			addNet(p.Prefix, n.ID)
 		}
@@ -250,7 +255,15 @@ func (e *Engine) nodeEntity(n registry.Node, se *registry.Session) types.Entity 
 	if se != nil {
 		parents = append(parents, types.NewEntityUID(TypeUser, types.String(se.Subject)))
 	}
+	tags := make([]types.Value, 0, len(n.Tags))
+	for _, t := range n.Tags {
+		// a parent as well: `principal in BoundGate::Tag::"laptop"`, and for destinations
+		// `resource in BoundGate::Tag::"production"` (host in network in the tagged node)
+		parents = append(parents, types.NewEntityUID(TypeTag, types.String(t)))
+		tags = append(tags, types.String(t))
+	}
 	attrs := types.RecordMap{
+		"tags":           types.NewSet(tags...),
 		"name":           types.String(n.Name),
 		"kind":           types.String(n.Kind),
 		"roles":          types.NewSet(rs...),

@@ -20,15 +20,15 @@ function node(i: number, name: string, status: T.Node['status'], roles: T.Role[]
 }
 
 const nodes: T.Node[] = [
-  node(1, 'hub1', 'approved', ['hub', 'exit-node'], { public_addr: 'hub1.example.net:443', active_tunnels: 3, prefixes: [{ prefix: '10.60.0.0/24', mode: 'routed' }] }),
-  node(2, 'hub2', 'approved', ['hub'], { public_addr: 'hub2.example.net:443', active_tunnels: 3 }),
-  node(3, 'node-r', 'approved', ['subnet-router'], { prefixes: [{ prefix: '192.168.178.0/24', mode: 'snat' }], active_tunnels: 2 }),
+  node(1, 'hub1', 'approved', ['hub', 'exit-node'], { public_addr: 'hub1.example.net:443', active_tunnels: 3, prefixes: [{ prefix: '10.60.0.0/24', mode: 'routed' }], tags: ['production', 'server'] }),
+  node(2, 'hub2', 'approved', ['hub'], { public_addr: 'hub2.example.net:443', active_tunnels: 3, tags: ['production', 'server'] }),
+  node(3, 'node-r', 'approved', ['subnet-router'], { prefixes: [{ prefix: '192.168.178.0/24', mode: 'snat' }], active_tunnels: 2, tags: ['home', 'server'] }),
   node(4, 'node-a', 'approved', ['endpoint'], { kind: 'interactive', active_tunnels: 2 }),
-  node(5, 'martins-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', active_tunnels: 2 }),
+  node(5, 'martins-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', active_tunnels: 2, tags: ['laptop', 'personal'] }),
   node(6, 'build-runner-07', 'confirmed', ['endpoint'], { key_kind: 'tpm2', hardware_bound: true, hardware_claimed: true, requested_at: ago(5400), confirmed_at: ago(1800) }),
   node(7, 'lenas-thinkpad', 'pending', ['endpoint'], { kind: 'interactive', platform: 'linux/amd64', key_kind: 'tpm2', hardware_bound: false, hardware_claimed: true, requested_at: ago(420) }),
   node(8, 'old-laptop', 'revoked', ['endpoint'], { kind: 'interactive', revoked_at: ago(86400 * 9), revoked_by: 'martin', overlay_ip: '10.21.0.31' }),
-  node(9, 'adas-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', key_kind: 'secure-enclave', hardware_bound: true, hardware_claimed: true, active_tunnels: 2 }),
+  node(9, 'adas-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', key_kind: 'secure-enclave', hardware_bound: true, hardware_claimed: true, active_tunnels: 2, tags: ['laptop'] }),
 ];
 nodes[5].sign_command = `boundgatectl admin sign --control https://control.example.net --node ${nodes[5].id} --fingerprint ${nodes[5].fingerprint} --token st_4be1c0a97d`;
 nodes[5].sign_expires_at = new Date(Date.now() + 480e3).toISOString();
@@ -133,6 +133,7 @@ function answer(method: string, path: string, query: URLSearchParams, body: any,
   const count = (s: string) => nodes.filter((n) => n.status === s).length;
   if (path === '/admin/auth/status') return status(mode);
   if (path === '/admin/overview') return { nodes: { pending: count('pending'), confirmed: count('confirmed'), approved: count('approved'), revoked: count('revoked') }, active_sessions: 2, active_tunnels: 6, policies: policies.length, policies_enabled: 3, denied_last_24h: 2, pending_passkeys: 1, signers: signers.length, snapshot_version: 212 } satisfies T.Overview;
+  if (path === '/admin/tags') return { defaults: ['server', 'workstation', 'laptop', 'phone', 'iot', 'production', 'staging', 'lab', 'critical', 'dmz', 'office', 'home', 'personal', 'shared'], used: [...new Set(nodes.flatMap((n) => n.tags ?? []))].sort() } satisfies T.TagOffer;
   if (path === '/admin/nodes') return query.get('state') ? nodes.filter((n) => n.status === query.get('state')) : nodes;
   const m = path.match(/^\/admin\/nodes\/([^/]+)(\/confirm)?$/);
   if (m) {

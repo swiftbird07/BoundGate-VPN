@@ -49,6 +49,7 @@ func (h *Handlers) AdminMux() http.Handler {
 	mux.HandleFunc("POST /api/v1/admin/nodes/{id}/approve", h.adminConfirmNode) // alias
 	mux.HandleFunc("POST /api/v1/admin/nodes/{id}/reject", h.adminRejectNode)
 	mux.HandleFunc("PATCH /api/v1/admin/nodes/{id}", h.adminPatchNode)
+	mux.HandleFunc("GET /api/v1/admin/tags", h.adminTags)
 	mux.HandleFunc("DELETE /api/v1/admin/nodes/{id}", h.adminRevokeNode)
 	mux.HandleFunc("GET /api/v1/admin/signers", h.adminListSigners)
 	mux.HandleFunc("POST /api/v1/admin/signers", h.adminAddSigner)
@@ -99,6 +100,7 @@ type NodeView struct {
 	Prefixes          []registry.Prefix `json:"prefixes"`
 	OverlayIP         string            `json:"overlay_ip,omitempty"`
 	PublicAddr        string            `json:"public_addr,omitempty"`
+	Tags              []string          `json:"tags"` // the administrator's labels; part of the signed binding
 	KeyVersion        int               `json:"key_version"`
 	Signed            bool              `json:"signed"`
 	SignedBy          string            `json:"signed_by,omitempty"`
@@ -122,7 +124,7 @@ func nodeView(n db.Node) NodeView {
 		ID: n.ID, Name: n.Name, Hostname: n.Hostname, Platform: n.Platform, KeyKind: n.KeyKind,
 		HardwareBound: n.HardwareBound, HardwareClaimed: n.HardwareClaimed, SPKI: n.SPKI.String(), Fingerprint: n.SPKI.Fingerprint(),
 		Status: n.Status, Kind: n.Kind, RequestedRoles: orEmptyRoles(n.RequestedRoles), RequestedPrefixes: orEmptyPrefixes(n.RequestedPrefixes),
-		Roles: orEmptyRoles(n.Roles), Prefixes: orEmptyPrefixes(n.Prefixes), PublicAddr: n.PublicAddr,
+		Roles: orEmptyRoles(n.Roles), Prefixes: orEmptyPrefixes(n.Prefixes), PublicAddr: n.PublicAddr, Tags: append([]string{}, n.Tags...),
 		RequestedAt: n.RequestedAt, RequestIP: n.RequestIP, ConfirmedBy: n.ConfirmedBy, ApprovedBy: n.ApprovedBy, RevokedBy: n.RevokedBy,
 		SnapshotVersion: n.LastSnapshotVersion, ActiveTunnels: n.ActiveTunnels, Attrs: n.Attrs,
 		KeyVersion: n.KeyVersion, Signed: n.Signature != "", SignedBy: n.SignedBy,
@@ -213,6 +215,9 @@ type GrantBody struct {
 	// (patch). False distrusts a reported hardware key; true without such a
 	// report is refused.
 	HardwareBound *bool `json:"hardware_bound"`
+	// Tags: omitted = none (confirm) or unchanged (patch). Signed like roles:
+	// changing them on an approved node asks for a new signature.
+	Tags *[]string `json:"tags"`
 }
 
 func (b GrantBody) grant() (db.Grant, error) {
@@ -230,6 +235,13 @@ func (b GrantBody) grant() (db.Grant, error) {
 			return g, err
 		}
 		g.Roles = roles
+	}
+	if b.Tags != nil {
+		clean, err := db.CleanTags(*b.Tags)
+		if err != nil {
+			return g, errors.New(strings.TrimPrefix(err.Error(), db.ErrConflict.Error()+": "))
+		}
+		g.Tags = &clean
 	}
 	if b.OverlayIP != "" {
 		ip, err := netip.ParseAddr(b.OverlayIP)
@@ -516,6 +528,16 @@ func (h *Handlers) adminGetNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, n)
+}
+
+// adminTags: what to offer where tags are edited.
+func (h *Handlers) adminTags(w http.ResponseWriter, r *http.Request) {
+	used, err := h.d.DB.UsedTags(r.Context())
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"defaults": db.DefaultTags, "used": used})
 }
 
 // adminPutNetwork stores the network settings. A pool that leaves nodes

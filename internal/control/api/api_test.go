@@ -877,3 +877,64 @@ func TestRenumberPool(t *testing.T) {
 		t.Fatalf("snapshot after renumbering: %+v", snap)
 	}
 }
+
+// Tags: the administrator's labels. Cleaned and validated, offered with
+// defaults, part of the snapshot, and no reason for a new signature.
+func TestNodeTags(t *testing.T) {
+	e := newEnv(t)
+	e.registerSigner()
+	hub, laptop := e.device("hub1"), e.device("laptop")
+	hst, lst := e.enroll(hub, `{}`), e.enroll(laptop, `{}`)
+	// tags are granted at confirm and are in what the administrator signs
+	nv := e.approve(hst.NodeID, `{"kind":"workload","roles":["hub"],"tags":[" Production ","server","server","edge-1"]}`)
+	if strings.Join(nv.Tags, ",") != "edge-1,production,server" || nv.Status != "approved" || !nv.Signed {
+		t.Fatalf("tags: %v, status %s, signed %v", nv.Tags, nv.Status, nv.Signed)
+	}
+	e.approve(lst.NodeID, `{"roles":["endpoint"]}`)
+
+	for _, bad := range []string{`{"tags":["has space"]}`, `{"tags":["ümlaut"]}`, `{"tags":["` + strings.Repeat("x", 33) + `"]}`, `{"tags":["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q"]}`} {
+		e.adminCall("PATCH", "/api/v1/admin/nodes/"+hst.NodeID, bad, http.StatusBadRequest, nil)
+	}
+
+	var offer struct{ Defaults, Used []string }
+	e.adminCall("GET", "/api/v1/admin/tags", "", http.StatusOK, &offer)
+	if len(offer.Defaults) < 8 || strings.Join(offer.Used, ",") != "edge-1,production,server" {
+		t.Fatalf("offer: %+v", offer)
+	}
+	// the laptop sees the hub's tags in its snapshot (policies name them)
+	_, snap := e.snapshot(laptop, 0, "1s")
+	if snap == nil || len(snap.Peers) != 1 || strings.Join(snap.Peers[0].Tags, ",") != "edge-1,production,server" {
+		t.Fatalf("snapshot: %+v", snap)
+	}
+	if !strings.Contains(snap.Peers[0].Binding, `"tags":["edge-1","production","server"]`) {
+		t.Fatalf("signed binding: %s", snap.Peers[0].Binding)
+	}
+
+	// the same tags again, or a patch that does not mention them: nothing to sign
+	var same api.ConfirmResponse
+	e.adminCall("PATCH", "/api/v1/admin/nodes/"+hst.NodeID, `{"tags":["server","production","edge-1"]}`, http.StatusOK, &same)
+	e.adminCall("PATCH", "/api/v1/admin/nodes/"+hst.NodeID, `{"name":"hub-one"}`, http.StatusOK, &same)
+	if same.Status != "approved" || same.SignToken != "" || len(same.Tags) != 3 {
+		t.Fatalf("%+v", same)
+	}
+	// other tags: the node drops to confirmed until the administrator signs them
+	var demoted api.ConfirmResponse
+	e.adminCall("PATCH", "/api/v1/admin/nodes/"+hst.NodeID, `{"tags":["staging"]}`, http.StatusOK, &demoted)
+	if demoted.Status != "confirmed" || demoted.Signed || demoted.SignToken == "" || strings.Join(demoted.Tags, ",") != "staging" {
+		t.Fatalf("%+v", demoted)
+	}
+	if _, snap = e.snapshot(laptop, snap.Version, "1s"); snap == nil || len(snap.Peers) != 0 {
+		t.Fatalf("a node with unsigned tags is still handed out: %+v", snap)
+	}
+	if code, b := e.signWith(demoted.SignToken, e.signer); code != http.StatusOK {
+		t.Fatalf("sign: %d %s", code, b)
+	}
+	if _, snap = e.snapshot(laptop, snap.Version, "1s"); snap == nil || len(snap.Peers) != 1 || strings.Join(snap.Peers[0].Tags, ",") != "staging" {
+		t.Fatalf("after the new signature: %+v", snap)
+	}
+	// clearing them is a change like any other
+	e.adminCall("PATCH", "/api/v1/admin/nodes/"+hst.NodeID, `{"tags":[]}`, http.StatusOK, &demoted)
+	if demoted.Status != "confirmed" || len(demoted.Tags) != 0 || demoted.SignToken == "" {
+		t.Fatalf("cleared: %+v", demoted)
+	}
+}

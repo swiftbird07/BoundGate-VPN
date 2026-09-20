@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { admin, ApiError } from '../lib/api';
   import { route, navigate } from '../lib/router.svelte';
-  import type { Node, Grant, Role, Prefix } from '../lib/types';
+  import type { Node, Grant, Role, Prefix, TagOffer } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
   import Time from '../lib/components/Time.svelte';
   import Drawer from '../lib/components/Drawer.svelte';
@@ -16,7 +16,10 @@
   let selected = $state<Node | null>(null);
   let signCmd = $state<{ cmd: string; expires: string } | null>(null);
   let confirm = $state<{ node: Node; edit: boolean } | null>(null);
-  let g = $state<Required<Pick<Grant, 'name' | 'kind' | 'roles' | 'prefixes' | 'overlay_ip' | 'public_addr'>> & { checked: boolean; hardware: boolean }>({ name: '', kind: 'interactive', roles: [], prefixes: [], overlay_ip: '', public_addr: '', checked: false, hardware: false });
+  let g = $state<Required<Pick<Grant, 'name' | 'kind' | 'roles' | 'prefixes' | 'overlay_ip' | 'public_addr' | 'tags'>> & { checked: boolean; hardware: boolean }>({ name: '', kind: 'interactive', roles: [], prefixes: [], overlay_ip: '', public_addr: '', tags: [], checked: false, hardware: false });
+  let tagFilter = $state('');
+  let tagInput = $state('');
+  let offer = $state<TagOffer>({ defaults: [], used: [] });
   let busy = $state(false);
   const allRoles: Role[] = ['endpoint', 'subnet-router', 'hub', 'exit-node'];
 
@@ -32,22 +35,45 @@
   let controlPin = $state('');
   onMount(() => { admin.identity().then((i) => (controlPin = i.control_pin)).catch(() => {}); });
   onMount(() => { void load(); const t = setInterval(load, 8000); return () => clearInterval(t); });
-  const shown = $derived(nodes.filter((n) => filter === 'all' ? n.status !== 'revoked' : n.status === filter));
+  const shown = $derived(nodes.filter((n) => (filter === 'all' ? n.status !== 'revoked' : n.status === filter) && (!tagFilter || (n.tags ?? []).includes(tagFilter))));
+  const tagsInUse = $derived([...new Set(nodes.filter((n) => n.status !== 'revoked').flatMap((n) => n.tags ?? []))].sort());
+  // the built-in tags first, then what other nodes carry; never what this node has already
+  const suggestions = $derived([...offer.defaults, ...offer.used.filter((t) => !offer.defaults.includes(t))].filter((t) => !g.tags.includes(t)));
+  // the server's rule (internal/control/db: CleanTags), so a typo shows here and not as a 400
+  const tagOK = (t: string) => /^[a-z0-9][a-z0-9._-]{0,31}$/.test(t);
+  // also takes a pasted list ("laptop, office"); what does not fit stays in the input
+  function addTag(raw: string) {
+    const left: string[] = [];
+    for (const t of raw.toLowerCase().split(/[\s,]+/).filter(Boolean)) {
+      if (g.tags.includes(t)) continue;
+      if (!tagOK(t)) { left.push(t); toast(`"${t}" is not a tag: up to 32 of a-z, 0-9, ".", "_" and "-", starting with a letter or digit`, 'bad'); }
+      else if (g.tags.length >= 16) { left.push(t); toast('At most 16 tags per node', 'bad'); }
+      else g.tags = [...g.tags, t].sort();
+    }
+    tagInput = left.join(' ');
+  }
+  function tagKey(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ',' || e.key === ' ') { e.preventDefault(); addTag(tagInput); }
+    else if (e.key === 'Backspace' && !tagInput && g.tags.length) g.tags = g.tags.slice(0, -1);
+  }
   const counts = $derived({ pending: nodes.filter((n) => n.status === 'pending').length, confirmed: nodes.filter((n) => n.status === 'confirmed').length, approved: nodes.filter((n) => n.status === 'approved').length, revoked: nodes.filter((n) => n.status === 'revoked').length });
 
   function select(n: Node | null) { selected = n; signCmd = null; navigate(n ? `/nodes?id=${n.id}` : '/nodes', true); }
   function openConfirm(n: Node, edit: boolean) {
     const roles = n.roles.length ? n.roles : n.requested_roles;
     const prefixes = n.prefixes.length ? n.prefixes : n.requested_prefixes;
-    g = { name: n.name, kind: n.kind || 'interactive', roles: [...roles], prefixes: prefixes.map((p) => ({ ...p })), overlay_ip: n.overlay_ip || '', public_addr: n.public_addr || '', checked: edit, hardware: n.status === 'pending' ? !!n.hardware_claimed : n.hardware_bound };
+    g = { name: n.name, kind: n.kind || 'interactive', roles: [...roles], prefixes: prefixes.map((p) => ({ ...p })), overlay_ip: n.overlay_ip || '', public_addr: n.public_addr || '', tags: [...(n.tags ?? [])], checked: edit, hardware: n.status === 'pending' ? !!n.hardware_claimed : n.hardware_bound };
+    tagInput = '';
+    admin.tags().then((o) => (offer = o)).catch(() => {});
     confirm = { node: n, edit };
   }
   function toggleRole(r: Role) { g.roles = g.roles.includes(r) ? g.roles.filter((x) => x !== r) : [...g.roles, r]; }
   async function submitConfirm() {
     if (!confirm) return;
+    if (tagInput.trim()) { addTag(tagInput); if (tagInput) return; }
     busy = true;
     try {
-      const body: Grant = { fingerprint: confirm.node.fingerprint, name: g.name, kind: g.kind, roles: g.roles, prefixes: g.prefixes.filter((p) => p.prefix.trim()), overlay_ip: g.overlay_ip || undefined, public_addr: g.public_addr || undefined, hardware_bound: confirm.node.hardware_claimed ? g.hardware : undefined };
+      const body: Grant = { fingerprint: confirm.node.fingerprint, name: g.name, kind: g.kind, roles: g.roles, prefixes: g.prefixes.filter((p) => p.prefix.trim()), overlay_ip: g.overlay_ip || undefined, public_addr: g.public_addr || undefined, tags: g.tags, hardware_bound: confirm.node.hardware_claimed ? g.hardware : undefined };
       const r = confirm.edit ? await admin.patchNode(confirm.node.id, body) : await admin.confirm(confirm.node.id, body);
       confirm = null;
       await load();
@@ -77,6 +103,13 @@
     {/each}
   </div>
 </div>
+{#if tagsInUse.length}
+  <div class="tagbar small">
+    <span class="muted">Tags</span>
+    {#each tagsInUse as t}<button class="chip tag" class:on={tagFilter === t} onclick={() => (tagFilter = tagFilter === t ? '' : t)}>{t}</button>{/each}
+    {#if tagFilter}<button class="btn sm ghost" onclick={() => (tagFilter = '')}>clear</button>{/if}
+  </div>
+{/if}
 {#if controlPin}
   <div class="pinline small">
     <span class="muted">Control plane fingerprint</span>
@@ -91,7 +124,7 @@
     <tbody>
       {#each shown as n (n.id)}
         <tr class="clickable" class:selected={selected?.id === n.id} onclick={() => select(n)}>
-          <td><b>{n.name}</b><div class="faint small">{n.hostname} · {n.platform} · {n.key_kind}{n.hardware_bound ? ' · hardware-bound' : n.hardware_claimed ? ' · reports a hardware key' : ''}</div></td>
+          <td><b>{n.name}</b><div class="faint small">{n.hostname} · {n.platform} · {n.key_kind}{n.hardware_bound ? ' · hardware-bound' : n.hardware_claimed ? ' · reports a hardware key' : ''}</div>{#if n.tags?.length}<div class="tags">{#each n.tags as t}<span class="chip tag">{t}</span>{/each}</div>{/if}</td>
           <td><Badge status={n.status} />{#if n.status === 'confirmed'}<div class="faint small">awaiting signature</div>{/if}</td>
           <td>{n.kind}</td>
           <td>{#each (n.roles.length ? n.roles : n.requested_roles) as r}<span class="chip">{r}</span> {/each}</td>
@@ -101,7 +134,7 @@
           <td class="num">{n.active_tunnels}</td>
         </tr>
       {:else}
-        <tr><td colspan="8" class="empty">No nodes {filter === 'all' ? '' : filter}. Enroll one with <code>boundgatectl enroll</code>.</td></tr>
+        <tr><td colspan="8" class="empty">{#if tagFilter}No {filter === 'all' ? '' : filter} nodes tagged <span class="chip tag">{tagFilter}</span>.{:else}No nodes {filter === 'all' ? '' : filter}. Enroll one with <code>boundgatectl enroll</code>.{/if}</td></tr>
       {/each}
     </tbody>
   </table>
@@ -144,6 +177,7 @@
         <dt>SPKI</dt><dd class="mono small">{n.spki}</dd>
         <dt>Requested</dt><dd>{n.requested_roles.join(', ') || '–'} {#if n.requested_prefixes.length}· {n.requested_prefixes.map((p) => p.prefix).join(', ')}{/if} <span class="faint">from {n.request_ip} <Time at={n.requested_at} /></span></dd>
         <dt>Granted</dt><dd>{n.roles.join(', ') || '–'} {#if n.prefixes.length}· {n.prefixes.map((p) => `${p.prefix} (${p.mode})`).join(', ')}{/if}</dd>
+        <dt>Tags</dt><dd>{#each n.tags ?? [] as t}<span class="chip tag">{t}</span> {:else}–{/each}</dd>
         <dt>Overlay IP</dt><dd class="mono">{n.overlay_ip || '–'}</dd>
         {#if n.public_addr}<dt>Public address</dt><dd class="mono">{n.public_addr}</dd>{/if}
         {#if n.confirmed_at}<dt>Confirmed</dt><dd><Time at={n.confirmed_at} /> by {n.confirmed_by}</dd>{/if}
@@ -164,7 +198,7 @@
         <div class="cmd"><pre>{confirm.node.fingerprint}</pre></div>
         <label class="check"><input type="checkbox" bind:checked={g.checked} /> I compared this fingerprint with the one the device shows</label>
       {:else}
-        <p class="hint">Changing a signed field (kind, roles, prefixes, overlay IP, hardware-bound) demotes an approved node to <i>confirmed</i> until an admin signs the new binding.</p>
+        <p class="hint">Changing a signed field (kind, roles, tags, prefixes, overlay IP, hardware-bound) demotes an approved node to <i>confirmed</i> until an admin signs the new binding.</p>
       {/if}
       <div class="grid cols-2">
         <label class="field">Name <input bind:value={g.name} /></label>
@@ -175,6 +209,15 @@
         <p class="hint">The node says so; nothing proves it remotely. Tick it if you know the machine. It becomes part of the signed binding, and policies can require it (<code>principal.hardware_bound</code>).</p>
       {/if}
       <div class="field"><span>Roles</span><div class="row">{#each allRoles as r}<label class="check"><input type="checkbox" checked={g.roles.includes(r)} onchange={() => toggleRole(r)} /> {r}</label>{/each}</div></div>
+      <div class="field"><span>Tags</span>
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+        <div class="tagbox" onclick={(e) => (e.currentTarget.querySelector('input') as HTMLInputElement).focus()}>
+          {#each g.tags as t}<span class="chip tag on">{t}<button aria-label="remove {t}" onclick={(e) => { e.stopPropagation(); g.tags = g.tags.filter((x) => x !== t); }}>✕</button></span>{/each}
+          <input placeholder={g.tags.length ? '' : 'pick below or type your own'} bind:value={tagInput} onkeydown={tagKey} onblur={() => addTag(tagInput)} />
+        </div>
+        {#if suggestions.length}<div class="suggest">{#each suggestions as t}<button class="chip tag" onclick={() => addTag(t)}>+ {t}</button>{/each}</div>{/if}
+        <span class="hint">Policies select nodes by tag (<code>principal in BoundGate::Tag::"laptop"</code>), so tags are part of the binding your admin key signs: the control plane cannot hand one out by itself.</span>
+      </div>
       <div class="grid cols-2">
         <label class="field">Overlay IP <input placeholder="next free address" bind:value={g.overlay_ip} /></label>
         <label class="field">Public address (hubs) <input placeholder="hub.example:443" bind:value={g.public_addr} /></label>
@@ -197,4 +240,16 @@
 
 <style>
   .pinline { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: -0.25rem 0 1rem; }
+  .tagbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin: -0.25rem 0 1rem; }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .chip.tag { border-radius: 999px; font-weight: 500; }
+  button.chip.tag { cursor: pointer; font-family: inherit; }
+  button.chip.tag:hover { border-color: var(--accent); color: var(--text); }
+  .chip.tag.on { background: color-mix(in srgb, var(--accent) 16%, transparent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--text); }
+  .chip.tag.on button { all: unset; cursor: pointer; margin-left: 6px; font-size: 10px; opacity: 0.65; }
+  .chip.tag.on button:hover { opacity: 1; }
+  .tagbox { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 5px 8px; min-height: 36px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); cursor: text; }
+  .tagbox:focus-within { border-color: var(--accent); }
+  .tagbox input { all: unset; flex: 1; min-width: 9rem; font-size: 13px; padding: 2px 0; }
+  .suggest { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 </style>

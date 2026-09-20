@@ -74,15 +74,30 @@ func runAdmin(args []string, asJSON bool) error {
 	if wantFP != gotFP {
 		return fmt.Errorf("admin sign: fingerprint mismatch: you gave %s, the control plane has %s. Do not sign", wantFP, gotFP)
 	}
+	// What gets signed is the binding, so that is what is checked and shown:
+	// the fields next to it are the control plane's description of it.
+	bd, err := binding.Parse([]byte(sb.Binding))
+	if err != nil {
+		return fmt.Errorf("admin sign: the control plane sent a binding that does not parse: %w. Do not sign", err)
+	}
+	if bd.NodeID != *nodeID {
+		return fmt.Errorf("admin sign: the binding is for node %s, not %s. Do not sign", bd.NodeID, *nodeID)
+	}
+	if got := strings.ReplaceAll(bd.SPKI.Fingerprint(), " ", ""); got != wantFP {
+		return fmt.Errorf("admin sign: the binding names the key %s, you gave %s. Do not sign", got, wantFP)
+	}
 	if !asJSON {
-		fmt.Printf("node:         %s (%s)\nfingerprint:  %s\nkey:          %s (hardware-bound: %v)\nroles:        %v\n",
-			sb.Name, sb.NodeID, sb.Fingerprint, sb.KeyKind, sb.Hardware, sb.Roles)
-		for _, p := range sb.Prefixes {
+		fmt.Printf("node:         %s (%s)\nfingerprint:  %s\nkey:          %s (hardware-bound: %v)\nkind:         %s\nroles:        %v\n",
+			sb.Name, bd.NodeID, bd.SPKI.Fingerprint(), sb.KeyKind, bd.HardwareBound, bd.Kind, bd.Roles)
+		if len(bd.Tags) > 0 {
+			fmt.Printf("tags:         %s\n", strings.Join(bd.Tags, ", "))
+		}
+		for _, p := range bd.Prefixes {
 			fmt.Printf("announces:    %s (%s)\n", p.Prefix, p.Mode)
 		}
-		fmt.Printf("overlay ip:   %s\n", sb.OverlayIP)
+		fmt.Printf("overlay ip:   %s\n", bd.OverlayIP)
 		if sb.PublicAddr != "" {
-			fmt.Printf("public addr:  %s\n", sb.PublicAddr)
+			fmt.Printf("public addr:  %s (not signed)\n", sb.PublicAddr)
 		}
 		fmt.Printf("binding:      %s\n", sb.Binding)
 	}

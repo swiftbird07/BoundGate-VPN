@@ -110,6 +110,7 @@ func toRegistry(n db.Node) registry.Node {
 		Roles:         n.Roles,
 		OverlayIP:     n.OverlayIP,
 		Prefixes:      n.Prefixes,
+		Tags:          n.Tags,
 		ApprovedAt:    n.ApprovedAt,
 		KeyVersion:    n.KeyVersion,
 		Binding:       n.Binding,

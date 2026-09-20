@@ -4,13 +4,13 @@ export interface Prefix { prefix: string; mode: 'routed' | 'snat' }
 export interface Node {
   id: string; name: string; hostname?: string; platform?: string; key_kind?: string; hardware_bound: boolean; hardware_claimed?: boolean;
   spki: string; fingerprint: string; status: 'pending' | 'confirmed' | 'approved' | 'revoked';
-  kind: 'interactive' | 'workload'; requested_roles: Role[]; requested_prefixes: Prefix[]; roles: Role[]; prefixes: Prefix[];
+  kind: 'interactive' | 'workload'; requested_roles: Role[]; requested_prefixes: Prefix[]; roles: Role[]; prefixes: Prefix[]; tags?: string[];
   overlay_ip?: string; public_addr?: string; key_version: number; signed: boolean; signed_by?: string; signed_at?: string;
   requested_at: string; request_ip?: string; confirmed_at?: string; confirmed_by?: string; approved_at?: string; approved_by?: string;
   revoked_at?: string; revoked_by?: string; last_seen_at?: string; snapshot_version: number; active_tunnels: number;
   sign_token?: string; sign_expires_at?: string; sign_command?: string;
 }
-export interface Grant { fingerprint?: string; name?: string; kind?: string; roles?: Role[]; prefixes?: Prefix[]; overlay_ip?: string; public_addr?: string; hardware_bound?: boolean }
+export interface Grant { fingerprint?: string; name?: string; kind?: string; roles?: Role[]; prefixes?: Prefix[]; overlay_ip?: string; public_addr?: string; hardware_bound?: boolean; tags?: string[] }
 export interface Signer { id: string; name: string; subject?: string; public_key: string; key_type: string; hardware: boolean; fingerprint: string; created_at: string; revoked_at?: string; active: boolean }
 export interface SignerChange { version: number; keys: Signer[]; added: string[]; removed: string[]; affected_nodes: { id: string; name: string }[]; signable_by: string[]; sign_token: string; sign_command: string; sign_expires_at: string }
 export interface SignerSet { version: number; hash?: string; genesis_hash?: string; history: { version: number; hash: string; signed_by: string; admin: string; created_at: string; added: string[]; removed: string[] }[] }
@@ -29,3 +29,6 @@ export interface Overview { nodes: Record<string, number>; active_sessions: numb
 
 /** A node that moved with the overlay pool; an approved one needs a new signature. */
 export interface Renumbered { id: string; name: string; from: string; to: string; needs_signature: boolean }
+
+// what to offer where tags are edited: the built-in ones and those in use
+export interface TagOffer { defaults: string[]; used: string[] }

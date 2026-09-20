@@ -36,6 +36,7 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | POST | `/api/v1/admin/nodes/{id}/confirm` (alias `/approve`) | `Grant` (roles required for a pending node; empty body on a confirmed node re-issues the token) | `ConfirmResponse`; 400 without roles; 409 if fingerprint mismatch, wrong state, invalid grant, or no admin key registered |
 | POST | `/api/v1/admin/nodes/{id}/reject` | | 204; pending/confirmed only |
 | PATCH | `/api/v1/admin/nodes/{id}` | `Grant` (all fields optional) | `ConfirmResponse`; a signed field change demotes an approved node to confirmed and returns a new sign token |
+| GET | `/api/v1/admin/tags` | | `{defaults: [...], used: [...]}`: the tags to offer in an editor (built in, and carried by some node) |
 | DELETE | `/api/v1/admin/nodes/{id}` | | 204 (revoke, also ends the node's user session); 409 unless approved |
 | GET | `/api/v1/admin/signers` | | `[SignerView]` incl. removed; `active` = in the signed list |
 | GET | `/api/v1/admin/signers/set` | | `{version, hash, genesis_hash, history[]}` of the signed list |
@@ -73,6 +74,8 @@ updated_at/by`.
   "prefixes": [{"prefix": "192.168.178.0/24", "mode": "snat"}],   // routed | snat
   "overlay_ip": "10.21.0.7",            // optional, else the next free address
   "public_addr": "hub1.example:443",    // hubs: what spokes dial; spokes: where peers can dial a direct path (PATHS.md); unsigned
+  "tags": ["production", "server"],     // optional. Omitted: none (confirm), unchanged (patch). [] clears. Signed, like roles.
+                                        // a-z 0-9 . _ - (max 32, starts with a letter or digit), at most 16; lowercased, sorted; else 400
   "hardware_bound": true                // optional. Omitted: what the node reported (confirm), unchanged (patch).
                                         // false declines a reported hardware key; true without such a report is 409. Signed.
 }
@@ -80,7 +83,7 @@ updated_at/by`.
 
 `NodeView`: `id, name, hostname, platform, key_kind, hardware_bound` (granted
 and signed)`, hardware_claimed` (reported by the node)`, spki,
-fingerprint, status, kind, requested_roles, requested_prefixes, roles, prefixes,
+fingerprint, status, kind, requested_roles, requested_prefixes, roles, tags, prefixes,
 overlay_ip, public_addr, key_version, signed, signed_by, signed_at,
 requested_at, request_ip, confirmed_at, confirmed_by, approved_at,
 approved_by, revoked_at, revoked_by, last_seen_at, snapshot_version,

@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,24 +68,26 @@ type Node struct {
 	LastSeenAt          time.Time
 	LastSnapshotVersion uint64
 	ActiveTunnels       int
+	// Tags are the administrator's labels; part of the signed binding.
+	Tags []string
 }
 
 const nodeCols = `id, name, hostname, platform, key_kind, hardware_bound, spki_hash, cert_der, attrs_json,
 	requested_roles_json, requested_prefixes_json, roles_json, prefixes_json, overlay_ip, public_addr,
 	status, requested_at, request_ip, confirmed_at, confirmed_by, approved_at, approved_by, revoked_at, revoked_by,
-	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at, kind, hardware_claimed`
+	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at, kind, hardware_claimed, tags_json`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanNode(s scanner) (Node, error) {
 	var n Node
 	var spki []byte
-	var attrs, reqRoles, reqPrefixes, roles, prefixes, overlay, requestedAt string
+	var attrs, reqRoles, reqPrefixes, roles, prefixes, overlay, requestedAt, tags string
 	var confirmedAt, confirmedBy, approvedAt, approvedBy, revokedAt, revokedBy, lastSeen, signedAt sql.NullString
 	if err := s.Scan(&n.ID, &n.Name, &n.Hostname, &n.Platform, &n.KeyKind, &n.HardwareBound, &spki, &n.CertDER, &attrs,
 		&reqRoles, &reqPrefixes, &roles, &prefixes, &overlay, &n.PublicAddr,
 		&n.Status, &requestedAt, &n.RequestIP, &confirmedAt, &confirmedBy, &approvedAt, &approvedBy, &revokedAt, &revokedBy,
-		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt, &n.Kind, &n.HardwareClaimed); err != nil {
+		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt, &n.Kind, &n.HardwareClaimed, &tags); err != nil {
 		return n, err
 	}
 	n.SignedAt = parseTime(signedAt)
@@ -92,6 +97,7 @@ func scanNode(s scanner) (Node, error) {
 	_ = json.Unmarshal([]byte(reqPrefixes), &n.RequestedPrefixes)
 	_ = json.Unmarshal([]byte(roles), &n.Roles)
 	_ = json.Unmarshal([]byte(prefixes), &n.Prefixes)
+	_ = json.Unmarshal([]byte(tags), &n.Tags)
 	if overlay != "" {
 		n.OverlayIP, _ = netip.ParseAddr(overlay)
 	}
@@ -231,6 +237,8 @@ type Grant struct {
 	// grant on update. True needs the claim: an admin can distrust a
 	// reported hardware key, not invent one.
 	HardwareBound *bool
+	// Tags: nil keeps the node's tags (none at the first confirm).
+	Tags *[]string
 }
 
 const errNoHardwareClaim = "the node reported a software key; hardware_bound cannot be granted"
@@ -301,9 +309,9 @@ func (d *DB) ConfirmNode(ctx context.Context, id, by string, g Grant, pool netip
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE nodes SET status = 'confirmed', confirmed_at = ?, confirmed_by = ?,
 			name = COALESCE(NULLIF(?, ''), name), kind = ?, hardware_bound = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?,
-			public_addr = COALESCE(NULLIF(?, ''), public_addr), binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL
+			public_addr = COALESCE(NULLIF(?, ''), public_addr), tags_json = COALESCE(?, tags_json), binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL
 			WHERE id = ? AND status IN ('pending', 'confirmed')`,
-			now(), by, g.Name, string(kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), g.PublicAddr, id)
+			now(), by, g.Name, string(kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), g.PublicAddr, tagsArg(g.Tags), id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, ip)
@@ -335,6 +343,77 @@ func (d *DB) ApproveSigned(ctx context.Context, id, token, bindingJSON, signatur
 		}
 		return affected(res)
 	})
+}
+
+// DefaultTags are offered wherever tags are edited; any other tag that fits
+// the rules can be typed.
+var DefaultTags = []string{"server", "workstation", "laptop", "phone", "iot", "production", "staging", "lab", "critical", "dmz", "office", "home", "personal", "shared"}
+
+var tagRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+
+// CleanTags lowercases, trims, removes duplicates and sorts; it refuses what
+// is not a tag (letters, digits, . _ -, at most 32 characters, 16 per node).
+func CleanTags(in []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, t := range in {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" || seen[t] {
+			continue
+		}
+		if !tagRE.MatchString(t) {
+			return nil, fmt.Errorf("%w: %q is not a tag (lowercase letters, digits, . _ -, at most 32 characters)", ErrConflict, t)
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	if len(out) > 16 {
+		return nil, fmt.Errorf("%w: at most 16 tags per node", ErrConflict)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// tagsArg is the SQL argument for an optional tag set: NULL keeps the column.
+func tagsArg(t *[]string) any {
+	if t == nil {
+		return nil
+	}
+	return jsonOf(orEmptyTags(*t))
+}
+
+func orEmptyTags(t []string) []string {
+	if t == nil {
+		return []string{}
+	}
+	return t
+}
+
+// UsedTags returns every tag some node carries, sorted.
+func (d *DB) UsedTags(ctx context.Context) ([]string, error) {
+	rows, err := d.sql.QueryContext(ctx, `SELECT tags_json FROM nodes WHERE tags_json != '[]' AND status != 'revoked'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var tags []string
+		_ = json.Unmarshal([]byte(raw), &tags)
+		for _, t := range tags {
+			seen[t] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out, rows.Err()
 }
 
 // UpdateNode changes the grant (or the name) of a node. For an approved
@@ -375,7 +454,11 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 	if hw && !cur.HardwareClaimed {
 		return 0, false, fmt.Errorf("%w: %s", ErrConflict, errNoHardwareClaim)
 	}
-	signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP || g.Kind != cur.Kind || hw != cur.HardwareBound
+	tags := cur.Tags
+	if g.Tags != nil {
+		tags = *g.Tags
+	}
+	signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP || g.Kind != cur.Kind || hw != cur.HardwareBound || !slices.Equal(tags, cur.Tags)
 	demote := cur.Status == StatusApproved && signedChanged
 	bump := cur.Status == StatusApproved
 	version, err := d.tx(ctx, bump, func(tx *sql.Tx) error {
@@ -383,11 +466,11 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 		if g.OverlayIP.IsValid() {
 			overlay = g.OverlayIP.String()
 		}
-		q := `UPDATE nodes SET name = COALESCE(NULLIF(?, ''), name), kind = ?, hardware_bound = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?, public_addr = ?`
+		q := `UPDATE nodes SET name = COALESCE(NULLIF(?, ''), name), kind = ?, hardware_bound = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?, public_addr = ?, tags_json = ?`
 		if demote {
 			q += `, status = 'confirmed', binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL, approved_at = NULL, approved_by = NULL`
 		}
-		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, g.PublicAddr, id)
+		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, g.PublicAddr, jsonOf(orEmptyTags(tags)), id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, g.OverlayIP)

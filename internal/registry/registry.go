@@ -126,7 +126,11 @@ type Node struct {
 	// PublicAddr is host:port of the tunnel listener; hubs only. It is not
 	// part of the signed binding: a wrong address only fails the pinned
 	// handshake.
-	PublicAddr string    `json:"public_addr,omitempty"`
+	PublicAddr string `json:"public_addr,omitempty"`
+	// Tags are the administrator's labels for this node; policies select
+	// nodes by them (`principal in BoundGate::Tag::"laptop"`). Part of the
+	// signed binding, like roles.
+	Tags       []string  `json:"tags,omitempty"`
 	ApprovedAt time.Time `json:"approved_at,omitempty"`
 	// KeyVersion counts re-keys of the same node id; part of the binding.
 	KeyVersion int `json:"key_version"`

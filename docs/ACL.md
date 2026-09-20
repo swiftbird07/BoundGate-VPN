@@ -29,10 +29,11 @@ Policies talk about these entities:
 
 | Entity | Attributes | Parents (`in`) |
 |---|---|---|
-| `BoundGate::Node::"<node id>"` (principal, or owner of a destination) | `name`, `kind` (`interactive`/`workload`), `roles` (set), `overlay_ip` (ipaddr), `hardware_bound`, `platform`, `key_kind`, `has_session` | `BoundGate::Role::"<role>"` for every granted role; `BoundGate::User::"<subject>"` while the node has an active user session |
+| `BoundGate::Node::"<node id>"` (principal, or owner of a destination) | `name`, `kind` (`interactive`/`workload`), `roles` (set), `overlay_ip` (ipaddr), `hardware_bound`, `tags` (set), `platform`, `key_kind`, `has_session` | `BoundGate::Role::"<role>"` for every granted role; `BoundGate::Tag::"<tag>"` for every tag; `BoundGate::User::"<subject>"` while the node has an active user session |
 | `BoundGate::User::"<subject>"` | `subject`, `email`, `username`, `groups` (set) | `BoundGate::Group::"<name>"` for every OIDC group |
 | `BoundGate::Host::"<ip>"` (resource: the destination of a flow) | `ip` (ipaddr), `port`, `protocol` (`tcp`/`udp`/`icmp`/number), `sni` (only when a TLS ClientHello was seen), `dns_name` (only for DNS queries) | `BoundGate::Network::"<prefix>"` for the overlay pool and every announced prefix containing the address; `BoundGate::Node::"<owner>"` (the node with that overlay address, or the announcer of the longest matching prefix) |
 | `BoundGate::Network::"<prefix>"` | `prefix` (ipaddr) | the announcing node(s) |
+| `BoundGate::Tag::"<tag>"` | | none. A destination is `in` the tags of the node that owns it, through that node |
 | `BoundGate::Action::"connect"` | | the only action |
 
 `context` carries `protocol`, `port`, `has_session`, and when present `sni`,
@@ -42,6 +43,13 @@ The membership chain `node ∈ user ∈ group` is what makes user-centric
 policies short: `principal in BoundGate::Group::"admins"` is true for a node
 whose current session belongs to a user in that group, and false the moment
 the session ends (the hub then also closes the tunnel, see `OIDC.md`).
+
+Tags are an administrator's labels for nodes (Nodes, "Edit grant"): a few
+are offered (`server`, `workstation`, `laptop`, `phone`, `iot`,
+`production`, `staging`, `lab`, `critical`, `dmz`, `office`, `home`,
+`personal`, `shared`), any other that fits the form works too. They are part
+of the signed binding like roles (BINDINGS.md), so a policy may rely on
+them: neither the node nor the control plane can give a node a tag.
 
 ## Examples
 
@@ -78,6 +86,16 @@ Cedar semantics apply unchanged: at least one `permit` must match and no
 `forbid` may match. A referenced attribute that does not exist (e.g.
 `resource.sni` on a plain TCP flow) is an evaluation error for that policy,
 which then neither permits nor forbids; use `has` guards.
+
+Laptops reach what is tagged `production` only with a hardware key, and
+nothing tagged `iot` starts connections to anything but its own kind:
+
+```cedar
+permit (principal in BoundGate::Tag::"laptop", action, resource in BoundGate::Tag::"production")
+  when { principal.hardware_bound };
+forbid (principal in BoundGate::Tag::"iot", action, resource)
+  unless { resource in BoundGate::Tag::"iot" };
+```
 
 ## Scope
 

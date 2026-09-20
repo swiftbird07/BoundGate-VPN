@@ -110,7 +110,7 @@ func (h *Handlers) currentBinding(w http.ResponseWriter, r *http.Request, t db.S
 }
 
 func nodeToRegistry(n db.Node) registry.Node {
-	return registry.Node{ID: transport.DeviceID(n.ID), Name: n.Name, SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP, HardwareBound: n.HardwareBound}
+	return registry.Node{ID: transport.DeviceID(n.ID), Name: n.Name, SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP, HardwareBound: n.HardwareBound, Tags: n.Tags}
 }
 
 // activeSigners are the keys of the verified head of the signed list.

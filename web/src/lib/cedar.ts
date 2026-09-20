@@ -8,9 +8,11 @@ export type Principal =
   | { kind: 'node'; id: string }
   | { kind: 'group'; name: string }
   | { kind: 'user'; subject: string }
-  | { kind: 'role'; role: string };
+  | { kind: 'role'; role: string }
+  | { kind: 'tag'; tag: string };
 export type Resource =
   | { kind: 'any' }
+  | { kind: 'tag'; tag: string }
   | { kind: 'network'; prefix: string }
   | { kind: 'node'; id: string }
   | { kind: 'host'; ip: string };
@@ -73,6 +75,7 @@ function principalText(p: Principal): string {
     case 'group': return `principal in BoundGate::Group::${str(p.name)}`;
     case 'user': return `principal in BoundGate::User::${str(p.subject)}`;
     case 'role': return `principal in BoundGate::Role::${str(p.role)}`;
+    case 'tag': return `principal in BoundGate::Tag::${str(p.tag)}`;
   }
 }
 function resourceText(r: Resource): string {
@@ -81,6 +84,7 @@ function resourceText(r: Resource): string {
     case 'network': return `resource in BoundGate::Network::${str(r.prefix)}`;
     case 'node': return `resource in BoundGate::Node::${str(r.id)}`;
     case 'host': return `resource == BoundGate::Host::${str(r.ip)}`;
+    case 'tag': return `resource in BoundGate::Tag::${str(r.tag)}`;
   }
 }
 
@@ -216,6 +220,7 @@ export function parse(cedar: string): Rule | null {
     else if (op === 'in' && ty === 'Group') principal = { kind: 'group', name: unstr(id) };
     else if (op === 'in' && ty === 'User') principal = { kind: 'user', subject: unstr(id) };
     else if (op === 'in' && ty === 'Role') principal = { kind: 'role', role: unstr(id) };
+    else if (op === 'in' && ty === 'Tag') principal = { kind: 'tag', tag: unstr(id) };
     else return null;
   }
   let resource: Resource;
@@ -227,6 +232,7 @@ export function parse(cedar: string): Rule | null {
     if (op === 'in' && ty === 'Network') resource = { kind: 'network', prefix: unstr(id) };
     else if (op === 'in' && ty === 'Node') resource = { kind: 'node', id: unstr(id) };
     else if (op === '==' && ty === 'Host') resource = { kind: 'host', ip: unstr(id) };
+    else if (op === 'in' && ty === 'Tag') resource = { kind: 'tag', tag: unstr(id) };
     else return null;
   }
   const rule: Rule = { effect: m[1] as Effect, principal, resource, when: [], unless: [] };

@@ -52,6 +52,7 @@ export const admin = {
   patchNode: (id: string, g: T.Grant) => api<T.Node>('PATCH', `/admin/nodes/${id}`, g),
   reject: (id: string) => api('POST', `/admin/nodes/${id}/reject`),
   revoke: (id: string) => api('DELETE', `/admin/nodes/${id}`),
+  tags: () => api<T.TagOffer>('GET', '/admin/tags'),
   signers: () => api<T.Signer[]>('GET', '/admin/signers'),
   // adding or removing a key only proposes the next signed list (202 + sign command)
   addSigner: (name: string, public_key: string) => api<T.SignerChange>('POST', '/admin/signers', { name, public_key }),

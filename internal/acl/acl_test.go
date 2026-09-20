@@ -172,3 +172,34 @@ func TestOwner(t *testing.T) {
 		t.Fatal("unowned")
 	}
 }
+
+// Tags name sets of nodes in policies: as the principal's group, as the
+// owner of a destination, and as an attribute.
+func TestTags(t *testing.T) {
+	s := lab(
+		registry.Policy{ID: "p-tag", Name: "laptops reach production", Cedar: `permit(principal in BoundGate::Tag::"laptop", action, resource in BoundGate::Tag::"production");`},
+		registry.Policy{ID: "p-attr", Name: "not from lab machines", Cedar: `forbid(principal, action, resource) when { principal.tags.contains("lab") };`},
+	)
+	for i := range s.Peers {
+		switch s.Peers[i].ID {
+		case "node-a":
+			s.Peers[i].Tags = []string{"laptop"}
+		case "node-r":
+			s.Peers[i].Tags = []string{"lab", "laptop"}
+		}
+	}
+	s.Self.Tags = []string{"production"} // hub1 announces 10.60.0.0/24
+	e := New(s)
+	if len(e.Errors()) != 0 {
+		t.Fatal(e.Errors())
+	}
+	if d := e.Evaluate(req("node-a", "10.60.0.10", 443, 6)); !d.Allow || len(d.Policies) != 1 || d.Policies[0] != "laptops reach production" {
+		t.Fatalf("tagged laptop to a tagged node's network: %+v", d)
+	}
+	if d := e.Evaluate(req("node-a", "192.168.178.10", 443, 6)); d.Allow {
+		t.Fatalf("a destination behind an untagged node was allowed: %+v", d)
+	}
+	if d := e.Evaluate(req("node-r", "10.60.0.10", 443, 6)); d.Allow || len(d.Policies) != 1 || d.Policies[0] != "not from lab machines" {
+		t.Fatalf("forbid by tag attribute: %+v", d)
+	}
+}

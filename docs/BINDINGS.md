@@ -13,7 +13,8 @@ It says: *this node id and this device key are of this kind (interactive:
 a person must log in; workload: the key alone suffices), hold these roles,
 may announce these prefixes, and own this overlay address*. A binding for a
 node whose key an admin accepted as living in a TPM ends with
-`,"hardware_bound":true}` (TPM.md). Every node verifies the
+`,"hardware_bound":true}` (TPM.md), and the tags an admin gave the node
+follow as `,"tags":["production","server"]}`. Every node verifies the
 bindings of its peers and of itself against the admin keys it pinned at
 its own enrollment. The control plane distributes bindings but cannot
 create or change one. A compromised control plane can therefore still
@@ -50,10 +51,20 @@ what it parsed and refuses anything that does not reproduce the bytes
 `binding.(Binding).Canonical` in `internal/binding` are the only
 implementations.
 
-`hardware_bound` is the last field and is **left out when false**. Bindings
-signed before the field existed therefore stay valid and mean what they
-meant: not hardware-bound. An explicit `"hardware_bound":false` is not
-canonical and is refused.
+`hardware_bound` comes after the overlay address and is **left out when
+false**. Bindings signed before the field existed therefore stay valid and
+mean what they meant: not hardware-bound. An explicit
+`"hardware_bound":false` is not canonical and is refused.
+
+`tags` is the last field: lowercase labels (`a-z 0-9 . _ -`, at most 32
+characters, at most 16 per node), sorted, without duplicates, and **left out
+when there are none**, for the same reason. Tags are signed because policies
+select nodes by them (`principal in BoundGate::Tag::"laptop"`, ACL.md): a
+control plane that could hand out `production` by itself could widen what a
+policy permits. Changing the tags of an approved node therefore works like
+changing its roles: it drops to `confirmed` and is out of the network until
+an admin key has signed the new binding. `boundgatectl admin sign` prints
+the tags it is about to sign.
 
 Not signed: the name, the public address of a hub, platform, key kind and
 what the node itself reported about its key (`hardware_claimed`). A wrong
@@ -82,8 +93,11 @@ pending ──confirm──▶ confirmed ──sign──▶ approved ──revo
 
    A confirmed node is not in any snapshot. Its `up` fails.
 2. **sign** (on the machine with the key): the CLI fetches the canonical
-   binding with the token, refuses if the fingerprint the admin typed does
-   not match, signs (ssh-agent, key file, or a signature file made with
+   binding with the token, parses it, refuses if the node id or the key
+   hash *in the binding* is not what the admin typed, prints what the
+   binding grants (kind, roles, tags, prefixes, overlay address: read from
+   the bytes that get signed, not from the control plane's description of
+   them), signs (ssh-agent, key file, or a signature file made with
    `ssh-keygen -Y sign`), verifies the result locally against the
    registered admin keys and posts it. The control plane verifies again
    against its active signers, requires the signature to be over the

@@ -4,6 +4,7 @@
 
   let { rule = $bindable(), nodes, groups, pool }: { rule: Rule; nodes: Node[]; groups: string[]; pool?: string } = $props();
   const roles = ['endpoint', 'subnet-router', 'hub', 'exit-node'];
+  const tags = $derived([...new Set(nodes.flatMap((n) => n.tags ?? []))].sort());
   const known = $derived(nodes.filter((n) => n.status === 'approved' || n.status === 'confirmed'));
   const networks = $derived([...new Set([pool, ...nodes.flatMap((n) => n.prefixes.map((p) => p.prefix))].filter(Boolean) as string[])]);
 
@@ -14,6 +15,7 @@
       case 'group': rule.principal = { kind, name: groups[0] ?? 'vpn-users' }; break;
       case 'user': rule.principal = { kind, subject: '' }; break;
       case 'role': rule.principal = { kind, role: 'hub' }; break;
+      case 'tag': rule.principal = { kind, tag: tags[0] ?? '' }; break;
     }
   }
   function setResource(kind: Resource['kind']) {
@@ -22,6 +24,7 @@
       case 'network': rule.resource = { kind, prefix: networks[0] ?? '10.0.0.0/8' }; break;
       case 'node': rule.resource = { kind, id: known[0]?.id ?? '' }; break;
       case 'host': rule.resource = { kind, ip: '' }; break;
+      case 'tag': rule.resource = { kind, tag: tags[0] ?? '' }; break;
     }
   }
   function add(list: Cond[], type: CondType) { list.push(newCond(type)); }
@@ -84,6 +87,7 @@
         <option value="user">one user</option>
         <option value="node">one specific node</option>
         <option value="role">nodes with a role</option>
+        <option value="tag">nodes with a tag</option>
       </select>
       {#if rule.principal.kind === 'group'}
         <input placeholder="group name" bind:value={rule.principal.name} list="bg-groups" />
@@ -94,6 +98,9 @@
         <select bind:value={rule.principal.id}>{#each known as n}<option value={n.id}>{n.name} · {n.overlay_ip}</option>{/each}</select>
       {:else if rule.principal.kind === 'role'}
         <select bind:value={rule.principal.role}>{#each roles as r}<option>{r}</option>{/each}</select>
+      {:else if rule.principal.kind === 'tag'}
+        <input placeholder="tag" bind:value={rule.principal.tag} list="bg-tags" />
+        <span class="hint">Every node that carries this tag (Nodes, "Tags"). Tags are part of the binding an admin key signs, like roles.</span>
       {/if}
     </div>
     <div class="card tight col" style="gap:8px">
@@ -103,7 +110,9 @@
         <option value="network">a network (announced prefix or the overlay pool)</option>
         <option value="node">a specific node</option>
         <option value="host">one host address</option>
+        <option value="tag">nodes with a tag</option>
       </select>
+      <datalist id="bg-tags">{#each tags as t}<option value={t}></option>{/each}</datalist>
       {#if rule.resource.kind === 'network'}
         <input class="mono" placeholder="192.168.178.0/24" bind:value={rule.resource.prefix} list="bg-networks" />
         <span class="hint">Matches destinations inside a prefix that a node announces (or the overlay pool).</span>
@@ -112,6 +121,9 @@
         <span class="hint">The node's overlay address and everything behind it.</span>
       {:else if rule.resource.kind === 'host'}
         <input class="mono" placeholder="10.60.0.11" bind:value={rule.resource.ip} />
+      {:else if rule.resource.kind === 'tag'}
+        <input placeholder="tag" bind:value={rule.resource.tag} list="bg-tags" />
+        <span class="hint">The overlay addresses of the nodes with this tag, and everything they announce.</span>
       {/if}
     </div>
   </div>

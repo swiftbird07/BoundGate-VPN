@@ -44,14 +44,20 @@ type Binding struct {
 	// when false, so bindings signed before the field existed stay valid and
 	// mean what they always meant: not hardware-bound.
 	HardwareBound bool `json:"hardware_bound,omitempty"`
+	// Tags are the administrator's labels. Policies select nodes by them
+	// ("laptops reach production"), so they decide what a node may do just as
+	// roles do, and the control plane must not be able to hand them out by
+	// itself. Left out when empty: bindings signed before tags existed stay
+	// valid and mean "no tags".
+	Tags []string `json:"tags,omitempty"`
 }
 
 // FromNode builds the binding a node record must be signed for.
 func FromNode(n registry.Node) Binding {
-	return Binding{NodeID: string(n.ID), SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP, HardwareBound: n.HardwareBound}
+	return Binding{NodeID: string(n.ID), SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP, HardwareBound: n.HardwareBound, Tags: n.Tags}
 }
 
-// Normalize sorts roles and prefixes and masks prefixes.
+// Normalize sorts roles, prefixes and tags and masks prefixes.
 func (b Binding) Normalize() Binding {
 	roles := slices.Clone(b.Roles)
 	slices.Sort(roles)
@@ -74,6 +80,13 @@ func (b Binding) Normalize() Binding {
 		b.Kind = registry.KindInteractive
 	}
 	b.Roles, b.Prefixes = roles, prefixes
+	tags := slices.Clone(b.Tags)
+	slices.Sort(tags)
+	tags = slices.Compact(tags)
+	if len(tags) == 0 {
+		tags = nil // omitted, like in every binding from before there were tags
+	}
+	b.Tags = tags
 	return b
 }
 
@@ -174,6 +187,8 @@ func (b Binding) Matches(n registry.Node) error {
 		return fmt.Errorf("binding: prefixes %v, record says %v", b.Prefixes, want.Prefixes)
 	case b.HardwareBound != want.HardwareBound:
 		return fmt.Errorf("binding: hardware_bound %v, record says %v", b.HardwareBound, want.HardwareBound)
+	case !slices.Equal(b.Tags, want.Tags):
+		return fmt.Errorf("binding: tags %v, record says %v", b.Tags, want.Tags)
 	case b.OverlayIP != want.OverlayIP:
 		return fmt.Errorf("binding: overlay ip %s, record says %s", b.OverlayIP, want.OverlayIP)
 	}

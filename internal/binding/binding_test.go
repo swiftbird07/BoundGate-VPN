@@ -327,3 +327,46 @@ func TestHardwareBoundIsSigned(t *testing.T) {
 		t.Fatal("explicit false accepted")
 	}
 }
+
+// Policies select nodes by tag, so a tag is as much a grant as a role: the
+// control plane cannot add, drop or swap one after the administrator signed.
+func TestTagsAreSigned(t *testing.T) {
+	admin := newSigner(t, "ed25519")
+	signers := Signers{admin.PublicKey()}
+
+	plain := node("plain", registry.RoleEndpoint)
+	sign(t, &plain, admin)
+	if strings.Contains(plain.Binding, "tags") {
+		t.Fatalf("no tags must be left out (bindings from before tags stay valid): %s", plain.Binding)
+	}
+	plain.Tags = []string{"production"}
+	if _, err := VerifyNode(plain, signers); err == nil {
+		t.Fatal("a tag added after signing still verifies")
+	}
+
+	tagged := node("tagged", registry.RoleEndpoint)
+	tagged.Tags = []string{"server", "production", "server"}
+	sign(t, &tagged, admin)
+	if !strings.HasSuffix(tagged.Binding, `,"tags":["production","server"]}`) {
+		t.Fatalf("got %s", tagged.Binding)
+	}
+	if _, err := VerifyNode(tagged, signers); err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range [][]string{nil, {"production"}, {"production", "staging"}, {"production", "server", "critical"}} {
+		n := tagged
+		n.Tags = other
+		if _, err := VerifyNode(n, signers); err == nil {
+			t.Fatalf("tags %v verify against a binding for production,server", other)
+		}
+	}
+	// unsorted or empty lists are not canonical
+	for _, bad := range []string{
+		strings.Replace(tagged.Binding, `["production","server"]`, `["server","production"]`, 1),
+		strings.Replace(plain.Binding, `}`, `,"tags":[]}`, 1),
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}
