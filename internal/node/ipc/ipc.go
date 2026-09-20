@@ -110,26 +110,7 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	})
-	if u := opt.Update; u != nil {
-		mux.HandleFunc("GET /v1/update", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, u.Status()) })
-		mux.HandleFunc("POST /v1/update/check", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, u.Check(r.Context())) })
-		mux.HandleFunc("POST /v1/update/apply", func(w http.ResponseWriter, r *http.Request) {
-			// not tied to the request: the app that asked is replaced meanwhile
-			if err := u.Apply(context.WithoutCancel(r.Context())); err != nil {
-				writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
-				return
-			}
-			writeJSON(w, http.StatusOK, u.Status())
-		})
-	}
-	if opt.Update == nil {
-		mux.HandleFunc("/v1/update", func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusConflict, ErrorResponse{Error: update.ErrNoReleaseKeys.Error()})
-		})
-		mux.HandleFunc("/v1/update/", func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusConflict, ErrorResponse{Error: update.ErrNoReleaseKeys.Error()})
-		})
-	}
+	updateRoutes(mux, opt.Update)
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, n.Status())
 	})
@@ -294,6 +275,30 @@ func (c *Client) do(method, path string, in, out any) error {
 }
 
 // Status fetches the daemon status.
+// updateRoutes serves /v1/update from u; without an updater (a build without
+// release keys) it says so. Used by the node's socket and by setup mode: an
+// update needs no control plane.
+func updateRoutes(mux *http.ServeMux, u *update.Service) {
+	if u == nil {
+		refuse := func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: update.ErrNoReleaseKeys.Error()})
+		}
+		mux.HandleFunc("/v1/update", refuse)
+		mux.HandleFunc("/v1/update/", refuse)
+		return
+	}
+	mux.HandleFunc("GET /v1/update", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, u.Status()) })
+	mux.HandleFunc("POST /v1/update/check", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, u.Check(r.Context())) })
+	mux.HandleFunc("POST /v1/update/apply", func(w http.ResponseWriter, r *http.Request) {
+		// not tied to the request: the app that asked is replaced meanwhile
+		if err := u.Apply(context.WithoutCancel(r.Context())); err != nil {
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, u.Status())
+	})
+}
+
 // Update returns the last update check; check asks the release source now.
 func (c *Client) Update(check bool) (update.Status, error) {
 	var s update.Status

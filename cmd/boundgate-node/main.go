@@ -144,6 +144,12 @@ func run(cfgPath string) error {
 		idle := func() bool { n := running.Load(); return n == nil || n.Status().State == node.StateDown }
 		go restartWhenReplaced(ctx, logs.System, idle, 15*time.Second)
 	}
+	// one updater for the life of the daemon: with a node running and in
+	// setup mode, where an update needs no control plane
+	upd := newUpdater(cfg, logs.System, func() bool { n := running.Load(); return n == nil || n.Status().State == node.StateDown })
+	if upd != nil {
+		go upd.Run(ctx)
+	}
 	settingsPath := filepath.Join(cfg.StateDir, "settings.json")
 	for ctx.Err() == nil {
 		local := ipc.Settings{ControlAddr: cfg.Control.Addr, ControlServerName: cfg.Control.ServerName, Name: cfg.Name}
@@ -155,7 +161,7 @@ func run(cfgPath string) error {
 			if s.ControlAddr == "" {
 				logs.System.Info("no control plane configured; waiting for `boundgatectl configure`", "socket", cfg.Socket)
 				host, _ := os.Hostname()
-				if _, err := ipc.ServeSetup(ctx, cfg.Socket, cfg.SocketGroup, node.Status{NodeName: host, Enrollment: "unknown"},
+				if _, err := ipc.ServeSetup(ctx, cfg.Socket, cfg.SocketGroup, node.Status{NodeName: host, Enrollment: "unknown"}, upd,
 					func(s ipc.Settings) error { return ipc.SaveSettings(settingsPath, s) }); err != nil {
 					return err
 				}
@@ -166,7 +172,7 @@ func run(cfgPath string) error {
 				local.Name = s.Name
 			}
 		}
-		err := runNode(ctx, cfg, local, logs, fromFile, settingsPath)
+		err := runNode(ctx, cfg, local, logs, fromFile, settingsPath, upd)
 		if errors.Is(err, ipc.ErrReset) {
 			logs.System.Warn("control plane forgotten; back to setup mode")
 			continue
@@ -178,7 +184,7 @@ func run(cfgPath string) error {
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
-func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.Streams, fromFile bool, settingsPath string) error {
+func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.Streams, fromFile bool, settingsPath string, upd *update.Service) error {
 	var behindMux *node.BehindMux
 	if m := cfg.BehindMux; m != nil {
 		if m.ID < 1 || m.ID > 255 {
@@ -232,10 +238,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	go n.Run(ctx)
 	running.Store(n)
 	defer running.Store(nil)
-	opt := ipc.Options{Group: cfg.SocketGroup, Update: newUpdater(cfg, logs.System, func() bool { return n.Status().State == node.StateDown })}
-	if opt.Update != nil {
-		go opt.Update.Run(ctx)
-	}
+	opt := ipc.Options{Group: cfg.SocketGroup, Update: upd}
 	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", cfg.AutoUp)
 	if !fromFile {
 		// Forget the control plane: its address, its pinned key and the admin

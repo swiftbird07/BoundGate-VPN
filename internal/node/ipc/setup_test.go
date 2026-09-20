@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"context"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/update"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,7 @@ func TestServeSetup(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		s, err := ServeSetup(context.Background(), sock, "", node.Status{NodeName: "mac"}, func(s Settings) error { return SaveSettings(settingsPath, s) })
+		s, err := ServeSetup(context.Background(), sock, "", node.Status{NodeName: "mac"}, &update.Service{Current: "v1.0.0"}, func(s Settings) error { return SaveSettings(settingsPath, s) })
 		done <- result{s, err}
 	}()
 	c := NewClient(sock)
@@ -70,6 +71,10 @@ func TestServeSetup(t *testing.T) {
 	}
 	if _, err := c.Up(""); err == nil || !strings.Contains(err.Error(), "configure") {
 		t.Fatalf("up in setup mode: %v", err)
+	}
+	// an update needs no control plane: the socket of setup mode answers for it
+	if u, err := c.Update(false); err != nil || u.Current != "v1.0.0" {
+		t.Fatalf("update status in setup mode: %+v, %v", u, err)
 	}
 	if err := c.Configure(Settings{ControlAddr: "not a host"}); err == nil {
 		t.Fatal("invalid address accepted")

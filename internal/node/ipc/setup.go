@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/update"
 	"net"
 	"net/http"
 	"os"
@@ -138,9 +139,10 @@ func serveMux(ctx context.Context, ln net.Listener, socketPath string, mux *http
 }
 
 // ServeSetup runs the socket of a daemon without a control plane: status
-// says "unconfigured", configure stores the settings. It returns the
-// settings once they are stored, or an error / ctx end.
-func ServeSetup(ctx context.Context, socketPath, group string, status node.Status, save func(Settings) error) (Settings, error) {
+// says "unconfigured", configure stores the settings, and updates work as
+// they do on a node's socket (upd may be nil). It returns the settings once
+// they are stored, or an error / ctx end.
+func ServeSetup(ctx context.Context, socketPath, group string, status node.Status, upd *update.Service, save func(Settings) error) (Settings, error) {
 	ln, err := listen(socketPath, group)
 	if err != nil {
 		return Settings{}, err
@@ -172,6 +174,7 @@ func ServeSetup(ctx context.Context, socketPath, group string, status node.Statu
 		writeJSON(w, http.StatusOK, map[string]string{"status": "configured"})
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first, then hand over to the node
 	})
+	updateRoutes(mux, upd)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "this node has no control plane yet; run `boundgatectl configure -control HOST`"})
 	})
