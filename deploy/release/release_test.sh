@@ -59,6 +59,8 @@ case "$method $url" in
 esac
 EOF
 chmod +x "$T/bin/curl"
+# the Go check needs the real tree and the box; ssh-keygen's check stays
+export NO_GO_VERIFY=1
 export FAKE=$G PATH="$T/bin:$PATH" GITEA_URL=http://gitea.test GITEA_REPO=o/r GITEA_TOKEN=test-token POLL=0 WAIT_MINUTES=0
 
 V=v0.1.11; HEAD=$(git rev-parse HEAD)

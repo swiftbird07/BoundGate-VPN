@@ -11,6 +11,7 @@
 //	boundgatectl login [-timeout 10m]      prints the login URL, waits for the browser login
 //	boundgatectl logout
 //	boundgatectl update [-install]         look for a newer release; -install puts it in place (app installs)
+//	boundgatectl verify-release MANIFEST SIG   check a release manifest against the keys built into this binary
 //	boundgatectl version
 //	boundgatectl flows                     tracked flows with their ACL decision
 //	boundgatectl admin sign --control URL --node ID --fingerprint FP --token T   (admin side, see adminsign.go)
@@ -29,6 +30,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/update"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/version"
 )
 
@@ -54,6 +56,19 @@ func main() {
 	}
 	if flag.Arg(0) == "version" {
 		fmt.Println("boundgatectl", version.Version, version.Commit)
+		return
+	}
+	if flag.Arg(0) == "verify-release" {
+		// what every updater does with a release, without a daemon: used by
+		// deploy/release/release.sh before anything is published
+		if flag.NArg() != 3 {
+			fmt.Fprintln(os.Stderr, "usage: boundgatectl verify-release MANIFEST SIGNATURE")
+			os.Exit(2)
+		}
+		if err := verifyRelease(flag.Arg(1), flag.Arg(2)); err != nil {
+			fmt.Fprintln(os.Stderr, "boundgatectl:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if flag.Arg(0) == "admin" {
@@ -426,4 +441,28 @@ func dump(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// verifyRelease checks a manifest and its signature the way a node does
+// before it installs anything: against the release keys built into this
+// binary (internal/update).
+func verifyRelease(manifestPath, sigPath string) error {
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	sig, err := os.ReadFile(sigPath)
+	if err != nil {
+		return err
+	}
+	keys, err := update.BuiltinKeys()
+	if err != nil {
+		return err
+	}
+	m, err := update.VerifyManifest(raw, string(sig), keys)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: signed by a built-in release key, %d assets\n", m.Version, len(m.Assets))
+	return nil
 }

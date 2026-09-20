@@ -23,6 +23,7 @@
 #                 (default private/release_signing_key; passphrase or a FIDO2
 #                 "sk" key are fine: ssh-keygen asks)
 #   NO_MAC=1      a release without the Mac app
+#   NO_GO_VERIFY=1  skip the second signature check (with the updater's Go code, in the box)
 #   GITEA_URL, GITEA_REPO, WAIT_MINUTES (40)
 set -eu
 cd "$(dirname "$0")/../.."
@@ -168,6 +169,11 @@ keygen -q -Y sign -n $NS -f "$RELEASE_KEY" "$OUT/manifest.json"
 # what every client will do; a signature they would refuse must not go out
 grep -v '^#' "$KEYS" | grep . | sed "s/^/$NS /" > "$TMP/allowed"
 keygen -Y verify -f "$TMP/allowed" -I $NS -n $NS -s "$OUT/manifest.json.sig" < "$OUT/manifest.json" >/dev/null || die "the signature does not verify against $KEYS"
+# and with the code the nodes run (it is stricter than ssh-keygen about key types); Go lives in the box
+if [ -z "${NO_GO_VERIFY:-}" ]; then
+  command -v box >/dev/null || die "box is missing: cannot check the signature with the updater's own code (NO_GO_VERIFY=1 skips this)"
+  box go run ./cmd/boundgatectl verify-release "$OUT/manifest.json" "$OUT/manifest.json.sig" || die "the nodes' verifier refuses this signature: not publishing"
+fi
 
 # ---- 5. upload, publish ----
 for f in "$OUT"/*; do
