@@ -152,6 +152,23 @@ public final class AppModel: ObservableObject {
     public func openApprovalSettings() { installer.openApprovalSettings() }
 
     public func configure(control: String) { run("Saving…") { try $0.configure(DaemonSettings(controlAddr: control)) } }
+    /// From a software key to one in the Secure Enclave: a new identity for the
+    /// same control plane. The daemon forgets everything, this puts the address
+    /// back, and the Mac asks for access again.
+    public func useHardwareKey() {
+        guard let control = status?.control, !control.isEmpty else { return }
+        run("Creating a new identity…") { c in
+            _ = try? c.down()
+            try c.resetIdentity()
+            // the daemon leaves the node and comes back in setup mode
+            var lastError: Error = DaemonError.refused("the background service did not come back")
+            for _ in 0..<20 {
+                Thread.sleep(forTimeInterval: 0.5)
+                do { try c.configure(DaemonSettings(controlAddr: control)); return } catch { lastError = error }
+            }
+            throw lastError
+        }
+    }
     public func forgetControlPlane() { run("Resetting…") { c in _ = try? c.down(); try c.reset() } }
     // MARK: updates
 

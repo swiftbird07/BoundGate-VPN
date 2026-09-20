@@ -45,14 +45,21 @@ chip.
 
 ## `auto`, and moving an enrolled Mac over
 
-`key_kind: auto` never changes an identity that exists - a node must not come
-back from an app update as somebody else:
+`key_kind: auto` never changes the identity a node **enrolled with** - it must
+not come back from an app update as somebody else. Everywhere else the
+hardware wins:
 
 | state directory | result |
 |---|---|
 | has `device.sekey` | Secure Enclave key |
-| has `device.key` | the software key stays; the log says that the Mac could do better |
-| fresh | Secure Enclave key where there is one, software key elsewhere (with a warning) |
+| has `device.key` and a pinned control plane (`control.pin`, or `control.pin:` in the configuration) | the software key stays, **and the app says so in red on every card**, with a button that moves the Mac over (below) |
+| has `device.key`, no control plane pinned (never enrolled, or "Forget this control plane") | Secure Enclave key; the old file is left and no longer used. Before 2026-09-20 the software key won here, silently: a Mac that had once run a development build enrolled with it again |
+| fresh | Secure Enclave key where there is one; software key elsewhere, with the same red warning (Intel Macs without a T2) |
+
+A software key on a Mac is never silent: `key_warning` in the daemon's status,
+`WARNING:` in `boundgatectl status`, a `SOFTWARE DEVICE KEY` line in the log,
+and the red card in the app. The admin sees `softkey` / `hardware_bound: false`
+in the request and decides.
 
 To move a Mac that enrolled with a software key:
 

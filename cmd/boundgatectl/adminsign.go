@@ -166,7 +166,7 @@ func pickSigner(agentKey string, registered []string) (ssh.Signer, error) {
 	}
 	switch len(candidates) {
 	case 0:
-		return nil, errors.New("admin sign: no key in ssh-agent matches a registered admin key")
+		return nil, errors.New("admin sign: no key in ssh-agent matches a registered admin key. A security key (YubiKey) is usually not in the agent: name its key file, --key ~/.ssh/<your admin key>, and ssh-keygen asks for PIN and touch")
 	case 1:
 		return candidates[0], nil
 	default:

@@ -15,6 +15,8 @@ public struct DaemonClient: Sendable {
     public func profiles() throws -> [String] { try call("GET", "/v1/profiles", timeout: 5) }
     public func configure(_ s: DaemonSettings) throws { let _: [String: String] = try call("POST", "/v1/configure", body: s, timeout: 10) }
     public func reset() throws { let _: [String: String] = try call("POST", "/v1/reset", timeout: 10) }
+    /// Forgets the control plane and discards the device key: the node comes back with a new identity.
+    public func resetIdentity() throws { let _: [String: String] = try call("POST", "/v1/reset", body: ["new_identity": true], timeout: 10) }
     /// acceptPin: the control plane fingerprint the user accepted. Without a
     /// pinned key and without it, the daemon answers `.pinUnconfirmed`.
     public func enroll(acceptPin: String? = nil) throws -> EnrollStatus {

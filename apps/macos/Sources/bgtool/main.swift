@@ -44,12 +44,26 @@ struct MockService: ServiceControlling {
     var failed = base("down", "approved")
     failed.lastError = "the overlay pool 10.21.0.0/16 overlaps 10.21.0.9/32 on utun8: another interface of this machine already uses that range (usually a second VPN)"
 
+    let chain = "control plane https://bg.example.com:443: Get \"https://bg.example.com:443/api/v1/node/enroll/status\": transport: pin control plane key: "
+    var unpinned = base("down", "unknown"); unpinned.controlPin = nil
+    unpinned.controlError = chain + "the key of this control plane has not been accepted yet; enrolling shows it for comparison"
+    var unreachableCP = base("down", "unknown")
+    unreachableCP.controlError = "control plane https://bg.example.com:443: Get \"https://bg.example.com:443/api/v1/node/enroll/status\": dial udp: lookup bg.example.com: no such host"
+    var soft = base("down", "pending")
+    soft.keyWarning = "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. This Mac has a Secure Enclave; the node kept the software key it enrolled with. A new identity in the Secure Enclave cannot be copied (the Mac then has to be approved again)."
+    soft.hardwareKeyAvailable = true
+    var softOnly = connected
+    softOnly.keyWarning = "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. No usable Secure Enclave was found (Intel Macs without a T2 chip have none, or the helper boundgate-sekey is missing from the app), so it cannot be bound to the hardware."
     let cases: [(String, NodeStatus?, ServiceState, String?)] = [
         ("1-service", nil, .notRegistered, "The background service is not running."),
         ("2-approval", nil, .requiresApproval, "The background service is not running."),
         ("2b-service-down", nil, .enabled, "The background service is not running."),
         ("3-setup", NodeStatus(state: "unconfigured"), .enabled, nil),
         ("4-enroll", base("down", "unknown"), .enabled, nil),
+        ("4b-enroll-pin", unpinned, .enabled, nil),
+        ("4c-enroll-error", unreachableCP, .enabled, nil),
+        ("4d-softkey", soft, .enabled, nil),
+        ("4e-softkey-no-enclave", softOnly, .enabled, nil),
         ("5-pending", base("down", "pending"), .enabled, nil),
         ("6-ready", base("down", "approved"), .enabled, nil),
         ("7-login", login, .enabled, nil),
@@ -61,6 +75,7 @@ struct MockService: ServiceControlling {
             let m = AppModel(client: DaemonClient(socketPath: "/nonexistent"), installer: MockService(s: svc))
             m.status = status; m.service = svc; m.unreachable = unreachable
             if name == "6-ready" { m.profiles = ["home", "work"] }
+            if name == "4b-enroll-pin" { m.pinToConfirm = "5c1f aa42 0702 4bc8 c981 a780 ff32 7b82 8156 9d8c 512a 53d4 8c4a 5df5 0add 4db5" }
             let v = PanelView(model: m).environment(\.colorScheme, scheme)
             try png(v, scale: 2, to: dir.appendingPathComponent("\(name)-\(scheme == .dark ? "dark" : "light").png"))
         }

@@ -30,6 +30,18 @@ struct Pill: View {
     }
 }
 
+/// What the daemon reports is written for a log: the whole chain, with the
+/// request in it (`control plane https://host:443: Get "https://…": transport:
+/// pin control plane key: the key …`). In a card, the last link says it.
+func readable(_ error: String) -> String {
+    var s = error
+    // up to and including the quoted URL of the failed request
+    if let r = s.range(of: #"(Get|Post|Put|Delete|Head) "[^"]*": "#, options: .regularExpression) { s = String(s[r.upperBound...]) }
+    for prefix in ["transport: ", "pin control plane key: ", "controlclient: "] where s.hasPrefix(prefix) { s = String(s.dropFirst(prefix.count)) }
+    guard let first = s.first else { return error }
+    return first.uppercased() + s.dropFirst()
+}
+
 struct Notice: View {
     enum Tone { case warn, bad, info }
     var tone: Tone
@@ -39,7 +51,8 @@ struct Notice: View {
         let c = tone == .warn ? t.warn : tone == .bad ? t.bad : t.info
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: tone == .info ? "info.circle" : "exclamationmark.triangle").font(.system(size: 12, weight: .semibold)).foregroundStyle(c).padding(.top, 1)
-            Text(text).font(.body(12)).foregroundStyle(t.text).fixedSize(horizontal: false, vertical: true)
+            Text(readable(text)).font(.body(12)).foregroundStyle(t.text).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             Spacer(minLength: 0)
         }
         .padding(10)
@@ -64,6 +77,40 @@ struct InfoRow: View {
 
 /// 64 hex digits in four rows of four groups: made for reading aloud and
 /// comparing, which is the whole point of showing it.
+/// The one thing this product promises is a key that cannot be copied. When a
+/// Mac does not have one, that is said loudly, on every card, until it is fixed.
+struct KeyWarningView: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.theme) private var t
+    var body: some View {
+        if let w = model.status?.keyWarning, !w.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.octagon.fill").font(.system(size: 17, weight: .bold)).foregroundStyle(t.bad)
+                    Text("Software key: this Mac's identity can be copied").font(.display(14)).foregroundStyle(t.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(w).font(.body(12)).foregroundStyle(t.text).fixedSize(horizontal: false, vertical: true)
+                if model.status?.hardwareKeyAvailable == true {
+                    Button("Move to the Secure Enclave…") { confirm() }
+                        .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).fill(t.bad.opacity(0.14)))
+            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(t.bad.opacity(0.65), lineWidth: 1.5))
+        }
+    }
+    private func confirm() {
+        let a = NSAlert()
+        a.messageText = "Give this Mac a new identity in the Secure Enclave?"
+        a.informativeText = "The software key is deleted and a new key is made inside the Secure Enclave, where it cannot be copied. To the control plane this is a new device: it asks for access again and an administrator has to approve it. Ask them to revoke the old entry."
+        a.addButton(withTitle: "New identity"); a.addButton(withTitle: "Cancel")
+        a.alertStyle = .warning
+        if a.runModal() == .alertFirstButtonReturn { model.useHardwareKey() }
+    }
+}
+
 struct FingerprintView: View {
     var title: String
     var fingerprint: String
@@ -79,6 +126,7 @@ struct FingerprintView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title.uppercased()).font(.body(10.5, .semibold)).kerning(0.6).foregroundStyle(t.text3)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button(copied ? "Copied" : "Copy") {
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(fingerprint, forType: .string)

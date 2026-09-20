@@ -181,20 +181,25 @@ type Status struct {
 	SkippedRoutes []string `json:"skipped_routes,omitempty"`
 	Tunnels       int      `json:"tunnels"` // accepted tunnels (hub role)
 	// Relay: what this hub relays between spokes right now and relayed so far.
-	Relay           *transport.RelayStats `json:"relay,omitempty"`
-	Since           time.Time             `json:"since,omitempty"`
-	LastError       string                `json:"last_error,omitempty"`
-	LastClose       string                `json:"last_close,omitempty"`
-	NodeName        string                `json:"node_name"`
-	NodeID          string                `json:"node_id,omitempty"`
-	SPKI            string                `json:"spki"`
-	Fingerprint     string                `json:"fingerprint"`
-	KeyKind         string                `json:"key_kind"`
-	Version         string                `json:"version"` // release tag of this daemon, or "dev"
-	HardwareBound   bool                  `json:"hardware_bound"`
-	Enrollment      string                `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
-	EnrollmentError string                `json:"enrollment_error,omitempty"`
-	Control         string                `json:"control"`
+	Relay         *transport.RelayStats `json:"relay,omitempty"`
+	Since         time.Time             `json:"since,omitempty"`
+	LastError     string                `json:"last_error,omitempty"`
+	LastClose     string                `json:"last_close,omitempty"`
+	NodeName      string                `json:"node_name"`
+	NodeID        string                `json:"node_id,omitempty"`
+	SPKI          string                `json:"spki"`
+	Fingerprint   string                `json:"fingerprint"`
+	KeyKind       string                `json:"key_kind"`
+	Version       string                `json:"version"` // release tag of this daemon, or "dev"
+	HardwareBound bool                  `json:"hardware_bound"`
+	// KeyWarning is set when the device key is weaker than it should be (a
+	// software key on a Mac); HardwareKeyAvailable: a new identity
+	// (`reset -new-identity`) would be hardware-bound.
+	KeyWarning           string `json:"key_warning,omitempty"`
+	HardwareKeyAvailable bool   `json:"hardware_key_available,omitempty"`
+	Enrollment           string `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
+	EnrollmentError      string `json:"enrollment_error,omitempty"`
+	Control              string `json:"control"`
 	// ControlError is the last error of the control channel ("" = fine).
 	ControlError string `json:"control_error,omitempty"`
 	// ControlPin is the fingerprint of the pinned control-plane key.
@@ -303,8 +308,14 @@ func New(cfg Config) (*Node, error) {
 	}
 	var opener devicekey.Opener
 	kind := cfg.KeyKind
+	enclave := false
+	if runtime.GOOS == "darwin" {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		enclave = sekey.Available(ctx, cfg.SEKeyHelper)
+		cancel()
+	}
 	if kind == "auto" {
-		kind = autoKeyKind(cfg)
+		kind = autoKeyKind(cfg, enclave)
 	}
 	switch kind {
 	case "", "softkey":
@@ -360,20 +371,25 @@ func New(cfg Config) (*Node, error) {
 	})
 	n.ship = newShipper(n.control, cfg.Log)
 	n.status = Status{
-		State:         StateDown,
-		NodeName:      cfg.Name,
-		SPKI:          spki.String(),
-		Fingerprint:   spki.Fingerprint(),
-		KeyKind:       key.Kind(),
-		Version:       version.Version,
-		HardwareBound: key.HardwareBound(),
-		Enrollment:    "unknown",
-		Control:       cfg.ControlAddr,
-		AdminKeys:     n.trust.signers().Fingerprints(),
+		State:                StateDown,
+		NodeName:             cfg.Name,
+		SPKI:                 spki.String(),
+		Fingerprint:          spki.Fingerprint(),
+		KeyKind:              key.Kind(),
+		Version:              version.Version,
+		HardwareBound:        key.HardwareBound(),
+		KeyWarning:           keyWarning(key.Kind(), enclave),
+		HardwareKeyAvailable: enclave && !key.HardwareBound(),
+		Enrollment:           "unknown",
+		Control:              cfg.ControlAddr,
+		AdminKeys:            n.trust.signers().Fingerprints(),
 	}
 	n.status.AdminSetVersion = n.trust.current().Version
 	if pin, ok := n.pins.Pinned(); ok {
 		n.status.ControlPin = pin.Fingerprint()
+	}
+	if w := keyWarning(key.Kind(), enclave); w != "" {
+		cfg.Log.Warn("SOFTWARE DEVICE KEY: " + w)
 	}
 	cfg.Log.Info("node identity", "name", cfg.Name, "key_kind", key.Kind(), "hardware_bound", key.HardwareBound(), "spki", spki, "control", cfg.ControlAddr,
 		"control_pin", n.status.ControlPin, "admin_keys", len(n.status.AdminKeys), "admin_set_version", n.status.AdminSetVersion)
@@ -1417,28 +1433,37 @@ func (s *session) teardown() {
 	s.mu.Unlock()
 }
 
-// autoKeyKind resolves key kind "auto". An identity that exists is kept - a
-// node must not come back from an update as somebody else. A fresh state
-// directory gets the Secure Enclave where there is one.
-func autoKeyKind(cfg Config) string {
+// autoKeyKind resolves key kind "auto"; enclave says whether this machine has
+// a usable Secure Enclave. A node that is bound to a control plane keeps the
+// identity it enrolled with: it must not come back from an update as somebody
+// else. Everywhere else the hardware wins: a fresh state directory, and also
+// a software key left over from earlier that no control plane knows this node
+// by any more (no pinned control plane: never enrolled, or forgotten).
+func autoKeyKind(cfg Config, enclave bool) string {
 	exists := func(name string) bool { _, err := os.Stat(filepath.Join(cfg.StateDir, name)); return err == nil }
-	if exists("device.sekey") {
+	switch {
+	case exists("device.sekey"):
 		return sekey.Kind
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	available := runtime.GOOS == "darwin" && sekey.Available(ctx, cfg.SEKeyHelper)
-	if exists("device.key") {
-		if available {
-			cfg.Log.Info("this Mac has a Secure Enclave, but the node keeps the software key it enrolled with. `boundgatectl reset -new-identity` moves it to a hardware-bound key; it then enrolls again")
-		}
+	case !enclave:
+		return "softkey"
+	case !exists("device.key"):
+		return sekey.Kind
+	case cfg.ControlPin == "" && !exists("control.pin"):
+		cfg.Log.Warn("a software key from earlier exists, but this node is not bound to a control plane: it gets a key in the Secure Enclave instead. device.key is left where it is and no longer used")
+		return sekey.Kind
+	default:
 		return "softkey"
 	}
-	if available {
-		return sekey.Kind
+}
+
+// keyWarning says, for the person in front of the machine, what is wrong with
+// a software key on a machine that could do better, or cannot.
+func keyWarning(kind string, enclave bool) string {
+	if runtime.GOOS != "darwin" || kind != "softkey" {
+		return ""
 	}
-	if runtime.GOOS == "darwin" {
-		cfg.Log.Warn("no usable Secure Enclave (or its helper boundgate-sekey is missing): the device key will be a software key")
+	if enclave {
+		return "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. This Mac has a Secure Enclave; the node kept the software key it enrolled with. A new identity in the Secure Enclave cannot be copied (the Mac then has to be approved again)."
 	}
-	return "softkey"
+	return "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. No usable Secure Enclave was found (Intel Macs without a T2 chip have none, or the helper boundgate-sekey is missing from the app), so it cannot be bound to the hardware."
 }

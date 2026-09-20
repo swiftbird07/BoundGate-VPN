@@ -58,6 +58,8 @@ struct BGButtonStyle: ButtonStyle {
         let pressed = configuration.isPressed
         configuration.label
             .font(.body(large ? 15 : 13, .semibold))
+            // a label that does not fit wraps; it is never cut off with an ellipsis
+            .multilineTextAlignment(.center).lineLimit(large ? 2 : 1).fixedSize(horizontal: !large, vertical: true)
             .frame(maxWidth: large ? .infinity : nil)
             .padding(.horizontal, large ? 18 : 12).padding(.vertical, large ? 11 : 6)
             .foregroundStyle(kind == .primary ? Theme.onAccent : (kind == .danger ? t.bad : t.text))

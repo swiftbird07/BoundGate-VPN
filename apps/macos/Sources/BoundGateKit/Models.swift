@@ -53,6 +53,10 @@ public struct NodeStatus: Codable, Equatable, Sendable {
     public var fingerprint: String?
     public var keyKind: String?
     public var hardwareBound: Bool?
+    /// Set when the device key is weaker than it should be (a software key on a Mac).
+    public var keyWarning: String?
+    /// A new identity would be hardware-bound (Secure Enclave).
+    public var hardwareKeyAvailable: Bool?
     public var enrollment: String?
     public var enrollmentError: String?
     public var control: String?

@@ -12,6 +12,7 @@ public struct PanelView: View {
         VStack(spacing: 12) {
             header
             if let u = model.update, u.available, let latest = u.latest { UpdateCard(model: model, update: u, latest: latest) }
+            KeyWarningView(model: model)
             content
             if let n = model.updateNote { Notice(tone: .info, text: n) }
             if let e = model.actionError { Notice(tone: .bad, text: e) }
@@ -211,14 +212,18 @@ struct EnrollCard: View {
                     Text("This Mac trusts that key.")
                         .font(.body(11.5)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
                 }
-                if let e = s.controlError, !e.isEmpty { Notice(tone: .warn, text: e) }
-                else if let e = s.enrollmentError, !e.isEmpty { Notice(tone: .warn, text: e) }
+                // "this control plane's key has not been accepted yet" is where every new Mac
+                // starts, and this card is about exactly that: not a warning
+                if let e = [s.controlError, s.enrollmentError].compactMap({ $0 }).first(where: { !$0.isEmpty }),
+                   model.pinToConfirm == nil, !e.contains("has not been accepted yet") {
+                    Notice(tone: .warn, text: e)
+                }
             }
             if let pin = model.pinToConfirm {
-                FingerprintView(title: "The control plane presents this key", fingerprint: pin)
+                FingerprintView(title: "Control plane key", fingerprint: pin)
                 Text("This Mac has not talked to this control plane before and will trust this key from now on. Compare it with the fingerprint your administrator gave you (admin UI, Nodes). If it differs, somebody else is answering at that address: do not continue.")
                     .font(.body(11.5)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
-                Button("It matches: trust this key and request access") { model.enroll(acceptPin: pin) }
+                Button("It matches: request access") { model.enroll(acceptPin: pin) }
                     .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
                 Button("Cancel") { model.declinePin() }.buttonStyle(BGButtonStyle(kind: .secondary)).disabled(model.busy != nil)
             } else {
