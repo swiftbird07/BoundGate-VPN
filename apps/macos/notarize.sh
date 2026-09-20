@@ -8,8 +8,8 @@
 # (it asks for an app-specific password from appleid.apple.com). Nothing here
 # ever sees that password.
 #
-# The release pipeline has no keychain profile; it passes an App Store Connect
-# API key instead (a file the runner writes from a secret):
+# Where there is no keychain profile (a build machine), an App Store Connect
+# API key does instead:
 #   NOTARY_KEY_FILE=AuthKey_XXXX.p8 NOTARY_KEY_ID=XXXX NOTARY_ISSUER=uuid apps/macos/notarize.sh
 #
 # Results: dist/BoundGate-<version>.dmg for people, and

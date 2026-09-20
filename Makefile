@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: image image-push rehearsal mac-app mac-sekey release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: image image-push rehearsal mac-app mac-sekey release release-next release-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -71,20 +71,37 @@ test-tpm:
 mac-app:
 	apps/macos/build-app.sh
 
-# The release signing key (docs/RELEASES.md). Run it yourself, once: the
-# private half goes to private/ (git-ignored; masked in the box) and from there
-# into the repository secret RELEASE_SIGNING_KEY, the public half into the two
-# release_keys files, which you commit. Builds accept updates signed by it.
+# A release, from this Mac (docs/RELEASES.md): tag, wait for CI's draft, Mac
+# app signed and notarized here, manifest signed with the release key here,
+# publish. Without VERSION the next patch version after the highest tag;
+# BUMP=minor or major for the others. `make release VERSION=vX.Y.Z` resumes.
+BUMP ?= patch
+release:
+	BUMP=$(BUMP) deploy/release/release.sh $(filter-out dev,$(VERSION))
+
+# which version `make release` would make
+release-next:
+	@BUMP=$(BUMP) deploy/release/release.sh --next
+
+# deploy/release/release.sh against a stand-in for Gitea
+release-test:
+	deploy/release/release_test.sh
+
+# The release signing key (docs/RELEASES.md). Run it yourself, once. The
+# private half stays in private/ (git-ignored; masked in the box) on the
+# machine that makes releases, protected by the passphrase ssh-keygen asks for;
+# no CI ever gets it. The public half goes into the two release_keys files,
+# which you commit: builds accept updates signed by a key listed there.
 release-key:
 	@test ! -e private/release_signing_key || { echo "private/release_signing_key exists; remove it first if you really want a new key" >&2; exit 1; }
 	@mkdir -p private && chmod 700 private
-	ssh-keygen -q -t ed25519 -N '' -C "boundgate release key $$(date +%Y-%m-%d)" -f private/release_signing_key
+	ssh-keygen -q -t ed25519 -C "boundgate release key $$(date +%Y-%m-%d)" -f private/release_signing_key
 	cat private/release_signing_key.pub >> internal/update/release_keys
 	cp internal/update/release_keys deploy/prod/release_keys
 	@echo
-	@echo "1. Gitea > SBH/BoundGate-VPN > Settings > Actions > Secrets: RELEASE_SIGNING_KEY = contents of private/release_signing_key"
-	@echo "2. commit internal/update/release_keys and deploy/prod/release_keys"
-	@echo "3. keep private/release_signing_key offline or delete it; whoever has it can ship updates to every node"
+	@echo "1. commit internal/update/release_keys and deploy/prod/release_keys"
+	@echo "2. back up private/release_signing_key offline: whoever has it (and its passphrase) can ship updates to every node; who loses it cannot ship any (docs/RELEASES.md)"
+	@echo "3. a second key as a reserve: run this again after moving the first one away, or list a FIDO2 key (ssh-keygen -t ed25519-sk) and use it with RELEASE_KEY=..."
 
 # deploy/prod/update.sh against a stand-in for Gitea and docker
 update-test:

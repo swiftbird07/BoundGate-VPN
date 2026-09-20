@@ -1,7 +1,27 @@
 # Releases and updates
 
-A release is a tag `vMAJOR.MINOR.PATCH`. `.gitea/workflows/release.yml` turns
-it into a Gitea release with
+A release is a tag `vMAJOR.MINOR.PATCH`, made with one command on the
+maintainer's Mac:
+
+```bash
+make release                  # the next patch version after the highest tag (the first: v0.1.0)
+make release BUMP=minor       # or major
+make release VERSION=v1.4.0   # a version of your choice; the same line resumes a release that stopped halfway
+make release-next             # only says which version it would be
+```
+
+Two halves, and the signing keys are all in one of them:
+
+| | where | what |
+|---|---|---|
+| 1 | here | checks (clean tree, HEAD is `origin/main`, the release key is one the builds know, the version is newer than every tag), tags, pushes the tag |
+| 2 | CI, `.gitea/workflows/release.yml` | tests, Linux binaries, the image; parks them in a **draft** release with `build.json`, a record of what it built. CI signs nothing and holds no signing key |
+| 3 | here, while CI works | the Mac app: universal, signed with your Developer ID, notarized, stapled (`apps/macos/build-app.sh`, `notarize.sh`; the credentials stay in your keychain) |
+| 4 | here | downloads CI's files, compares them with `build.json` and the tagged commit, writes the manifest over everything, **signs it with the release key**, checks the signature the way clients will |
+| 5 | here | uploads Mac app, manifest and signature, publishes the draft, confirms that `releases/latest` answers the new version |
+
+Nothing is visible to clients before step 5: they read `releases/latest`, and a
+draft is not that. The result is a Gitea release with
 
 | asset | for |
 |---|---|
@@ -43,36 +63,41 @@ ssh-keygen -Y verify -f allowed -I boundgate-release -n boundgate-release -s man
 sha256sum -c <(jq -r '.assets[] | "\(.sha256)  \(.name)"' manifest.json)
 ```
 
-## Setting the pipeline up (once)
+## Setting it up (once)
 
-1. **Release key**: `make release-key` on your machine. It creates
+1. **Release key**: `make release-key`. It asks for a passphrase, creates
    `private/release_signing_key` (git-ignored) and appends the public half to
-   both `release_keys` files; commit those. Put the private half into the
-   repository secret `RELEASE_SIGNING_KEY`. Builds made before that commit
-   have no key and refuse all updates.
-2. `REGISTRY_TOKEN` as for the image workflow; `RELEASE_TOKEN` (write:repository)
-   only if the job's own token may not create releases.
-3. **macOS app**: Swift, codesign and notarytool exist only on macOS, so this
-   part needs an act_runner on a Mac with Xcode. Name its label in the
-   repository *variable* `MACOS_RUNNER`. Secrets: `MACOS_CERT_P12` (base64 of a
-   .p12 with a *Developer ID Application* certificate and its key),
-   `MACOS_CERT_PASSWORD`, and an App Store Connect API key for notarization:
-   `NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER`. The job imports the
-   certificate into a keychain of its own and deletes it afterwards; the Mac
-   needs no Go (the darwin binaries come from the Linux job). Without
-   `MACOS_RUNNER` a release is published without the Mac app and says so.
-   An "Apple Development" certificate is not enough: other people's Macs only
-   run Developer ID signed, notarized apps.
-4. **Anonymous downloads**: this Gitea answers visitors with "Only signed in
+   both `release_keys` files; commit those. The private half never leaves this
+   machine except into your offline backup. A FIDO2 key works as well
+   (`ssh-keygen -t ed25519-sk`, its `.pub` line into both files, then
+   `RELEASE_KEY=~/.ssh/that_key make release`; signing asks for a touch, and
+   needs Homebrew's OpenSSH, which the script prefers). Builds made before the
+   commit with the key have none and refuse all updates. List a second key as
+   a reserve from the start (R91).
+2. **Access token** for the release API: Gitea > Settings > Applications, scope
+   `write:repository`, one line in `private/gitea_token` (`chmod 600`), or
+   `GITEA_TOKEN` in the environment. The script hands it to curl in a file, not
+   on a command line, and sends it to the configured Gitea only.
+3. **Mac app**: a *Developer ID Application* certificate in your keychain and
+   notarytool credentials stored once
+   (`xcrun notarytool store-credentials boundgate-notary …`, see
+   `apps/macos/notarize.sh`). An "Apple Development" certificate is not enough:
+   other people's Macs only run Developer ID signed, notarized apps.
+   `NO_MAC=1 make release` makes a release without the app.
+4. **CI**: `REGISTRY_TOKEN` as for the image workflow; `RELEASE_TOKEN`
+   (write:repository) only if the job's own token may not create releases.
+5. **Anonymous downloads**: this Gitea answers visitors with "Only signed in
    user is allowed to call APIs" (`REQUIRE_SIGNIN_VIEW`). For third parties the
    repository must be public and that setting off (or releases mirrored to a
    public place, `update.url`). Until then every updater needs a read token:
    `update.token_file` in `node.yaml`, `BOUNDGATE_UPDATE_TOKEN_FILE` for
    `update.sh`.
 
-Then: `git tag v0.9.0 && git push origin v0.9.0`. The release appears (as a
-draft until every asset is uploaded, so that `releases/latest` never points at
-half a release).
+If something fails on the way (CI red, notarization slow, no network), fix it
+and run `make release VERSION=<that version>` again: the tag exists, a finished
+Mac build is kept, files of the earlier attempt are replaced. A re-run of the
+CI job replaces its own draft and never touches a published release. Tested
+against a stand-in for Gitea by `make release-test`.
 
 ## Updating
 
@@ -106,8 +131,12 @@ exactly those. Tested by `make update-test`.
 
 ## What remains (SECURITY.md R88–R91)
 
-The release key and the Developer ID certificate are CI secrets: the Gitea
-instance and its runners can sign a release. Keeping the release key off the
-server is possible with the same files: sign `manifest.json` by hand
-(`ssh-keygen -Y sign -n boundgate-release`, a YubiKey-held `sk-` key works)
-and upload the `.sig` yourself; list only that key in `release_keys`.
+The release key and the Developer ID identity exist on the maintainer's Mac
+only; Gitea, its admins and its runners cannot sign a release. What the
+maintainer signs, though, is what CI built: the Linux binaries and the image
+come from the runner, and step 4 can only check that they are the files CI
+recorded for the tagged commit, not that the runner built them honestly. A
+compromised runner therefore still reaches Linux nodes through a release the
+maintainer signs in good faith. Closing that needs a reproducible build that
+the maintainer repeats locally and compares (the Go binaries are built with
+`-trimpath` and no cgo, which is most of the way); not done yet.

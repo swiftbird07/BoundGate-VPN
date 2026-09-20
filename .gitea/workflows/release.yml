@@ -1,21 +1,18 @@
-# A tag vMAJOR.MINOR.PATCH becomes a release: Linux binaries, the container
-# image, the signed and notarized macOS app, and a signed manifest that names
-# all of it. Clients install only what a signed manifest names
-# (internal/update, deploy/prod/update.sh; docs/RELEASES.md).
+# A tag vMAJOR.MINOR.PATCH starts a release. This half runs here: tests, Linux
+# binaries, the container image, all parked in a DRAFT release together with
+# build.json, a record of what was built. Nothing here signs anything and no
+# signing key exists here.
 #
-# Secrets (Settings > Actions > Secrets; none of them ever appears in a log):
-#   REGISTRY_TOKEN        as for image.yml
-#   RELEASE_SIGNING_KEY   OpenSSH private key (ed25519, no passphrase) whose
-#                         public half is in internal/update/release_keys
-#                         (`make release-key` on your machine creates both)
-#   RELEASE_TOKEN         optional: access token with write:repository, if the
-#                         job's own token may not create releases
-# For the macOS app, additionally a runner on a Mac with Xcode, named in the
-# repository variable MACOS_RUNNER (its label), and:
-#   MACOS_CERT_P12, MACOS_CERT_PASSWORD   "Developer ID Application" certificate
-#                                         with key, base64 of the .p12
-#   NOTARY_KEY_P8, NOTARY_KEY_ID, NOTARY_ISSUER   App Store Connect API key
-# Without MACOS_RUNNER the release has no Mac app, and says so.
+# The other half runs on the maintainer's Mac (`make release`, which also
+# pushed the tag): it builds, signs and notarizes the Mac app, signs the
+# manifest over everything with the release key and publishes the draft
+# (deploy/release/release.sh, docs/RELEASES.md). Clients install only what a
+# signed manifest names, so a draft that nobody signs is just files.
+#
+# Secrets (Settings > Actions > Secrets):
+#   REGISTRY_TOKEN   as for image.yml
+#   RELEASE_TOKEN    optional: access token with write:repository, if the
+#                    job's own token may not create releases
 name: release
 on:
   push:
@@ -32,8 +29,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      digest: ${{ steps.image.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -53,11 +48,9 @@ jobs:
           V=${{ gitea.ref_name }}
           LD="-X $VPKG.Version=$V -X $VPKG.Commit=${{ gitea.sha }}"
           for arch in amd64 arm64; do
-            mkdir -p bin/linux_$arch bin/darwin_$arch
+            mkdir -p bin/linux_$arch
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$LD" -o bin/linux_$arch/ \
               ./cmd/boundgate-control ./cmd/boundgate-node ./cmd/boundgatectl ./cmd/boundgate-mux
-            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "$LD" -o bin/darwin_$arch/ \
-              ./cmd/boundgate-node ./cmd/boundgatectl
           done
           mkdir -p dist/release
           for arch in amd64 arm64; do
@@ -88,115 +81,26 @@ jobs:
           # the release is pinned by digest in the manifest; the tag is for people
           tags: ${{ env.IMAGE }}:${{ gitea.ref_name }}
           build-args: REVISION=${{ gitea.sha }}
-      - uses: actions/upload-artifact@v3
-        with:
-          name: release-files
-          path: dist/release/
-      - uses: actions/upload-artifact@v3
-        with:
-          name: darwin-binaries
-          path: |
-            bin/darwin_amd64/
-            bin/darwin_arm64/
-
-  macos:
-    needs: build
-    if: ${{ vars.MACOS_RUNNER != '' }}
-    runs-on: ${{ vars.MACOS_RUNNER }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v3
-        with:
-          name: darwin-binaries
-          path: bin/
-      - name: signing identity into a keychain of its own
-        env:
-          P12: ${{ secrets.MACOS_CERT_P12 }}
-          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-        run: |
-          set -eu
-          KC=$RUNNER_TEMP/release.keychain-db; KCPW=$(uuidgen)
-          echo "$P12" | base64 -D > $RUNNER_TEMP/cert.p12
-          security create-keychain -p "$KCPW" "$KC"
-          security set-keychain-settings -lut 3600 "$KC"
-          security unlock-keychain -p "$KCPW" "$KC"
-          security import $RUNNER_TEMP/cert.p12 -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          rm -f $RUNNER_TEMP/cert.p12
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC" >/dev/null
-          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
-      - name: app, signed
-        run: |
-          chmod +x bin/darwin_*/*
-          ID=$(security find-identity -v -p codesigning $RUNNER_TEMP/release.keychain-db | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
-          [ -n "$ID" ] || { echo "no Developer ID Application identity in MACOS_CERT_P12" >&2; exit 1; }
-          RELEASE=${{ gitea.ref_name }} UNIVERSAL=1 SKIP_GO=1 SIGN_IDENTITY="$ID" apps/macos/build-app.sh
-      - name: notarize, staple, disk image
-        env:
-          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
-          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
-        run: |
-          set -eu
-          printf '%s\n' "$NOTARY_KEY_P8" > $RUNNER_TEMP/notary.p8; chmod 600 $RUNNER_TEMP/notary.p8
-          NOTARY_KEY_FILE=$RUNNER_TEMP/notary.p8 apps/macos/notarize.sh
-          mkdir -p dist/release && mv dist/BoundGate-*.dmg dist/BoundGate-*-macos.zip dist/release/
-      - name: forget the credentials
-        if: always()
-        run: |
-          security delete-keychain $RUNNER_TEMP/release.keychain-db 2>/dev/null || true
-          rm -f $RUNNER_TEMP/notary.p8 $RUNNER_TEMP/cert.p12
-      - uses: actions/upload-artifact@v3
-        with:
-          name: release-files-macos
-          path: dist/release/
-
-  publish:
-    needs: [build, macos]
-    # also when there is no Mac runner (macos skipped), never when it failed
-    if: ${{ always() && needs.build.result == 'success' && needs.macos.result != 'failure' && needs.macos.result != 'cancelled' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v3
-        with:
-          name: release-files
-          path: dist/release/
-      - uses: actions/download-artifact@v3
-        if: ${{ needs.macos.result == 'success' }}
-        with:
-          name: release-files-macos
-          path: dist/release/
-      - name: manifest, signed
-        env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-        run: |
-          set -eu
-          V=${{ gitea.ref_name }}
-          COMMIT=${{ gitea.sha }} deploy/release/manifest.sh "$V" dist/release "$IMAGE" "${{ needs.build.outputs.digest }}" > dist/release/manifest.json
-          umask 077; printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release_key"
-          ssh-keygen -q -Y sign -n boundgate-release -f "$RUNNER_TEMP/release_key" dist/release/manifest.json
-          rm -f "$RUNNER_TEMP/release_key"
-          # what the clients will do: a signature the built-in keys do not accept must not go out
-          grep -v '^#' internal/update/release_keys | grep . | sed 's/^/boundgate-release /' > "$RUNNER_TEMP/allowed"
-          ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed" -I boundgate-release -n boundgate-release -s dist/release/manifest.json.sig < dist/release/manifest.json
-          cat dist/release/manifest.json
-      - name: release
+      - name: draft release with what was built
         env:
           TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           V=${{ gitea.ref_name }}
           API=${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}
-          NOTE="Verify before use: manifest.json is signed (ssh-keygen -Y verify, namespace boundgate-release) and names every file here and the image by digest. docs/RELEASES.md"
-          [ -n "$(ls dist/release/*-macos.zip 2>/dev/null)" ] || NOTE="$NOTE
-
-          This release has no macOS app (no Mac runner was configured)."
-          ID=$(jq -n --arg t "$V" --arg b "$NOTE" '{tag_name:$t, name:$t, body:$b, draft:true}' \
-            | curl -fsS -X POST -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d @- "$API/releases" | jq -r .id)
-          for f in dist/release/*; do
-            curl -fsS -X POST -H "Authorization: token $TOKEN" -F "attachment=@$f" "$API/releases/$ID/assets?name=$(basename "$f")" >/dev/null
+          # the record the maintainer's side checks its downloads against
+          COMMIT=${{ gitea.sha }} deploy/release/manifest.sh "$V" dist/release "$IMAGE" "${{ steps.image.outputs.digest }}" \
+            | jq '.type = "boundgate-build"' > build.json
+          cat build.json
+          auth() { curl -fsS -H "Authorization: token $TOKEN" "$@"; }
+          # a re-run replaces the draft of the same tag; a published release is never touched
+          for id in $(auth "$API/releases?draft=true&limit=50" | jq -r --arg v "$V" '.[] | select(.tag_name == $v and .draft) | .id'); do
+            auth -X DELETE "$API/releases/$id" >/dev/null
+          done
+          ID=$(jq -n --arg t "$V" '{tag_name:$t, name:$t, draft:true, body:"Built by CI, not signed yet. `make release VERSION=\($t)` on the maintainer\u0027s machine signs and publishes it."}' \
+            | auth -X POST -H 'Content-Type: application/json' -d @- "$API/releases" | jq -r .id)
+          for f in dist/release/*.tar.gz build.json; do
+            auth -X POST -F "attachment=@$f" "$API/releases/$ID/assets?name=$(basename "$f")" >/dev/null
             echo "uploaded $(basename "$f")"
           done
-          # visible only now that it is complete: clients read releases/latest
-          curl -fsS -X PATCH -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d '{"draft":false}' "$API/releases/$ID" >/dev/null
-          echo "released $V"
+          echo "draft $V is ready to be signed"

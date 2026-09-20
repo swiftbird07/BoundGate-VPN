@@ -6,14 +6,14 @@
 #   SIGN_IDENTITY="Developer ID Application: …" apps/macos/build-app.sh
 #   SIGN_IDENTITY=- apps/macos/build-app.sh # ad hoc: runs, but macOS refuses to register the service
 #
-#   RELEASE=v1.2.3 UNIVERSAL=1 apps/macos/build-app.sh   # what the release pipeline runs
+#   RELEASE=v1.2.3 UNIVERSAL=1 apps/macos/build-app.sh   # what `make release` runs
 #
 # Go is built in the box (make build-darwin); Swift and codesign run on the Mac.
 #   RELEASE=vX.Y.Z  release build: that version in the binaries (they update
 #                   themselves only then) and in Info.plist
 #   UNIVERSAL=1     arm64 + x86_64 in one bundle (lipo; needs both Go builds)
-#   SKIP_GO=1       take bin/darwin_* as they are (built elsewhere, e.g. by CI
-#                   on Linux, so that the Mac needs no Go)
+#   SKIP_GO=1       take bin/darwin_* as they are (built elsewhere, so that
+#                   this Mac needs neither Go nor the box)
 set -eu
 cd "$(dirname "$0")/../.."
 REPO=$PWD
