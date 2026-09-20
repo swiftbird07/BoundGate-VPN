@@ -72,7 +72,7 @@ updated_at/by`.
   "roles": ["endpoint", "subnet-router"],
   "prefixes": [{"prefix": "192.168.178.0/24", "mode": "snat"}],   // routed | snat
   "overlay_ip": "10.21.0.7",            // optional, else the next free address
-  "public_addr": "hub1.example:443",    // hubs: what spokes dial (unsigned)
+  "public_addr": "hub1.example:443",    // hubs: what spokes dial; spokes: where peers can dial a direct path (PATHS.md); unsigned
   "hardware_bound": true                // optional. Omitted: what the node reported (confirm), unchanged (patch).
                                         // false declines a reported hardware key; true without such a report is 409. Signed.
 }

@@ -12,7 +12,7 @@ export interface MeshNode {
 }
 export interface MeshLan { id: string; owner: string; prefix: string; mode: string; x: number; y: number; vx: number; vy: number }
 export interface MeshEdge {
-  id: string; a: string; b: string; tunnel: Tunnel; active: boolean; tcp: boolean;
+  id: string; a: string; b: string; tunnel: Tunnel; active: boolean; tcp: boolean; relay: boolean;
   rate: number;      // bytes per second, recent if known, else lifetime average
   age: number;       // seconds since it closed (history edges), 0 when active
 }
@@ -93,7 +93,7 @@ export function buildMesh(nodes: Node[], sessions: Session[], tunnels: Tunnel[],
     const end = closed ?? (live ? now : at);
     const secs = Math.max((Math.min(end, at) - Date.parse(t.opened_at)) / 1000, 1);
     const e: MeshEdge = {
-      id: key, a: t.hub_id, b: t.peer_id, tunnel: t, active, tcp: t.transport === 'tcp',
+      id: key, a: t.hub_id, b: t.peer_id, tunnel: t, active, tcp: t.transport === 'tcp', relay: t.transport === 'relay',
       rate: live && active && rates.has(t.id) ? rates.get(t.id)! : (t.bytes_in + t.bytes_out) / secs,
       age: active ? 0 : (at - closed!) / 1000,
     };

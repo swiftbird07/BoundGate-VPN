@@ -13,7 +13,7 @@ day or week.
 | Yellow badge | hardware-bound device key (TPM, Secure Enclave), as granted in the signed binding |
 | Blue badge with a letter | a user is signed in on the node |
 | Dashed box on a dotted line | a prefix the node announces (`routed` or masqueraded) |
-| Dotted line, moving | an open tunnel. Dots run from the side that sent more; width and speed follow the rate. Blue with a TCP tag: the tunnel fell back to TCP/443 |
+| Dotted line, moving | an open tunnel. Dots run from the side that sent more; width and speed follow the rate. Blue with a TCP tag: the tunnel fell back to TCP/443. An edge between two spokes is a path of their own (PATHS.md), tagged RELAY when it runs through a hub's relay |
 | Thin grey dashes | a tunnel that closed within the window; the older, the fainter. "History" switches them off |
 | Green or red flash along an edge | the tunnel opened or closed just now (or at the moment the scrubber passed) |
 

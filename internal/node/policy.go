@@ -191,6 +191,8 @@ type tunnelStats struct {
 	inPkts  atomic.Uint64
 	out     atomic.Uint64 // to the peer
 	outPkts atomic.Uint64
+	via     string // accepted by a spoke: "direct" or "relay <hub>"
+	mtu     int    // relayed: larger packets are answered, not sent (paths.go)
 }
 
 func newTunnelStats(t *transport.Tunnel, p registry.Node) *tunnelStats {
@@ -199,6 +201,9 @@ func newTunnelStats(t *transport.Tunnel, p registry.Node) *tunnelStats {
 
 // WritePacket implements forward.PacketWriter.
 func (ts *tunnelStats) WritePacket(b []byte) ([]byte, error) {
+	if ts.mtu > 0 && len(b) > ts.mtu {
+		return netparse.FragNeeded(b, ts.mtu), nil
+	}
 	icmp, err := ts.t.WritePacket(b)
 	if err == nil {
 		ts.out.Add(uint64(len(b)))

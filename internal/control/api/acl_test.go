@@ -175,10 +175,25 @@ func TestLogShipping(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(string(b), `"accepted":4`) || !strings.Contains(string(b), `"rejected":2`) {
 		t.Fatalf("ship: %d %s", code, b)
 	}
-	// a non-hub may ship flows but not tunnels
-	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/logs", `{"events":[{"stream":"tunnel","message":"open","attrs":{"tunnel":"t9","peer":"`+hid+`","opened_at":"`+opened+`"}},{"stream":"flow","message":"open","attrs":{"flow":"f3"}}]}`)
-	if code != http.StatusOK || !strings.Contains(string(b), `"accepted":1`) {
+	// a spoke reports the tunnels it accepted itself (M7), never one with itself
+	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/logs", `{"events":[{"stream":"tunnel","message":"open","attrs":{"tunnel":"t9","peer":"`+lid+`","opened_at":"`+opened+`"}},{"stream":"flow","message":"open","attrs":{"flow":"f3"}}]}`)
+	if code != http.StatusOK || !strings.Contains(string(b), `"accepted":1`) || !strings.Contains(string(b), `"rejected":1`) {
 		t.Fatalf("laptop ship: %d %s", code, b)
+	}
+	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/logs", `{"events":[
+	  {"stream":"tunnel","message":"open","attrs":{"tunnel":"t8","peer":"`+hid+`","transport":"relay","opened_at":"`+opened+`"}},
+	  {"stream":"tunnel","message":"close","attrs":{"tunnel":"t8","peer":"`+hid+`","transport":"relay","opened_at":"`+opened+`","reason":"closed by peer"}}]}`)
+	if code != http.StatusOK || !strings.Contains(string(b), `"accepted":2`) {
+		t.Fatalf("laptop ships an accepted tunnel: %d %s", code, b)
+	}
+	var accepted []db.Tunnel
+	e.adminCall("GET", "/api/v1/admin/tunnels?node=hub1", "", http.StatusOK, &accepted)
+	found := false
+	for _, tn := range accepted {
+		found = found || (tn.ID == "t8" && tn.HubName == "laptop" && tn.PeerName == "hub1" && tn.Transport == "relay" && tn.ClosedAt != nil)
+	}
+	if !found {
+		t.Fatalf("the tunnel a spoke accepted is missing: %+v", accepted)
 	}
 
 	var tunnels []db.Tunnel
@@ -195,7 +210,7 @@ func TestLogShipping(t *testing.T) {
 		t.Fatalf("closed tunnel still active: %+v", tunnels)
 	}
 	e.adminCall("GET", "/api/v1/admin/tunnels?node=laptop", "", http.StatusOK, &tunnels)
-	if len(tunnels) != 1 || tunnels[0].ClosedAt == nil || tunnels[0].CloseReason != "peer left" || tunnels[0].BytesIn != 150 || tunnels[0].BytesOut != 200 {
+	if tunnels = withoutID(tunnels, "t8"); len(tunnels) != 1 || tunnels[0].ClosedAt == nil || tunnels[0].CloseReason != "peer left" || tunnels[0].BytesIn != 150 || tunnels[0].BytesOut != 200 {
 		t.Fatalf("closed tunnel: %+v", tunnels)
 	}
 	// a hub restart closes whatever it still had open
@@ -214,7 +229,7 @@ func TestLogShipping(t *testing.T) {
 	for _, tn := range tunnels {
 		reasons[tn.ID] = tn.CloseReason
 	}
-	if len(tunnels) != 2 || reasons["t3"] != "hub restarted" || reasons["t1"] != "peer left" {
+	if tunnels = withoutID(tunnels, "t8"); len(tunnels) != 2 || reasons["t3"] != "hub restarted" || reasons["t1"] != "peer left" {
 		t.Fatalf("after reset: %+v", tunnels)
 	}
 
@@ -233,7 +248,8 @@ func TestLogShipping(t *testing.T) {
 	}
 	var tlog []db.LogEvent // fresh: json.Unmarshal into a reused slice would merge attribute maps
 	e.adminCall("GET", "/api/v1/admin/logs?stream=tunnel", "", http.StatusOK, &tlog)
-	if len(tlog) != 3 || tlog[0].Message != "open" || tlog[1].Message != "close" || tlog[2].Message != "open" { // t3 open, t1 close, t1 open; no update, no reset
+	// newest first: t3 open, t1 close, the spoke's t8 close and open, t1 open; no update, no reset
+	if len(tlog) != 5 || tlog[0].Message != "open" || tlog[1].Message != "close" || tlog[2].Attrs["tunnel"] != "t8" || tlog[3].Attrs["tunnel"] != "t8" || tlog[4].Message != "open" {
 		t.Fatalf("tunnel log: %+v", tlog)
 	}
 	if _, leaked := tlog[1].Attrs["flow"]; leaked {
@@ -243,4 +259,14 @@ func TestLogShipping(t *testing.T) {
 	if code, _ := e.nodeCall(hub, "POST", "/api/v1/node/logs", `{"events":[`+strings.Repeat(`{"stream":"flow","message":"open"},`, api.ShipMaxEvents)+`{"stream":"flow","message":"open"}]}`); code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized batch: %d", code)
 	}
+}
+
+func withoutID(ts []db.Tunnel, id string) []db.Tunnel {
+	var out []db.Tunnel
+	for _, t := range ts {
+		if t.ID != id {
+			out = append(out, t)
+		}
+	}
+	return out
 }

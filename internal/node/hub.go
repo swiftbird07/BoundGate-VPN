@@ -59,6 +59,54 @@ func (h *hubService) Accept(_ context.Context, peer transport.AuthenticatedPeer)
 	}, http.StatusOK, nil
 }
 
+// RelayListen implements transport.RelayHandler: an approved peer may be
+// reached through this hub at its own overlay address, nowhere else.
+func (h *hubService) RelayListen(peer transport.AuthenticatedPeer, addr netip.Addr) int {
+	n := h.s.n
+	if n.cfg.NoRelay {
+		return http.StatusNotImplemented
+	}
+	snap := n.holder.Load()
+	if snap == nil || n.holder.Stale(time.Now()) {
+		return http.StatusServiceUnavailable
+	}
+	if p, ok := snap.Peer(peer.DeviceID()); !ok || p.OverlayIP != addr {
+		return http.StatusForbidden
+	}
+	return http.StatusOK
+}
+
+// RelayDial implements transport.RelayHandler. The hub pairs only nodes it
+// would itself admit: the dialer approved and, if interactive, with a user
+// session; the target the overlay address of another approved node. Which
+// flows the target then takes is the target's decision (its ACL); the hub
+// cannot see them.
+func (h *hubService) RelayDial(peer transport.AuthenticatedPeer, target netip.Addr) (netip.Addr, int) {
+	n := h.s.n
+	if n.cfg.NoRelay {
+		return netip.Addr{}, http.StatusNotImplemented
+	}
+	snap := n.holder.Load()
+	if snap == nil || n.holder.Stale(time.Now()) {
+		return netip.Addr{}, http.StatusServiceUnavailable
+	}
+	p, ok := snap.Peer(peer.DeviceID())
+	if !ok {
+		return netip.Addr{}, http.StatusForbidden
+	}
+	if p.NeedsSession() {
+		if _, ok := snap.SessionFor(p.ID, time.Now()); !ok {
+			return netip.Addr{}, http.StatusForbidden
+		}
+	}
+	for _, q := range snap.Peers {
+		if q.OverlayIP == target && q.ID != p.ID {
+			return p.OverlayIP, http.StatusOK
+		}
+	}
+	return netip.Addr{}, http.StatusForbidden
+}
+
 // Release implements transport.Handler; addresses are static, nothing to free.
 func (h *hubService) Release(transport.AuthenticatedPeer, transport.TunnelConfig) {}
 

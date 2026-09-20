@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"time"
 
@@ -28,6 +29,12 @@ type ClientConfig struct {
 	// network that blacks out UDP this is how long the QUIC attempt takes
 	// before the caller falls back to TCP.
 	HandshakeTimeout time.Duration
+	// PacketConn, when set, carries the connection instead of a UDP socket:
+	// a relay stream from ClientTunnel.RelayDial, Remote the node behind it.
+	// GatewayAddr is then unused. The connection stays at the minimum packet
+	// size (see ServerConfig.Relayed); Dial closes PacketConn with the tunnel.
+	PacketConn net.PacketConn
+	Remote     net.Addr
 }
 
 func (c ClientConfig) withDefaults() ClientConfig {
@@ -60,6 +67,8 @@ type quicClientLink struct {
 	qconn *quic.Conn
 	cc    *http3.ClientConn
 	tr    *http3.Transport
+	qt    *quic.Transport // relayed connections only
+	pc    net.PacketConn
 }
 
 func (l *quicClientLink) ReadPacket(b []byte) (int, error)     { return l.conn.ReadPacket(b) }
@@ -83,6 +92,10 @@ func (l *quicClientLink) Close(code quic.ApplicationErrorCode, reason string) er
 	_ = l.conn.Close()
 	err := l.qconn.CloseWithError(code, reason)
 	_ = l.tr.Close()
+	if l.qt != nil {
+		_ = l.qt.Close()
+		_ = l.pc.Close()
+	}
 	return err
 }
 
@@ -103,13 +116,26 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 		return nil, fmt.Errorf("transport: template: %w", err)
 	}
 	cfg = cfg.withDefaults()
-	qconn, err := quic.DialAddr(ctx, cfg.GatewayAddr, cfg.TLS, &quic.Config{
+	qcfg := &quic.Config{
 		EnableDatagrams:      true,
 		MaxIdleTimeout:       cfg.IdleTimeout,
 		KeepAlivePeriod:      cfg.KeepAlive,
 		HandshakeIdleTimeout: cfg.HandshakeTimeout,
-	})
-	if err != nil {
+	}
+	var qconn *quic.Conn
+	var qt *quic.Transport
+	name := "quic"
+	if cfg.PacketConn != nil {
+		qcfg.InitialPacketSize, qcfg.DisablePathMTUDiscovery = 1200, true
+		qt = &quic.Transport{Conn: cfg.PacketConn}
+		name = "relay"
+		qconn, err = qt.Dial(ctx, cfg.Remote, cfg.TLS, qcfg)
+		if err != nil {
+			_ = qt.Close()
+			_ = cfg.PacketConn.Close()
+			return nil, fmt.Errorf("transport: dial %s through the relay: %w", cfg.Remote, err)
+		}
+	} else if qconn, err = quic.DialAddr(ctx, cfg.GatewayAddr, cfg.TLS, qcfg); err != nil {
 		return nil, fmt.Errorf("transport: dial %s: %w", cfg.GatewayAddr, err)
 	}
 	tr := &http3.Transport{EnableDatagrams: true}
@@ -121,9 +147,24 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 			status = rsp.StatusCode
 		}
 		_ = qconn.CloseWithError(0, "connect-ip failed")
+		if qt != nil {
+			_ = qt.Close()
+			_ = cfg.PacketConn.Close()
+		}
 		return nil, &DialError{Status: status, Err: err}
 	}
-	return &ClientTunnel{link: &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr}, transport: "quic"}, nil
+	if d, ok := cfg.PacketConn.(interface{ Done() <-chan struct{} }); ok {
+		// a relay stream that ended takes the connection on it along at
+		// once; QUIC itself would only notice at its idle timeout
+		go func() {
+			select {
+			case <-d.Done():
+				_ = qconn.CloseWithError(0, "relay stream ended")
+			case <-qconn.Context().Done():
+			}
+		}()
+	}
+	return &ClientTunnel{link: &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr, qt: qt, pc: cfg.PacketConn}, transport: name}, nil
 }
 
 // DialError reports a CONNECT-IP refusal. Status is the HTTP status if the

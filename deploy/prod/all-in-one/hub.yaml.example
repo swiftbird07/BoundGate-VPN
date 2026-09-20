@@ -14,6 +14,7 @@ behind_mux:
   trusted: [127.0.0.1]
   # no_proxy_protocol: true        # if a reverse proxy in front of the TCP side sends no PROXY v2 header
 # tcp_fallback: false              # UDP only: no TCP listener, and spokes never fall back
+# relay: false                     # do not relay between spokes (docs/PATHS.md): they then only meet through this hub's routing
 public_addr: "bg.example.com:443"  # what spokes dial: the same address and port as the control plane
 auto_up: true
 profile: full

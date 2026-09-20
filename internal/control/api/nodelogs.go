@@ -7,7 +7,6 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
-	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 )
 
 // Streams a node may ship.
@@ -37,7 +36,8 @@ const (
 
 // nodeShipLogs stores flow records and tunnel reports of an approved node.
 // The reporter is authenticated by mTLS; its id overrides whatever the
-// records claim. Tunnel reports are accepted from hubs only.
+// records claim. A tunnel is reported by the node that accepted it: a hub,
+// or since M7 a spoke that a peer reached directly or through a relay.
 func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 	peer, ok := h.approvedPeer(w, r)
 	if !ok {
@@ -57,7 +57,6 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, h.d.Logs.System)
 		return
 	}
-	isHub := registry.HasRole(self.Roles, registry.RoleHub)
 	var rows []db.LogEvent
 	accepted, rejected := 0, 0
 	for _, ev := range body.Events {
@@ -75,10 +74,6 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 			rows = append(rows, db.LogEvent{TS: ev.TS, Stream: ShipStreamFlow, Actor: "node", DeviceID: self.ID, SessionID: sess, Message: clip(ev.Message, 64), Attrs: ev.Attrs})
 			accepted++
 		case ShipStreamTunnel:
-			if !isHub {
-				rejected++
-				continue
-			}
 			if ev.Message == "reset" {
 				// the hub (re)started: whatever it had is gone
 				if _, err := h.d.DB.CloseHubTunnels(r.Context(), self.ID, "hub restarted"); err != nil {
@@ -93,7 +88,7 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			peer, err := h.d.DB.NodeByID(r.Context(), rep.PeerID)
-			if err != nil {
+			if err != nil || rep.PeerID == self.ID {
 				rejected++
 				continue
 			}

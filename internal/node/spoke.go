@@ -182,6 +182,9 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 		m.mu.Unlock()
 		n.log.Info("hub connected", "hub", l.hub.Name, "addr", l.hub.PublicAddr, "advertised", adv, "transport", t.Transport())
 		n.publishStatus()
+		if m.s.paths != nil {
+			go m.s.paths.hubUp(ctx, l.hub, t)
+		}
 
 		go m.pump(ctx, t)
 		t = m.wait(ctx, l, t)
@@ -268,6 +271,9 @@ func (m *spokeManager) wait(ctx context.Context, l *hubLink, t *transport.Client
 			m.mu.Unlock()
 			go m.pump(ctx, nt)
 			_ = old.Close()
+			if m.s.paths != nil {
+				go m.s.paths.hubUp(ctx, l.hub, nt)
+			}
 			n.log.Info("hub connection moved back to QUIC", "hub", l.hub.Name, "advertised", adv)
 			n.publishStatus()
 		}
@@ -396,6 +402,24 @@ func (m *spokeManager) pump(ctx context.Context, t *transport.ClientTunnel) {
 			s.n.log.Warn("tun write", "err", err)
 		}
 	}
+}
+
+// relays lists the hub links a relay stream can run on, the primary first.
+func (m *spokeManager) relays() []*hubLink {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*hubLink
+	for _, id := range m.order {
+		if l := m.links[id]; l != nil && l.tunnel != nil && l.tunnel.Transport() == "quic" {
+			c := *l // the tunnel as it is now; the link may move on
+			if l == m.primary {
+				out = append([]*hubLink{&c}, out...)
+			} else {
+				out = append(out, &c)
+			}
+		}
+	}
+	return out
 }
 
 // electLocked picks the first connected hub in snapshot order as uplink.

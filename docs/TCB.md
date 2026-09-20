@@ -73,7 +73,8 @@ node believe an unsigned role.
    tunnels later); authentication never does. Every fallback still requires
    the device certificate.
 6. Enforcement happens on the side that lets traffic into a resource (hub,
-   subnet router, exit node; from M7 the receiving endpoint). The sender's
+   subnet router, exit node; on a path between spokes the receiving node,
+   PATHS.md). The sender's
    own checks are never the only ones.
 7. Dependencies in the TCB are pinned and updated deliberately, never
    `go get -u`. The `box` dev container enforces a 14-day cooldown on module

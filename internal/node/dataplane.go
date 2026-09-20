@@ -137,6 +137,9 @@ func (d *dataplane) RunTUNReader(ctx context.Context) error {
 			pw, ok := d.table.Lookup(h.Dst)
 			if !ok {
 				pw = d.getUplink()
+				if d.s != nil && d.s.paths != nil {
+					d.s.paths.noPath(h.Dst) // the hub carries it; a path of its own may follow
+				}
 			}
 			if pw == nil {
 				dropped++

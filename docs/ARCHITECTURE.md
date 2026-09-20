@@ -86,8 +86,10 @@ See `ACL.md` for the entity model, the enforcement points and the flow log.
 * The hub **terminates** the tunnel and sees overlay packets. That is the
   same trust as any VPN concentrator and is acceptable because the hub role
   is granted by an admin and part of the signed binding every node verifies.
-  End-to-end paths between spokes (direct, or through a non-terminating
-  CONNECT-UDP relay) are milestone M7.
+  Two spokes that both take part open a tunnel with each other instead
+  (PATHS.md): directly where one announces an address, otherwise through a
+  hub's CONNECT-UDP relay, which moves their ciphertext and cannot read it.
+  The hub path stays the fallback at every moment.
 * A subnet router is assigned its announced prefixes in addition to its
   overlay address (CONNECT-IP only lets a peer receive for, and send from,
   assigned addresses). In `snat` mode it masquerades overlay sources behind

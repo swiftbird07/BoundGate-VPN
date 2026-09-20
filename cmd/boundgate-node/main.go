@@ -54,9 +54,15 @@ type config struct {
 		Trusted         []string `yaml:"trusted"`           // where the mux delivers from, e.g. [127.0.0.1]
 		NoProxyProtocol bool     `yaml:"no_proxy_protocol"` // the TCP front sends no PROXY v2 header
 	} `yaml:"behind_mux"`
-	TCPFallback  *bool             `yaml:"tcp_fallback"` // default true: hubs serve the tunnel on TCP too, spokes fall back to it
-	Transport    string            `yaml:"transport"`    // spoke: auto (default) | quic | tcp
-	QUICRetry    time.Duration     `yaml:"quic_retry"`   // spoke on TCP: how often to try QUIC again, default 2m
+	TCPFallback *bool         `yaml:"tcp_fallback"` // default true: hubs serve the tunnel on TCP too, spokes fall back to it
+	Transport   string        `yaml:"transport"`    // spoke: auto (default) | quic | tcp
+	QUICRetry   time.Duration `yaml:"quic_retry"`   // spoke on TCP: how often to try QUIC again, default 2m
+	Relay       *bool         `yaml:"relay"`        // hub, default true: relay between spokes that cannot reach each other
+	Paths       struct {
+		Disabled bool          `yaml:"disabled"` // spoke: everything stays on the hub path
+		Listen   string        `yaml:"listen"`   // spoke: UDP address peers can dial (announce it with public_addr)
+		Idle     time.Duration `yaml:"idle"`     // close a path nothing used for this long, default 5m
+	} `yaml:"paths"`
 	AutoUp       bool              `yaml:"auto_up"`
 	Profile      string            `yaml:"profile"`
 	ProfilesDir  string            `yaml:"profiles_dir"`
@@ -201,6 +207,10 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		NoTCPFallback:     cfg.TCPFallback != nil && !*cfg.TCPFallback,
 		Transport:         cfg.Transport,
 		QUICRetry:         cfg.QUICRetry,
+		NoRelay:           cfg.Relay != nil && !*cfg.Relay,
+		NoPaths:           cfg.Paths.Disabled,
+		PathsListen:       cfg.Paths.Listen,
+		PathIdle:          cfg.Paths.Idle,
 		AutoUp:            cfg.AutoUp,
 		Profile:           cfg.Profile,
 		ProfilesDir:       cfg.ProfilesDir,

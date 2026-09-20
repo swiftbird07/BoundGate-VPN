@@ -12,10 +12,12 @@ permits it.
 |---|---|---|
 | hub | arrive from a peer's tunnel (into the hub's own networks, into another peer's tunnel, into a router's LAN) | the tunnel peer (authenticated by mTLS) |
 | subnet router / exit node / endpoint (spoke) | arrive from a hub tunnel (into the LAN behind it, or into the node itself) | the node that owns the source address (overlay address or announced prefix); the hub already verified that the source belongs to that peer |
+| spoke, on a path with another spoke (PATHS.md) | arrive from that peer's tunnel, whichever side dialed (into the node itself or the LAN behind it) | the tunnel peer (authenticated by mTLS by this node) |
 | any node | it starts itself (from its host stack) | not decided here: the flow is *tracked* so that return traffic is matched; the receiving node decides |
 
-So a spoke-to-LAN flow is decided twice: on the hub (as transit) and on the
-router (as ingress). Both use the same engine and the policies the control
+So a spoke-to-LAN flow over a hub is decided twice: on the hub (as transit)
+and on the router (as ingress). Once the two spokes have a path of their own
+the hub is out of it and the router decides alone. Both use the same engine and the policies the control
 plane scoped to them. Traffic that reaches a node without any decision does
 not exist: an unknown source is denied, a stale snapshot (older than
 `max_age_seconds`) denies everything, and a policy that does not compile is
@@ -84,6 +86,13 @@ node. Scope is how a large deployment keeps a hub's policy set small and how
 a policy that only makes sense on one router stays there. The global admin
 view (`GET /admin/snapshot` without `node`, and dry runs without `enforcer`)
 contains every enabled policy.
+
+Scope and paths: a policy scoped to hubs only is not enforced on a path
+between two spokes, because no hub decides there. A `forbid` that must hold
+between spokes belongs on the receiving nodes or, simplest, has no scope; a
+`permit` scoped to hubs only lets the flow pass the hub but not the receiving
+spoke, on a path as on the hub route. Spokes that must not be reached except
+through a hub's decision set `paths.disabled: true`.
 
 ## Flows
 

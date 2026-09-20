@@ -5,7 +5,8 @@
 # control-plane pin, user login (OIDC) with session revocation, logout and
 # expiry enforcement, Cedar ACL with flow logs, SNI resets, dry runs, tunnel
 # history, the embedded admin UI and admin authentication (OIDC session
-# levels, API tokens, bootstrap restriction). Passkey ceremonies need a
+# levels, API tokens, bootstrap restriction), TPM keys, the signed admin key
+# list, and paths between spokes (relay, direct, M7). Passkey ceremonies need a
 # browser and are covered by the Go tests with a software authenticator.
 set -eu
 cd "$(dirname "$0")"
@@ -84,7 +85,9 @@ policy no-lan 'forbid(principal, action, resource) when { resource.ip.isInRange(
 wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://192.168.178.10 >/dev/null 2>&1' || fail "LAN still reachable with a forbid policy"
 reach 10.60.0.10 target || fail "target behind the hubs affected by the LAN forbid"
 wait_for 20 sh -c "$S flows 'decision=deny&dst=192.168.178.10' | grep -q 'node-a.*deny.*no-lan'" || fail "denied flow not in the shipped flow log"
-x hub1 boundgatectl -json flows | jq -e '[.[] | select(.decision == "deny" and .principal_name == "node-a")] | length >= 1' >/dev/null || fail "hub1 does not show the denied flow"
+# whoever admits the traffic decides: a hub, or node-r itself once node-a and node-r have a path of their own (step 15)
+denied_at() { x "$1" boundgatectl -json flows | jq -e '[.[]? | select(.decision == "deny" and .principal_name == "node-a")] | length >= 1' >/dev/null; }
+denied_at hub1 || denied_at hub2 || denied_at node-r || fail "no enforcing node shows the denied flow"
 policy_rm no-lan
 wait_for 15 reach 192.168.178.10 target-lan || fail "LAN unreachable after the forbid was removed"
 
@@ -112,8 +115,8 @@ policy lab-allow-all 'permit(principal, action, resource);'
 policy_rm vpn-users
 wait_for 15 reach 192.168.178.10 target-lan || fail "LAN unreachable after restoring allow-all"
 
-echo "== 4e. tunnel history: every spoke-hub tunnel is reported by its hub"
-wait_for 40 sh -c "$S api GET '/api/v1/admin/tunnels?active=1' | jq -e '([.[] | select(.hub_name == \"hub1\" and .peer_name == \"node-a\")] | length) == 1 and ([.[] | select(.peer_name == \"node-r\")] | length) == 2'" || fail "active tunnels not reported"
+echo "== 4e. tunnel history: every spoke-hub tunnel is reported by its hub (paths between spokes, reported by the accepting spoke, are step 15)"
+wait_for 40 sh -c "$S api GET '/api/v1/admin/tunnels?active=1' | jq -e '([.[] | select(.hub_name == \"hub1\" and .peer_name == \"node-a\")] | length) == 1 and ([.[] | select(.peer_name == \"node-r\" and (.hub_name | startswith(\"hub\")))] | length) == 2'" || fail "active tunnels not reported"
 wait_for 45 sh -c "$S api GET '/api/v1/admin/tunnels?active=1' | jq -e '[.[] | select(.bytes_in > 0)] | length >= 2'" || fail "tunnel counters stay at zero (hubs report every 30 s)"
 
 echo "== 5. HA: stop hub1, traffic moves to hub2 within 10 s, hub1 comes back"
@@ -327,4 +330,52 @@ wait_for 15 status_is node-a ".enrollment == \"approved\" and .binding == \"veri
 x node-a boundgatectl up >/dev/null
 wait_for 20 reach 10.60.0.10 target || fail "target unreachable after the key rotation"
 
-echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 + M6 + signed admin key list end-to-end"
+echo "== 15. paths between spokes: through a hub's relay, direct where a peer announces an address; the receiving node decides; the relaying hub may go away"
+path_of() { x "$1" boundgatectl -json status | jq -r "[.paths[]? | select(.peer == \"$2\")][0].$3 // empty"; }
+x node-t boundgatectl up >/dev/null 2>&1 || true
+TID=$(x node-t boundgatectl -json identity | jq -r .node_id)
+$S api PATCH "/api/v1/admin/nodes/$TID" '{"public_addr":"172.30.0.40:4443"}' | jq -e '.status == "approved"' >/dev/null || fail "announcing an address must not cost node-t its approval"
+wait_for 20 status_is node-t '.state == "up"' || fail "node-t is not up"
+T_IP=$(x node-t boundgatectl -json status | jq -r .overlay_ip)
+# relay: neither node-a nor node-r has an address; the first packets go over the hub and start the path
+wait_for 20 x node-a ping -c 1 -W 2 "$R_IP" || fail "node-r unreachable"
+wait_for 20 sh -c "[ -n \"\$(docker compose -f docker-compose.yml exec -T node-a boundgatectl -json status | jq -r '[.paths[]? | select(.peer == \"node-r\" and (.via | startswith(\"relay \")))][0].via // empty')\" ]" || fail "no relayed path between node-a and node-r"
+VIA=$(path_of node-a node-r via); RHUB=${VIA#relay }
+SIDES="$(path_of node-a node-r side) $(path_of node-r node-a side)"
+[ "$SIDES" = "dialed accepted" ] || [ "$SIDES" = "accepted dialed" ] || fail "exactly one of the two dials: $SIDES"
+[ "$(x node-a boundgatectl -json status | jq '[.paths[]? | select(.peer == "node-r")] | length')" = 1 ] || fail "more than one path between node-a and node-r"
+B0=$(path_of node-a node-r bytes_in)
+x node-a curl -sf --max-time 10 -o /dev/null 'http://192.168.178.10/data?size=300&unit=kb' || fail "download from the LAN behind node-r"
+B1=$(path_of node-a node-r bytes_in)
+[ $((B1 - B0)) -ge 300000 ] || fail "the download did not take the path ($B0 -> $B1); packets larger than the relayed path must be answered with the size that fits"
+status_is "$RHUB" '.relay.dialers >= 1 and .relay.packets > 100' || fail "$RHUB does not count what it relays"
+# the hub only sees ciphertext, so the receiving node is the one that decides
+policy no-lan 'forbid(principal, action, resource) when { resource.ip.isInRange(ip("192.168.178.0/24")) };'
+wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://192.168.178.10 >/dev/null 2>&1' || fail "LAN still reachable over the path with a forbid policy"
+x node-r boundgatectl -json flows | jq -e '[.[]? | select(.decision == "deny" and .principal_name == "node-a" and (.policies | index("no-lan")))] | length >= 1' >/dev/null || fail "node-r did not decide the flow that reached it over the path"
+policy_rm no-lan
+wait_for 15 reach 192.168.178.10 target-lan || fail "LAN unreachable after the forbid was removed"
+# direct: node-t announces an address, so node-a dials it without a hub in between
+wait_for 20 x node-a ping -c 1 -W 2 "$T_IP" || fail "node-t unreachable"
+wait_for 20 status_is node-a '[.paths[]? | select(.peer == "node-t" and .via == "direct" and .side == "dialed")] | length == 1' || fail "node-a did not dial node-t directly"
+status_is node-t '[.paths[]? | select(.peer == "node-a" and .via == "direct" and .side == "accepted")] | length == 1' || fail "node-t does not show the accepted path"
+wait_for 40 sh -c "$S api GET '/api/v1/admin/tunnels?active=1' | jq -e '([.[] | select(.transport == \"relay\" and ([.hub_name, .peer_name] | sort) == [\"node-a\", \"node-r\"])] | length) == 1 and ([.[] | select(.hub_name == \"node-t\" and .peer_name == \"node-a\" and .transport == \"quic\")] | length) == 1'" || fail "paths are missing from the tunnel history (the accepting node reports them)"
+# a relay pairs approved nodes only: a node without its user session is refused like at a hub, and loses the paths it had
+SESSION=$($S api GET /api/v1/admin/sessions | jq -r '.[] | select(.node_name == "node-a") | .id' | head -1)
+$S api DELETE "/api/v1/admin/sessions/$SESSION"
+wait_for 15 status_is node-t '[.paths[]? | select(.peer == "node-a")] | length == 0' || fail "node-t kept the path of a node whose user session was revoked"
+wait_for 15 status_is node-r '[.paths[]? | select(.peer == "node-a")] | length == 0' || fail "node-r kept the path of a node whose user session was revoked"
+$S login node-a >/dev/null
+wait_for 20 reach 192.168.178.10 target-lan || fail "LAN unreachable after re-login"
+wait_for 60 sh -c "docker compose -f docker-compose.yml exec -T node-a ping -c 1 -W 1 $R_IP >/dev/null; [ -n \"\$(docker compose -f docker-compose.yml exec -T node-a boundgatectl -json status | jq -r '[.paths[]? | select(.peer == \"node-r\")][0].via // empty')\" ]" || fail "the path to node-r did not come back after the login"
+# the relaying hub stops: traffic is back on the other hub at once, and the path forms again through it
+VIA=$(path_of node-a node-r via); RHUB=${VIA#relay }; [ "$RHUB" = hub1 ] && OTHER=hub2 || OTHER=hub1
+$COMPOSE stop "$RHUB" >/dev/null
+START=$(date +%s)
+wait_for 5 reach 192.168.178.10 target-lan || fail "LAN unreachable after the relaying hub $RHUB stopped"
+echo "   back on the hub path after $(( $(date +%s) - START )) s"
+wait_for 60 sh -c "docker compose -f docker-compose.yml exec -T node-a ping -c 1 -W 1 $R_IP >/dev/null; [ \"\$(docker compose -f docker-compose.yml exec -T node-a boundgatectl -json status | jq -r '[.paths[]? | select(.peer == \"node-r\")][0].via // empty')\" = 'relay $OTHER' ]" || fail "the path did not move to the relay of $OTHER"
+$COMPOSE start "$RHUB" >/dev/null
+wait_for 30 status_is node-a '[.hubs[] | select(.state == "connected")] | length == 2' || fail "node-a did not reconnect to $RHUB"
+
+echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 + M6 + signed admin key list + M7 paths end-to-end"

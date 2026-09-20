@@ -29,6 +29,12 @@ prefixes:
 # transport: auto                  # tunnels to hubs: QUIC on UDP/443, the same tunnel over TCP/443 when the
                                    # network blocks UDP, back to QUIC when it works again (quic_retry: 2m).
                                    # `tcp` forces the fallback, `quic` never uses it
+# Paths to other spokes that do not end at a hub (docs/PATHS.md): through a hub's relay out of the box,
+# directly if this node can be dialed. Then set public_addr (top) to what peers reach and:
+# paths:
+#   listen: ":4443"               # UDP
+#   idle: 5m                      # close a path nothing used for this long
+#   disabled: true                # neither dial nor accept; everything stays on the hub
 auto_up: true                      # up as soon as approved and at every start
 profile: full                      # routes everything hubs advertise. A server should not take an exit node's
                                    # 0.0.0.0/0 as its default route: put an `include` profile (docs/PROFILES.md, the

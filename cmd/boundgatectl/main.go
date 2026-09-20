@@ -350,6 +350,9 @@ func printStatus(s node.Status, asJSON bool) error {
 			}
 			fmt.Println(line)
 		}
+		for _, p := range s.Paths {
+			fmt.Printf("path          %s, %s (%s)\n", p.Peer, p.Via, p.Side)
+		}
 		if len(s.Routes) > 0 {
 			fmt.Printf("routes:       %s\n", strings.Join(s.Routes, ", "))
 		}
@@ -358,6 +361,9 @@ func printStatus(s node.Status, asJSON bool) error {
 		}
 		if s.Tunnels > 0 {
 			fmt.Printf("tunnels:      %d\n", s.Tunnels)
+		}
+		if s.Relay != nil && (s.Relay.Listeners > 0 || s.Relay.Packets > 0) {
+			fmt.Printf("relay:        %d spokes reachable, %d pairs now, %d packets relayed\n", s.Relay.Listeners, s.Relay.Dialers, s.Relay.Packets)
 		}
 		fmt.Printf("flows:        %d tracked, %d denied\n", s.Flows, s.FlowsDenied)
 		fmt.Printf("since:        %s\n", s.Since.Format("2006-01-02 15:04:05"))

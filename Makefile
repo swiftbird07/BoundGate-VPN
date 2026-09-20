@@ -14,6 +14,8 @@ BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fak
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
 web:
+	@# npm ci removes node_modules itself, and that trips over the container's file sharing (ENOTEMPTY)
+	rm -rf web/node_modules
 	box sh -c 'cd web && npm ci --no-audit --no-fund && npm run build'
 
 # UI work without a control plane: Vite dev server in the box image, published

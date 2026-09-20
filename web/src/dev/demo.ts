@@ -45,9 +45,10 @@ const tunnels: T.Tunnel[] = [
   tunnel(9, nodes[1], nodes[3], 80000, 52000, 'client down'), tunnel(10, nodes[0], nodes[4], 70000, 41000, 'client down'), tunnel(11, nodes[1], nodes[4], 69990, 41000, 'client down'),
   tunnel(12, nodes[0], nodes[4], 30000, 21000, 'session expired'), tunnel(13, nodes[1], nodes[4], 29990, 21000, 'session expired'), tunnel(14, nodes[0], nodes[8], 50000, 9000, 'client down'),
   tunnel(15, nodes[1], nodes[3], 40000, 7300, 'hub restarted'), tunnel(16, nodes[0], nodes[8], 2400), tunnel(17, nodes[1], nodes[8], 2390),
+  { ...tunnel(18, nodes[2], nodes[8], 1500), transport: 'relay' }, // a path between two spokes, through a hub's relay
 ];
 // Counters move and one tunnel flaps, so the demo shows rates and the pulse of a tunnel opening and closing.
-const pace: Record<string, number> = { t1: 2.4e6, t2: 9e6, t3: 3e5, t4: 4e4, t5: 1.2e6, t6: 0, t16: 6e5, t17: 2e4 };
+const pace: Record<string, number> = { t1: 2.4e6, t2: 9e6, t3: 3e5, t4: 4e4, t5: 1.2e6, t6: 0, t16: 6e5, t17: 2e4, t18: 3e6 };
 let lastTick = Date.now(), flapAt = Date.now() + 25_000, flapSeq = 100;
 function tickTunnels() {
   const t = Date.now(), dt = (t - lastTick) / 1000;

@@ -97,6 +97,16 @@ type Config struct {
 	Transport string
 	// QUICRetry is how often a spoke on TCP tries QUIC again. Default 2m.
 	QUICRetry time.Duration
+	// NoRelay: a hub does not relay between spokes (transport/relay.go).
+	NoRelay bool
+	// NoPaths: a spoke neither dials nor accepts tunnels with other spokes;
+	// everything stays on the hub path (paths.go).
+	NoPaths bool
+	// PathsListen is a UDP address peers can dial this spoke at; PublicAddr
+	// is what they are told. Empty: reachable through relaying hubs only.
+	PathsListen string
+	// PathIdle closes a dialed path nothing used for this long. Default 5m.
+	PathIdle time.Duration
 	// AutoUp brings the overlay up as soon as the first snapshot arrives
 	// (servers, hubs, routers). Interactive endpoints use `boundgatectl up`.
 	AutoUp bool
@@ -163,24 +173,28 @@ type Status struct {
 	LoginRequired bool        `json:"login_required,omitempty"`
 	Prefixes      []string    `json:"prefixes,omitempty"`
 	Hubs          []HubStatus `json:"hubs,omitempty"`
-	Routes        []string    `json:"routes,omitempty"`
+	// Paths are tunnels with other spokes, direct or through a hub's relay.
+	Paths  []PathStatus `json:"paths,omitempty"`
+	Routes []string     `json:"routes,omitempty"`
 	// SkippedRoutes are advertised networks the node refused to route
 	// because this machine already lives in them (overlap guard).
-	SkippedRoutes   []string  `json:"skipped_routes,omitempty"`
-	Tunnels         int       `json:"tunnels"` // accepted tunnels (hub role)
-	Since           time.Time `json:"since,omitempty"`
-	LastError       string    `json:"last_error,omitempty"`
-	LastClose       string    `json:"last_close,omitempty"`
-	NodeName        string    `json:"node_name"`
-	NodeID          string    `json:"node_id,omitempty"`
-	SPKI            string    `json:"spki"`
-	Fingerprint     string    `json:"fingerprint"`
-	KeyKind         string    `json:"key_kind"`
-	Version         string    `json:"version"` // release tag of this daemon, or "dev"
-	HardwareBound   bool      `json:"hardware_bound"`
-	Enrollment      string    `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
-	EnrollmentError string    `json:"enrollment_error,omitempty"`
-	Control         string    `json:"control"`
+	SkippedRoutes []string `json:"skipped_routes,omitempty"`
+	Tunnels       int      `json:"tunnels"` // accepted tunnels (hub role)
+	// Relay: what this hub relays between spokes right now and relayed so far.
+	Relay           *transport.RelayStats `json:"relay,omitempty"`
+	Since           time.Time             `json:"since,omitempty"`
+	LastError       string                `json:"last_error,omitempty"`
+	LastClose       string                `json:"last_close,omitempty"`
+	NodeName        string                `json:"node_name"`
+	NodeID          string                `json:"node_id,omitempty"`
+	SPKI            string                `json:"spki"`
+	Fingerprint     string                `json:"fingerprint"`
+	KeyKind         string                `json:"key_kind"`
+	Version         string                `json:"version"` // release tag of this daemon, or "dev"
+	HardwareBound   bool                  `json:"hardware_bound"`
+	Enrollment      string                `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
+	EnrollmentError string                `json:"enrollment_error,omitempty"`
+	Control         string                `json:"control"`
 	// ControlError is the last error of the control channel ("" = fine).
 	ControlError string `json:"control_error,omitempty"`
 	// ControlPin is the fingerprint of the pinned control-plane key.
@@ -259,6 +273,9 @@ func New(cfg Config) (*Node, error) {
 	}
 	if cfg.QUICRetry == 0 {
 		cfg.QUICRetry = 2 * time.Minute
+	}
+	if cfg.PathIdle == 0 {
+		cfg.PathIdle = 5 * time.Minute
 	}
 	if cfg.Name == "" {
 		cfg.Name, _ = os.Hostname()
@@ -642,15 +659,23 @@ func (n *Node) publishStatus() {
 	if s == nil {
 		return
 	}
-	n.status.Hubs, n.status.Routes, n.status.Tunnels, n.status.LoginRequired = nil, nil, 0, false
+	n.status.Hubs, n.status.Routes, n.status.Tunnels, n.status.LoginRequired, n.status.Paths = nil, nil, 0, false, nil
+	if s.paths != nil {
+		n.status.Paths = s.paths.status()
+	}
 	if s.spoke != nil {
 		n.status.Hubs = s.spoke.hubs()
 		n.status.Routes = s.spoke.routes()
 		n.status.SkippedRoutes = s.spoke.skippedRoutes()
 		n.status.LoginRequired = s.spoke.loginRequired()
 	}
+	n.status.Relay = nil
 	if s.srv != nil {
 		n.status.Tunnels = len(s.srv.ActiveDevices())
+		if !n.cfg.NoRelay {
+			st := s.srv.RelayStats()
+			n.status.Relay = &st
+		}
 	}
 	if s.spoke != nil || s.srv != nil {
 		n.status.State = StateUp
@@ -978,6 +1003,7 @@ type session struct {
 	dp     *dataplane
 	srv    *transport.Server
 	spoke  *spokeManager
+	paths  *pathManager // spokes, unless no_paths
 	flows  *flow.Table
 
 	tmu     sync.Mutex
@@ -1112,6 +1138,18 @@ func (s *session) apply(ctx context.Context) error {
 	hubs := n.holder.Load().Hubs()
 	if !s.isHub {
 		s.spoke = newSpokeManager(s)
+		if !n.cfg.NoPaths {
+			s.paths = newPathManager(s)
+			go s.paths.run(s.ctx)
+			if n.cfg.PathsListen != "" {
+				if err := s.paths.listenDirect(s.ctx, n.cfg.PathsListen); err != nil {
+					return err
+				}
+			}
+			// whatever tunnels the control plane still lists as accepted here are gone
+			n.ship.add(api.ShippedEvent{TS: time.Now(), Stream: api.ShipStreamTunnel, Message: "reset"})
+			go s.sessionWatch()
+		}
 		s.spoke.sync(hubs)
 		if len(hubs) == 0 {
 			n.log.Warn("registry lists no hubs; waiting for one to be approved")
@@ -1160,6 +1198,12 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 			}
 		}
 	}
+	if s.paths != nil {
+		s.paths.rebuild(snap)
+		for _, id := range diff.RemovedPeers {
+			s.paths.closePeer(id)
+		}
+	}
 	for _, id := range diff.RemovedPeers {
 		s.flows.CloseWhere(func(e *flow.Entry) bool { return e.Origin.Principal == id }, "peer removed")
 	}
@@ -1187,7 +1231,7 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 	if s.spoke != nil && diff.SessionsChanged {
 		s.spoke.retryNow()
 	}
-	if s.srv != nil && diff.SessionsChanged {
+	if (s.srv != nil || s.paths != nil) && diff.SessionsChanged {
 		s.enforceSessions(snap)
 	}
 	n.publishStatus()
@@ -1198,6 +1242,9 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 // session changes and periodically, so expiry is enforced even without a
 // snapshot bump.
 func (s *session) enforceSessions(snap *registry.Snapshot) {
+	if s.paths != nil {
+		s.paths.enforceSessions(snap)
+	}
 	if s.srv == nil || snap == nil {
 		return
 	}
@@ -1332,6 +1379,9 @@ func (s *session) teardown() {
 	defer cancel()
 	s.cancel() // stops the hub listener (closes tunnels), TUN reader and hub links
 	s.flows.CloseWhere(func(*flow.Entry) bool { return true }, "overlay down")
+	if s.paths != nil {
+		s.paths.stop()
+	}
 	if s.spoke != nil {
 		s.spoke.stop()
 		s.spoke.mu.Lock()

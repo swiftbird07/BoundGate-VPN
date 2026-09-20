@@ -7,7 +7,7 @@ control:
   server_name: nodes.control
   # pin: <hex spki>              # optional; default: pinned on first use into state_dir/control.pin
 roles: [endpoint]                  # requested; an admin grants roles at approval
-public_addr: ""
+public_addr: "172.30.0.40:4443"   # M7: peers dial this spoke directly instead of through a relay
 listen: ":443"               # hub tunnel listener (UDP)
 auto_up: false
 profile: lab
@@ -17,3 +17,5 @@ tun_name: bg0
 mtu: 1280
 log_dir: /var/log/boundgate
 log_stdout: true
+paths:
+  listen: ":4443"                  # UDP; what public_addr points at

@@ -116,9 +116,9 @@ func toRegistry(n db.Node) registry.Node {
 		Signature:     n.Signature,
 		SignedBy:      n.SignedBy,
 	}
-	if registry.HasRole(n.Roles, registry.RoleHub) {
-		out.PublicAddr = n.PublicAddr
-	}
+	// hubs are dialed there by every spoke; a spoke with an address can be
+	// dialed by its peers instead of being reached through a relay (M7)
+	out.PublicAddr = n.PublicAddr
 	if out.Roles == nil {
 		out.Roles = []registry.Role{}
 	}

@@ -330,6 +330,7 @@
           {/if}
           <line class="hit" x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} />
           {#if e.active && e.tcp}<g transform="translate({l.mx},{l.my})"><rect class="tag" x="-15" y="-9" width="30" height="18" rx="6" /><text class="tagtext" y="3.5">TCP</text></g>{/if}
+          {#if e.active && e.relay}<g transform="translate({l.mx},{l.my})"><rect class="tag relay" x="-21" y="-9" width="42" height="18" rx="6" /><text class="tagtext relay" y="3.5">RELAY</text></g>{/if}
         </g>
       {/if}
     {/each}
@@ -450,6 +451,8 @@
   .edge.hot .gone, .edge:hover .gone { opacity: .9 !important; stroke: var(--text-2); }
   .edge.dim { opacity: .12; }
   .tag { fill: var(--panel); stroke: var(--edge-tcp); stroke-width: 1; }
+  .tag.relay { stroke: var(--edge); }
+  .tagtext.relay { fill: var(--text-2); }
   .tagtext { fill: var(--edge-tcp); font: 700 9px var(--font); text-anchor: middle; letter-spacing: .04em; }
   @keyframes flow { to { stroke-dashoffset: -15.1; } }
 

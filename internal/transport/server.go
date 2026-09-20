@@ -163,6 +163,11 @@ type ServerConfig struct {
 	// TCPListener, when set, also serves the tunnel over TCP (tcp.go): the
 	// fallback for clients whose network blocks UDP. Same TLS, same peers.
 	TCPListener net.Listener
+	// Relayed: PacketConn is a relay stream of a hub connection
+	// (ClientTunnel.RelayListen). The QUIC connections on it stay at the
+	// minimum packet size and do not probe for more: the carrier's datagrams
+	// are not certain to hold larger ones. Tunnels report transport "relay".
+	Relayed bool
 }
 
 // Server terminates QUIC + mTLS + CONNECT-IP for approved devices.
@@ -177,6 +182,7 @@ type Server struct {
 	qt      *quic.Transport
 	mu      sync.Mutex
 	tunnels map[DeviceID]map[*Tunnel]struct{}
+	relay   relay
 }
 
 type quicConnKey struct{}
@@ -212,6 +218,7 @@ func NewServer(cfg ServerConfig, h Handler) (*Server, error) {
 		log:     cfg.Logger,
 		tunnels: make(map[DeviceID]map[*Tunnel]struct{}),
 	}
+	s.relay.listeners = make(map[netip.Addr]*relayListener)
 	s.h3 = &http3.Server{
 		TLSConfig:       cfg.TLS,
 		Handler:         http.HandlerFunc(s.handle),
@@ -226,6 +233,10 @@ func NewServer(cfg ServerConfig, h Handler) (*Server, error) {
 			return context.WithValue(ctx, quicConnKey{}, c)
 		},
 		Logger: cfg.Logger,
+	}
+	if cfg.Relayed {
+		s.h3.QUICConfig.InitialPacketSize = 1200
+		s.h3.QUICConfig.DisablePathMTUDiscovery = true
 	}
 	return s, nil
 }
@@ -298,6 +309,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
+func (s *Server) transportName() string {
+	if s.cfg.Relayed {
+		return "relay"
+	}
+	return "quic"
+}
+
 // handle is the HTTP/3 handler for CONNECT-IP requests.
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	qconn, _ := r.Context().Value(quicConnKey{}).(*quic.Conn)
@@ -315,6 +333,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("transport: peer rejected after handshake", "src", src, "err", err)
 		w.WriteHeader(http.StatusForbidden)
 		_ = qconn.CloseWithError(ErrCodeRevoked, "device not approved")
+		return
+	}
+	if r.Method == http.MethodConnect && r.Proto == relayProtocol {
+		s.handleRelay(w, r, peer)
 		return
 	}
 	req, err := connectip.ParseRequest(r, s.tmpl)
@@ -344,7 +366,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("transport: proxy setup failed", "peer", peer, "err", err)
 		return
 	}
-	t := &Tunnel{id: newTunnelID(), peer: peer, cfg: cfg, link: &quicLink{conn: conn, qconn: qconn}, transport: "quic", opened: time.Now()}
+	t := &Tunnel{id: newTunnelID(), peer: peer, cfg: cfg, link: &quicLink{conn: conn, qconn: qconn}, transport: s.transportName(), opened: time.Now()}
 	defer conn.Close()
 	if len(cfg.Assigned) > 0 {
 		if err := conn.AssignAddresses(r.Context(), cfg.Assigned); err != nil {
