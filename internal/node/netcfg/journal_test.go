@@ -33,6 +33,8 @@ func (f *fakeCfg) DelBypass(_ context.Context, h netip.Addr) error {
 	return nil
 }
 func (f *fakeCfg) EnableForwarding(context.Context) error { return nil }
+
+func (f *fakeCfg) AllowForward(context.Context, string, bool) (bool, error) { return false, nil }
 func (f *fakeCfg) SetNAT(_ context.Context, _ netip.Prefix, d []netip.Prefix, i string) error {
 	if len(d) == 0 {
 		f.calls = append(f.calls, "nat-off "+i)

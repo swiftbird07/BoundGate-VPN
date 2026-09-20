@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -87,6 +88,52 @@ func (linuxCfg) EnableForwarding(context.Context) error {
 		return fmt.Errorf("netcfg: enable ip_forward (set sysctl net.ipv4.ip_forward=1 on the host or container): %w", err)
 	}
 	return nil
+}
+
+// AllowForward: on a Docker host the filter table's FORWARD chain drops by
+// policy, and a node that shares the host's network (network_mode: host, or
+// no container at all) would forward nothing: every packet from the TUN to
+// the LAN or the internet ends there, whatever this node's own rules say (a
+// drop in one chain is final). Docker leaves the chain DOCKER-USER to the
+// host's administrator for exactly this; the node puts two rules there:
+//
+//	iifname "bg0" counter accept
+//	oifname "bg0" counter accept
+//
+// What leaves the TUN has passed the node's ACL; what enters it is checked
+// by the node before it goes into a tunnel. Written with nft in the form
+// iptables-nft writes itself, so `iptables -S` and Docker keep working. With
+// iptables-legacy the chain is not visible to nft and nothing is done.
+func (linuxCfg) AllowForward(ctx context.Context, ifname string, on bool) (bool, error) {
+	out, err := exec.CommandContext(ctx, "nft", "-a", "list", "chain", "ip", "filter", "DOCKER-USER").Output()
+	if err != nil {
+		return false, nil // no Docker, or not the nf_tables backend
+	}
+	for _, h := range forwardRuleHandles(string(out), ifname) { // also what a predecessor that crashed left
+		_ = run(ctx, "nft", "delete", "rule", "ip", "filter", "DOCKER-USER", "handle", h)
+	}
+	if !on {
+		return true, nil
+	}
+	for _, dir := range []string{"iifname", "oifname"} {
+		if err := run(ctx, "nft", "insert", "rule", "ip", "filter", "DOCKER-USER", dir, ifname, "counter", "accept"); err != nil {
+			return true, fmt.Errorf("netcfg: let Docker's FORWARD chain pass %s: %w", ifname, err)
+		}
+	}
+	return true, nil
+}
+
+// forwardRuleHandles finds the rules AllowForward wrote for ifname in the
+// output of `nft -a list chain`; rules in any other form are somebody else's.
+func forwardRuleHandles(listing, ifname string) []string {
+	re := regexp.MustCompile(`^\s*[io]ifname "` + regexp.QuoteMeta(ifname) + `" counter packets \d+ bytes \d+ accept # handle (\d+)\s*$`)
+	var out []string
+	for _, line := range strings.Split(listing, "\n") {
+		if m := re.FindStringSubmatch(line); m != nil {
+			out = append(out, m[1])
+		}
+	}
+	return out
 }
 
 // SetNAT replaces the boundgate nftables table. Rules are generated, so the

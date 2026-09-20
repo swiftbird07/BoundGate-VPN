@@ -76,6 +76,8 @@ var errDarwinEndpoint = errors.New("netcfg: macOS nodes are endpoints only (no f
 
 func (darwinCfg) EnableForwarding(context.Context) error { return errDarwinEndpoint }
 
+func (darwinCfg) AllowForward(context.Context, string, bool) (bool, error) { return false, nil }
+
 func (darwinCfg) SetNAT(_ context.Context, _ netip.Prefix, dsts []netip.Prefix, _ string) error {
 	if len(dsts) == 0 {
 		return nil

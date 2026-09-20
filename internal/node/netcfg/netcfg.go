@@ -32,6 +32,11 @@ type Configurator interface {
 	DelBypass(ctx context.Context, host netip.Addr) error
 	// EnableForwarding turns on IP forwarding (subnet routers, hubs).
 	EnableForwarding(ctx context.Context) error
+	// AllowForward lets the host's packet filter pass what is forwarded from
+	// and to the TUN, where a filter is known to drop it (Docker sets the
+	// FORWARD policy to DROP); on = false removes the rules again. It reports
+	// whether it found such a filter.
+	AllowForward(ctx context.Context, ifname string, on bool) (bool, error)
 	// SetNAT masquerades traffic from the overlay pool towards each of dsts
 	// when it leaves on an interface other than the TUN. An empty dsts
 	// removes the rules.

@@ -1031,11 +1031,13 @@ type session struct {
 	tmu     sync.Mutex
 	tunnels map[string]*tunnelStats // hub: accepted tunnels, for reports
 
-	mu        sync.Mutex
-	bypass    map[netip.Addr]bool
-	peerRoute map[netip.Prefix]int // hub: kernel routes for peer prefixes
-	poolRoute bool
-	nat       bool
+	mu     sync.Mutex
+	bypass map[netip.Addr]bool
+	// forwardAllowed: rules in Docker's DOCKER-USER chain are ours to remove
+	forwardAllowed bool
+	peerRoute      map[netip.Prefix]int // hub: kernel routes for peer prefixes
+	poolRoute      bool
+	nat            bool
 
 	since  time.Time
 	done   chan struct{}
@@ -1087,6 +1089,12 @@ func (s *session) apply(ctx context.Context) error {
 	if forwards {
 		if err := n.net.EnableForwarding(ctx); err != nil {
 			return err
+		}
+		if found, err := n.net.AllowForward(ctx, ifname, true); err != nil {
+			return err
+		} else if found {
+			s.forwardAllowed = true
+			n.log.Info("Docker's FORWARD chain drops by default on this host; forwarding from and to the tunnel device is allowed in DOCKER-USER", "device", ifname)
 		}
 	}
 	if err := s.applyNAT(ctx); err != nil {
@@ -1420,6 +1428,10 @@ func (s *session) teardown() {
 		}
 	}
 	s.peerRoute = map[netip.Prefix]int{}
+	if s.forwardAllowed {
+		_, _ = n.net.AllowForward(ctx, s.ifname, false)
+		s.forwardAllowed = false
+	}
 	if s.nat {
 		_ = n.net.SetNAT(ctx, s.pool, nil, s.ifname)
 		s.nat = false

@@ -325,10 +325,16 @@ The hub is reachable over the overlay at its own overlay address (shown in
 *Nodes*): `ssh root@100.96.0.1` from an approved, connected and permitted
 client reaches the server's sshd without it being open to the internet.
 To route further (a Hetzner private network, or the internet as an exit
-node) grant `subnet-router`/`exit-node` with prefixes, and mind two things
-on a Docker host: `sysctl -w net.ipv4.ip_forward=1`, and Docker's
-`FORWARD` policy is *drop*, so allow the tunnel device:
-`iptables -I DOCKER-USER -i bg0 -j ACCEPT; iptables -I DOCKER-USER -o bg0 -j ACCEPT`.
+node) grant `subnet-router`/`exit-node` with prefixes. On a Docker host
+two things stand in the way, and the node takes care of both: forwarding
+(`net.ipv4.ip_forward=1`, which Docker sets itself), and Docker's `FORWARD`
+policy, which is *drop*. While it is up, a node that forwards puts
+`iifname "bg0" accept` and `oifname "bg0" accept` into the chain Docker
+leaves to the administrator, `DOCKER-USER`, and says so in its log; it takes
+them out again at `down` and leaves every other rule alone. (Since v0.1.4.
+Before, or with iptables-legacy, which nft cannot see, by hand:
+`iptables -I DOCKER-USER -i bg0 -j ACCEPT; iptables -I DOCKER-USER -o bg0 -j ACCEPT`.)
+What leaves the tunnel device has passed the node's ACL.
 
 ## Further nodes
 
@@ -344,7 +350,7 @@ docker compose exec node boundgatectl status
 
 Host network, `NET_ADMIN` and `/dev/net/tun` are what a node needs; a
 router additionally `net.ipv4.ip_forward=1` on the host (Docker sets it
-itself) and, on a Docker host, the `DOCKER-USER` rules above. A VM with a
+itself); the `DOCKER-USER` rules above it writes itself. A VM with a
 vTPM (Proxmox: add a TPM 2.0 device) passes `/dev/tpmrm0` into the
 container and sets `key_kind: tpm2` (TPM.md); the admin then grants
 `hardware_bound` at approval. `./state` holds the device identity: keep it

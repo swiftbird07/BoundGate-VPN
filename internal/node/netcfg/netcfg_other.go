@@ -19,11 +19,12 @@ func (unsupported) CreateTUN(string, int) (tun.Device, string, error) { return n
 func (unsupported) SetAddress(context.Context, string, netip.Prefix, int) error {
 	return ErrUnsupported
 }
-func (unsupported) AddRoute(context.Context, netip.Prefix, string) error { return ErrUnsupported }
-func (unsupported) DelRoute(context.Context, netip.Prefix, string) error { return ErrUnsupported }
-func (unsupported) AddBypass(context.Context, netip.Addr) error          { return ErrUnsupported }
-func (unsupported) DelBypass(context.Context, netip.Addr) error          { return ErrUnsupported }
-func (unsupported) EnableForwarding(context.Context) error               { return ErrUnsupported }
+func (unsupported) AddRoute(context.Context, netip.Prefix, string) error     { return ErrUnsupported }
+func (unsupported) DelRoute(context.Context, netip.Prefix, string) error     { return ErrUnsupported }
+func (unsupported) AddBypass(context.Context, netip.Addr) error              { return ErrUnsupported }
+func (unsupported) DelBypass(context.Context, netip.Addr) error              { return ErrUnsupported }
+func (unsupported) EnableForwarding(context.Context) error                   { return ErrUnsupported }
+func (unsupported) AllowForward(context.Context, string, bool) (bool, error) { return false, nil }
 func (unsupported) SetNAT(context.Context, netip.Prefix, []netip.Prefix, string) error {
 	return ErrUnsupported
 }
