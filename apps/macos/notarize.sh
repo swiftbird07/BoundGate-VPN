@@ -32,7 +32,7 @@ APP=dist/BoundGate.app
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")
 DMG=dist/BoundGate-$VERSION.dmg
 
-codesign -dv "$APP" 2>&1 | grep -q 'Authority=Developer ID Application' || { echo "sign with a Developer ID Application identity first" >&2; exit 1; }
+codesign -dvv "$APP" 2>&1 | grep -q 'Authority=Developer ID Application' || { echo "sign with a Developer ID Application identity first" >&2; exit 1; }
 echo "== notarize the app"
 ditto -c -k --keepParent "$APP" dist/BoundGate.zip
 submit dist/BoundGate.zip
@@ -46,7 +46,7 @@ rm -rf dist/dmg "$DMG"; mkdir -p dist/dmg
 cp -R "$APP" dist/dmg/; ln -s /Applications dist/dmg/Applications
 hdiutil create -volname BoundGate -srcfolder dist/dmg -ov -format UDZO "$DMG" >/dev/null
 rm -rf dist/dmg
-ID=$(codesign -dv "$APP" 2>&1 | sed -n 's/^Authority=\(Developer ID Application: .*\)$/\1/p' | head -1)
+ID=$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=\(Developer ID Application: .*\)$/\1/p' | head -1)
 codesign --force --timestamp --sign "$ID" "$DMG"
 submit "$DMG"
 xcrun stapler staple "$DMG"
