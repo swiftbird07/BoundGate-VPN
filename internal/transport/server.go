@@ -60,9 +60,12 @@ type quicLink struct {
 	qconn *quic.Conn
 }
 
-func (l *quicLink) ReadPacket(b []byte) (int, error)     { return l.conn.ReadPacket(b) }
-func (l *quicLink) WritePacket(b []byte) ([]byte, error) { return l.conn.WritePacket(b) }
-func (l *quicLink) Done() <-chan struct{}                { return l.qconn.Context().Done() }
+func (l *quicLink) ReadPacket(b []byte) (int, error) { return l.conn.ReadPacket(b) }
+func (l *quicLink) WritePacket(b []byte) ([]byte, error) {
+	icmp, err := l.conn.WritePacket(b)
+	return tooLarge(b, icmp), err
+}
+func (l *quicLink) Done() <-chan struct{} { return l.qconn.Context().Done() }
 func (l *quicLink) Close(c quic.ApplicationErrorCode, r string) error {
 	return l.qconn.CloseWithError(c, r)
 }

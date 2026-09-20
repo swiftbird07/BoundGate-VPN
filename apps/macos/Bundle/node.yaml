@@ -9,4 +9,4 @@ profiles_dir: /Library/Application Support/BoundGate/profiles
 key_kind: auto                 # a key in the Secure Enclave on Macs that have one (Apple silicon, T2); a node that already enrolled keeps its key
 roles: [endpoint]
 tun_name: utun
-mtu: 1280
+mtu: 1230

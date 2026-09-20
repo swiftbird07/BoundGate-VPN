@@ -258,7 +258,9 @@ func New(cfg Config) (*Node, error) {
 		cfg.Log = slog.Default()
 	}
 	if cfg.MTU == 0 {
-		cfg.MTU = 1280
+		// what fits a QUIC datagram on every connection (transport.FitMTU):
+		// with 1280 a hub behind a mux lost every full-size packet
+		cfg.MTU = transport.FitMTU
 	}
 	if cfg.TUNName == "" {
 		cfg.TUNName = "bg0"

@@ -16,7 +16,7 @@ MACOS-APP.md (M8).
 | Topic | macOS |
 |---|---|
 | Tunnel device | `utun` through `golang.zx2c4.com/wireguard/tun` (kernel control socket, needs root). `tun_name` other than `utun`/`utunN` means "next free unit"; the actual name is in `boundgatectl status` |
-| Address | point-to-point: `ifconfig utunN inet <ip> <ip> netmask 255.255.255.255 mtu 1280 up`; the overlay pool is a route like any other |
+| Address | point-to-point: `ifconfig utunN inet <ip> <ip> netmask 255.255.255.255 mtu 1230 up`; the overlay pool is a route like any other |
 | Routes | `route -n add -inet -net <prefix> -interface utunN` (`change` if it exists), `route -n delete …` on the way down |
 | Bypass routes | hubs, control plane and IdP stay reachable outside the tunnel: `route -n get <host>` tells gateway and interface, `route -n add -host <host> <gateway>` (or `-interface` on-link) pins them. Loopback targets need none. A host currently routed through another `utun` (a second VPN) is refused rather than pinned there |
 | Roles | endpoint only: forwarding and NAT answer "macOS nodes are endpoints only" |

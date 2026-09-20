@@ -71,8 +71,11 @@ type quicClientLink struct {
 	pc    net.PacketConn
 }
 
-func (l *quicClientLink) ReadPacket(b []byte) (int, error)     { return l.conn.ReadPacket(b) }
-func (l *quicClientLink) WritePacket(b []byte) ([]byte, error) { return l.conn.WritePacket(b) }
+func (l *quicClientLink) ReadPacket(b []byte) (int, error) { return l.conn.ReadPacket(b) }
+func (l *quicClientLink) WritePacket(b []byte) ([]byte, error) {
+	icmp, err := l.conn.WritePacket(b)
+	return tooLarge(b, icmp), err
+}
 func (l *quicClientLink) LocalPrefixes(ctx context.Context) ([]netip.Prefix, error) {
 	return l.conn.LocalPrefixes(ctx)
 }

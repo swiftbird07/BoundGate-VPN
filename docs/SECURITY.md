@@ -56,7 +56,7 @@ Living document. Every milestone updates the register.
 | R3 | Enroll endpoint is reachable without approval | mitigated M1 | Creates `pending` rows only; rate limit per source IP; expiry 24 h; fingerprint shown prominently |
 | R4 | Admin approves without comparing the fingerprint | partly M1 | API takes the confirmed fingerprint and refuses mismatches; UI (M4) will require it; procedure in ENROLLMENT.md |
 | R5 | Cedar schema validation not used; attribute typos only show up at evaluation time | accepted M3 | Policies are parsed on save; `POST /admin/acl/evaluate` dry-runs on live state and returns evaluation errors; the flow log records them per flow |
-| R6 | MTU/fragmentation over QUIC datagrams | open | TUN MTU 1280 both ends; ICMP "packet too big" from `WritePacket` is forwarded back |
+| R6 | MTU/fragmentation over QUIC datagrams | mitigated 2026-09-20 | TUN MTU 1230 both ends: fits a QUIC datagram even where the connection cannot grow its packets (no path MTU discovery behind boundgate-mux; with 1280 every full-size packet towards a client was lost and downloads stalled). A packet that still does not fit is answered with ICMP "fragmentation needed, MTU 1230" (`transport.FitMTU`), not with connect-ip-go's "MTU 1280" |
 | R7 | Colima kernel features (tun, nftables, ip_forward) | verified M0 | Works on kernel 6.8 in Colima |
 | R8 | Bypass routes go stale when hub/control/IdP IPs change | open | Re-resolved on every dial; DNS changes mid-session are not tracked |
 | R9 | macOS node needs root for utun and modifies `scutil` DNS | M5 | launchd daemon, state file, cleanup on next start |
