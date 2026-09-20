@@ -1,6 +1,6 @@
 # Builds the BoundGate image for amd64 and arm64 and pushes it to this
 # Gitea's container registry: every push to main becomes :latest (plus
-# :sha-<commit>), every tag v* becomes :<tag>. Needs an act_runner with
+# :sha-<commit>). Releases (tags v*) are built by release.yml. Needs an act_runner with
 # Docker. The registry login uses the secret REGISTRY_TOKEN (an access token
 # with package:write, Settings › Actions › Secrets); without it the job
 # tries the workflow's own token.
@@ -10,8 +10,10 @@ name: image
 on:
   push:
     branches: [main]
-    tags: ['v*']
-    # Nothing of this ends up in the image. (Tags always build.)
+    # Tags are release.yml's: it builds the image of a release once and signs
+    # its digest into the manifest; a second build here would move the tag to
+    # an image the manifest does not name.
+    # Nothing of this ends up in the image:
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -83,7 +85,6 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
-            type=ref,event=tag
       - uses: docker/build-push-action@v6
         with:
           context: .

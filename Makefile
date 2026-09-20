@@ -1,9 +1,15 @@
 # All Go and Node commands run inside the `box` dev container (see docs/DEV.md).
 GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 COMPOSE = docker compose -f deploy/compose/docker-compose.yml
+# Release builds: make VERSION=v1.2.3 ... (the release pipeline does). Anything
+# else is "dev" and never updates itself.
+VERSION ?= dev
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
+LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
 
-.PHONY: image image-push rehearsal mac-app mac-sekey test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: image image-push rehearsal mac-app mac-sekey release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -31,7 +37,7 @@ build-linux: web
 	@mkdir -p bin/linux_$(GOARCH)
 	@for b in $(BINS); do \
 	  echo "building $$b for linux/$(GOARCH)"; \
-	  box env GOOS=linux GOARCH=$(GOARCH) go build -trimpath -o bin/linux_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
+	  box env GOOS=linux GOARCH=$(GOARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o bin/linux_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
 	done
 
 # The macOS node (M5): cross-compiled in the box, run on the host with
@@ -40,7 +46,7 @@ build-darwin:
 	@mkdir -p bin/darwin_$(GOARCH)
 	@for b in boundgate-node boundgatectl boundgate-udpbridge; do \
 	  echo "building $$b for darwin/$(GOARCH)"; \
-	  box env GOOS=darwin GOARCH=$(GOARCH) CGO_ENABLED=0 go build -trimpath -o bin/darwin_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
+	  box env GOOS=darwin GOARCH=$(GOARCH) CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/darwin_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
 	done
 
 test: web-test
@@ -61,6 +67,25 @@ test-tpm:
 # BoundGate.app (docs/MACOS-APP.md): Go in the box, Swift and codesign on the Mac
 mac-app:
 	apps/macos/build-app.sh
+
+# The release signing key (docs/RELEASES.md). Run it yourself, once: the
+# private half goes to private/ (git-ignored; masked in the box) and from there
+# into the repository secret RELEASE_SIGNING_KEY, the public half into the two
+# release_keys files, which you commit. Builds accept updates signed by it.
+release-key:
+	@test ! -e private/release_signing_key || { echo "private/release_signing_key exists; remove it first if you really want a new key" >&2; exit 1; }
+	@mkdir -p private && chmod 700 private
+	ssh-keygen -q -t ed25519 -N '' -C "boundgate release key $$(date +%Y-%m-%d)" -f private/release_signing_key
+	cat private/release_signing_key.pub >> internal/update/release_keys
+	cp internal/update/release_keys deploy/prod/release_keys
+	@echo
+	@echo "1. Gitea > SBH/BoundGate-VPN > Settings > Actions > Secrets: RELEASE_SIGNING_KEY = contents of private/release_signing_key"
+	@echo "2. commit internal/update/release_keys and deploy/prod/release_keys"
+	@echo "3. keep private/release_signing_key offline or delete it; whoever has it can ship updates to every node"
+
+# deploy/prod/update.sh against a stand-in for Gitea and docker
+update-test:
+	deploy/prod/update_test.sh
 
 # The Secure Enclave bridge of a macOS node (key_kind secure-enclave / auto),
 # for installs without the app (deploy/macos/install.sh). Swift, so it builds

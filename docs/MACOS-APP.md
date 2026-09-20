@@ -90,6 +90,10 @@ changed, an approval that does not verify.
   daemon checks every 15 s whether its executable is still the file it was
   started from and, once the node is down, ends itself; launchd (`KeepAlive`)
   starts the new one. A node that is up is left alone until it is down.
+* **Updates.** The daemon looks for signed releases and installs them on
+  request (`GET /v1/update`, `POST /v1/update/check`, `POST /v1/update/apply`);
+  the app shows "Update available" and "Check for Updates…"
+  ([RELEASES.md](RELEASES.md)).
 * **First contact.** "Request access" first shows the key the control plane
   presents; the daemon pins it only after "It matches"
   ([ENROLLMENT.md](ENROLLMENT.md)).

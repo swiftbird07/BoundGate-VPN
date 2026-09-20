@@ -11,7 +11,9 @@ public struct PanelView: View {
         let t = Theme.of(scheme)
         VStack(spacing: 12) {
             header
+            if let u = model.update, u.available, let latest = u.latest { UpdateCard(model: model, update: u, latest: latest) }
             content
+            if let n = model.updateNote { Notice(tone: .info, text: n) }
             if let e = model.actionError { Notice(tone: .bad, text: e) }
             footer
         }
@@ -75,6 +77,7 @@ public struct PanelView: View {
         if model.service == .enabled || model.service == .requiresApproval {
             items.append(.action("Remove background service") { model.uninstallService() })
         }
+        if model.status != nil { items.append(.action("Check for Updates…") { model.checkForUpdates() }) }
         items.append(.action("Quit BoundGate") { NSApp.terminate(nil) })
         PopupMenu.show(items)
     }
@@ -159,6 +162,30 @@ struct SetupCard: View {
     private func submit() {
         let c = control.trimmingCharacters(in: .whitespaces)
         if !c.isEmpty { model.configure(control: c) }
+    }
+}
+
+struct UpdateCard: View {
+    @ObservedObject var model: AppModel
+    var update: UpdateStatus
+    var latest: String
+    @Environment(\.theme) private var t
+    var body: some View {
+        Card {
+            Text("Update available").font(.display(15)).foregroundStyle(t.text)
+            Text("BoundGate \(latest) is out; this is \(update.current). The release is signed, and the background service checks that signature before it installs anything.")
+                .font(.body(11.5)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
+            if update.canInstall {
+                Button("Install and restart") { model.installUpdate() }
+                    .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
+                Text("Disconnects for a moment.").font(.body(11)).foregroundStyle(t.text2)
+            } else if let hint = update.installHint {
+                Text(hint).font(.body(11.5)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
+            }
+            if let page = update.pageUrl, let url = URL(string: page), url.scheme == "https" {
+                Button("Release notes") { NSWorkspace.shared.open(url) }.buttonStyle(BGButtonStyle(kind: .secondary))
+            }
+        }
     }
 }
 

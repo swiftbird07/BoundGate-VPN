@@ -1,0 +1,36 @@
+{
+  "type": "boundgate-release",
+  "version": "v1.2.3",
+  "commit": "abc1234",
+  "created": "2026-09-20T03:35:16Z",
+  "image": {
+    "ref": "gitlab.net407.com/sbh/boundgate",
+    "digest": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+  },
+  "assets": [
+    {
+      "name": "BoundGate-1.2.3-macos.zip",
+      "kind": "app",
+      "os": "darwin",
+      "arch": "universal",
+      "size": 11,
+      "sha256": "8df53d9b7ee373edafa81d05b545c8defddac59fd44d6a87cf26217f89ff2850"
+    },
+    {
+      "name": "BoundGate-1.2.3.dmg",
+      "kind": "dmg",
+      "os": "darwin",
+      "arch": "universal",
+      "size": 3,
+      "sha256": "00cbbd0ddbda2762798f7009838ed34ca1f12b93965813c7df22943bc62166d1"
+    },
+    {
+      "name": "boundgate-v1.2.3-linux-amd64.tar.gz",
+      "kind": "binaries",
+      "os": "linux",
+      "arch": "amd64",
+      "size": 19,
+      "sha256": "8fdfdc41778e03bbf22ecd9201136d28bb59c3858adb6cf7fc5a56a5bd507394"
+    }
+  ]
+}

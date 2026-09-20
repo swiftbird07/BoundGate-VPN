@@ -1,0 +1,4 @@
+# Release signing keys of this distribution, one OpenSSH public key per line
+# (ssh-ed25519 or sk-ssh-ed25519@openssh.com). A build installs only releases
+# whose manifest is signed by one of them (namespace "boundgate-release"); with
+# no key here, updates are refused. See docs/RELEASES.md: `make release-key`.

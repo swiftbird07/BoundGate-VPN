@@ -27,6 +27,12 @@ public struct DaemonClient: Sendable {
     public func login() throws -> LoginStart { try call("POST", "/v1/login", timeout: 30) }
     public func loginWait(flow: String) throws -> LoginResult { try call("GET", "/v1/login/\(flow)?wait=25s", timeout: 40) }
     public func logout() throws -> NodeStatus { try call("POST", "/v1/logout", timeout: 40) }
+    /// check: ask the release server now (otherwise the daemon's last background check)
+    public func update(check: Bool = false) throws -> UpdateStatus {
+        check ? try call("POST", "/v1/update/check", timeout: 100) : try call("GET", "/v1/update", timeout: 5)
+    }
+    /// Downloads, verifies and installs the latest release over this app; the daemon restarts afterwards.
+    public func updateApply() throws -> UpdateStatus { try call("POST", "/v1/update/apply", timeout: 900) }
 
     // MARK: transport
 

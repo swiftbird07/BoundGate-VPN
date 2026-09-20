@@ -23,6 +23,8 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/update"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/version"
 )
 
 type config struct {
@@ -66,6 +68,15 @@ type config struct {
 	MTU          int               `yaml:"mtu"`
 	LogDir       string            `yaml:"log_dir"`
 	LogStdout    bool              `yaml:"log_stdout"`
+	// Update: release checks (and, from the app bundle, installation).
+	// Release builds check by default; `check: false` turns that off.
+	Update struct {
+		Check     *bool         `yaml:"check"`
+		URL       string        `yaml:"url"`        // Gitea instance, default the project's
+		Repo      string        `yaml:"repo"`       // owner/name
+		TokenFile string        `yaml:"token_file"` // read token, for instances without anonymous access
+		Interval  time.Duration `yaml:"interval"`   // default 6h
+	} `yaml:"update"`
 }
 
 func main() {
@@ -210,8 +221,11 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	go n.Run(ctx)
 	running.Store(n)
 	defer running.Store(nil)
+	opt := ipc.Options{Group: cfg.SocketGroup, Update: newUpdater(cfg, logs.System, func() bool { return n.Status().State == node.StateDown })}
+	if opt.Update != nil {
+		go opt.Update.Run(ctx)
+	}
 	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", cfg.AutoUp)
-	opt := ipc.Options{Group: cfg.SocketGroup}
 	if !fromFile {
 		// Forget the control plane: its address, its pinned key and the admin
 		// key list learned from it. The device key stays, and to the next
@@ -243,3 +257,38 @@ func forget(stateDir, settingsPath string, newIdentity bool) error {
 
 // running is the node of the current runNode, for restartWhenReplaced.
 var running atomic.Pointer[node.Node]
+
+// newUpdater builds the release checker. A build without release keys, or
+// one that is not a release, still answers "what is the latest": it never
+// offers to install.
+func newUpdater(cfg config, log *slog.Logger, idle func() bool) *update.Service {
+	keys, err := update.BuiltinKeys()
+	if err != nil {
+		log.Info("updates are off", "reason", err)
+		return nil
+	}
+	u := cfg.Update
+	interval := u.Interval
+	if interval == 0 {
+		interval = 6 * time.Hour
+	}
+	if (u.Check != nil && !*u.Check) || !version.IsRelease() {
+		interval = 0 // no background checks; a manual check still works
+	}
+	src := update.Source{BaseURL: u.URL, Repo: u.Repo}
+	if src.BaseURL == "" {
+		src.BaseURL = update.DefaultBaseURL
+	}
+	if src.Repo == "" {
+		src.Repo = update.DefaultRepo
+	}
+	s := &update.Service{Source: src, TokenFile: u.TokenFile, Keys: keys, Current: version.Version, Interval: interval,
+		Idle: idle, WorkDir: filepath.Join(cfg.StateDir, "update"), Mac: update.MacApp{Run: update.SystemRun}, Log: log}
+	if exe, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
+		s.Bundle, _ = update.BundleOf(exe)
+	}
+	return s
+}

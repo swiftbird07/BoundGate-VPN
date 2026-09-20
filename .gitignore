@@ -362,3 +362,6 @@ Dream VPN Architektur.html
 /deploy/macos/state/
 /deploy/macos/backups/
 /apps/macos/.build/
+
+# keys made on the developer's machine (make release-key); never committed
+/private/

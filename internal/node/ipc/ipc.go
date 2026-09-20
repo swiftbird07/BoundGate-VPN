@@ -18,6 +18,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/update"
 )
 
 // UpRequest selects the routing profile ("" = default).
@@ -57,6 +58,8 @@ type Options struct {
 	// pin, admin key list), and with newIdentity its device key as well.
 	// The node must be down. Serve returns ErrReset after answering.
 	Reset func(newIdentity bool) error
+	// Update, when set, answers /v1/update: release checks and installation.
+	Update *update.Service
 }
 
 // ResetRequest is the optional body of POST /v1/reset.
@@ -107,6 +110,26 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	})
+	if u := opt.Update; u != nil {
+		mux.HandleFunc("GET /v1/update", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, u.Status()) })
+		mux.HandleFunc("POST /v1/update/check", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, u.Check(r.Context())) })
+		mux.HandleFunc("POST /v1/update/apply", func(w http.ResponseWriter, r *http.Request) {
+			// not tied to the request: the app that asked is replaced meanwhile
+			if err := u.Apply(context.WithoutCancel(r.Context())); err != nil {
+				writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, u.Status())
+		})
+	}
+	if opt.Update == nil {
+		mux.HandleFunc("/v1/update", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: update.ErrNoReleaseKeys.Error()})
+		})
+		mux.HandleFunc("/v1/update/", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: update.ErrNoReleaseKeys.Error()})
+		})
+	}
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, n.Status())
 	})
@@ -271,6 +294,24 @@ func (c *Client) do(method, path string, in, out any) error {
 }
 
 // Status fetches the daemon status.
+// Update returns the last update check; check asks the release source now.
+func (c *Client) Update(check bool) (update.Status, error) {
+	var s update.Status
+	if check {
+		return s, c.do(http.MethodPost, "/v1/update/check", nil, &s)
+	}
+	return s, c.do(http.MethodGet, "/v1/update", nil, &s)
+}
+
+// UpdateApply installs the latest release (app bundle installs only).
+func (c *Client) UpdateApply() (update.Status, error) {
+	var s update.Status
+	old := c.http.Timeout
+	c.http.Timeout = 15 * time.Minute
+	defer func() { c.http.Timeout = old }()
+	return s, c.do(http.MethodPost, "/v1/update/apply", nil, &s)
+}
+
 func (c *Client) Status() (node.Status, error) {
 	var s node.Status
 	err := c.do(http.MethodGet, "/v1/status", nil, &s)

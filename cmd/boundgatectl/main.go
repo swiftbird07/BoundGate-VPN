@@ -10,6 +10,8 @@
 //	boundgatectl down
 //	boundgatectl login [-timeout 10m]      prints the login URL, waits for the browser login
 //	boundgatectl logout
+//	boundgatectl update [-install]         look for a newer release; -install puts it in place (app installs)
+//	boundgatectl version
 //	boundgatectl flows                     tracked flows with their ACL decision
 //	boundgatectl admin sign --control URL --node ID --fingerprint FP --token T   (admin side, see adminsign.go)
 package main
@@ -27,6 +29,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/version"
 )
 
 func main() {
@@ -40,7 +43,7 @@ func main() {
 	socket := flag.String("socket", defSocket, "node daemon socket (or $BOUNDGATE_SOCKET)")
 	asJSON := flag.Bool("json", false, "print raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|up [-profile NAME]|down|login [-timeout D]|logout|flows\n"+
+		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|up [-profile NAME]|down|login [-timeout D]|logout|flows|update [-install]|version\n"+
 			"       boundgatectl [-json] admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F|--agent-key S|--signature F|--out F]\n")
 		flag.PrintDefaults()
 	}
@@ -48,6 +51,10 @@ func main() {
 	if flag.NArg() == 0 {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if flag.Arg(0) == "version" {
+		fmt.Println("boundgatectl", version.Version, version.Commit)
+		return
 	}
 	if flag.Arg(0) == "admin" {
 		if err := runAdmin(flag.Args()[1:], *asJSON); err != nil {
@@ -173,6 +180,39 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			return nil
 		}
 		fmt.Println("the node forgot its control plane (the device key is kept). Next: `boundgatectl configure -control HOST`.")
+		return nil
+	case "update":
+		fs := flag.NewFlagSet("update", flag.ContinueOnError)
+		install := fs.Bool("install", false, "install the newer release (the node must be down; app bundle installs only)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		st, err := c.Update(true)
+		if err != nil {
+			return err
+		}
+		if *install && st.Error == "" && st.Available {
+			fmt.Printf("installing %s (this is %s)...\n", st.Latest, st.Current)
+			if st, err = c.UpdateApply(); err != nil {
+				return err
+			}
+			fmt.Println("installed. The daemon restarts from the new app within some seconds; open the app again.")
+			return nil
+		}
+		if asJSON {
+			return dump(st)
+		}
+		fmt.Printf("this node:    %s\n", st.Current)
+		switch {
+		case st.Error != "":
+			return errors.New(st.Error)
+		case st.Available && st.CanInstall:
+			fmt.Printf("latest:       %s  (newer; `boundgatectl update -install`, or the app)\n%s\n", st.Latest, st.PageURL)
+		case st.Available:
+			fmt.Printf("latest:       %s  (newer)\n%s\n%s\n", st.Latest, st.PageURL, st.InstallHint)
+		default:
+			fmt.Printf("latest:       %s  (nothing to do)\n", st.Latest)
+		}
 		return nil
 	case "profiles":
 		names, err := c.Profiles()

@@ -353,7 +353,7 @@ and once UDP is allowed again the client moves back to QUIC.
 | | |
 |---|---|
 | Back up | `state/control/` (database, `nodes.key`/`nodes.crt`, ACME account and certificates), `state/hub/` (the hub's identity) |
-| Update | new bundle, `docker compose up -d --build`; the database migrates itself; nodes reconnect |
+| Update | `./update.sh` in the kit directory, by hand or from cron (`17 3 * * * cd /opt/boundgate && ./update.sh -q`): installs the latest **signed release** by image digest and goes back if it does not stay up ([RELEASES.md](RELEASES.md)). Copy `deploy/prod/update.sh` and `release_keys` next to the compose file. The database migrates itself; nodes reconnect |
 | Logs | `logs/*/*.jsonl`, `docker compose logs`; audit and flows also in the UI |
 | Lost `nodes.key` | every node refuses the control plane until its pin is reset (`boundgatectl reset` on app nodes, delete `control.pin` elsewhere) and enrolls again |
 | New or lost signing key | add or remove it under *Admins*, sign the change with a key of the current list; nodes follow, nothing is re-enrolled. Nodes approved with a removed key need a new signature |

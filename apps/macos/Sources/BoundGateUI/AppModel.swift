@@ -92,6 +92,7 @@ public final class AppModel: ObservableObject {
                 case .failure(let e): self.status = nil; self.unreachable = e.localizedDescription
                 }
                 if !names.isEmpty || self.status != nil { self.profiles = names }
+                if self.status != nil { self.pollUpdate() }
             }
         }
     }
@@ -139,6 +140,68 @@ public final class AppModel: ObservableObject {
 
     public func configure(control: String) { run("Saving…") { try $0.configure(DaemonSettings(controlAddr: control)) } }
     public func forgetControlPlane() { run("Resetting…") { c in _ = try? c.down(); try c.reset() } }
+    // MARK: updates
+
+    /// Result of the daemon's last release check; nil with a daemon that has no updater.
+    @Published public var update: UpdateStatus?
+    /// A manual check that found nothing says so once.
+    @Published public var updateNote: String?
+    private var lastUpdatePoll = Date.distantPast
+
+    /// The daemon checks in the background; the app reads its verdict now and then.
+    func pollUpdate(force: Bool = false) {
+        guard force || Date().timeIntervalSince(lastUpdatePoll) > 600 else { return }
+        lastUpdatePoll = Date()
+        let client = self.client
+        Task.detached {
+            let u = try? client.update()
+            await MainActor.run { self.update = u }
+        }
+    }
+
+    public func checkForUpdates() {
+        guard busy == nil else { return }
+        busy = "Looking for updates…"; actionError = nil; updateNote = nil
+        let client = self.client
+        Task.detached {
+            let result = Result { try client.update(check: true) }
+            await MainActor.run {
+                self.busy = nil
+                switch result {
+                case .success(let u):
+                    self.update = u
+                    if let e = u.error, !e.isEmpty { self.actionError = e }
+                    else if !u.available { self.updateNote = "BoundGate \(u.current) is the latest release." }
+                case .failure(let e): self.actionError = e.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// Disconnects, lets the daemon install the release, and opens the new app.
+    public func installUpdate() {
+        guard busy == nil else { return }
+        busy = "Installing the update…"; actionError = nil
+        let client = self.client
+        let bundle = Bundle.main.bundleURL
+        Task.detached {
+            let result = Result { () -> UpdateStatus in _ = try? client.down(); return try client.updateApply() }
+            await MainActor.run {
+                self.busy = nil
+                switch result {
+                case .failure(let e): self.actionError = e.localizedDescription; self.refresh()
+                case .success:
+                    // the bundle on disk is the new app now; this process is the old one
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                    p.arguments = ["-c", "sleep 2; /usr/bin/open -n \"$0\"", bundle.path]
+                    try? p.run()
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+    }
+
     /// First contact with a control plane: the key it presents, waiting for
     /// the person to compare and accept it (EnrollCard).
     @Published public var pinToConfirm: String?

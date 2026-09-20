@@ -6,29 +6,48 @@
 #   SIGN_IDENTITY="Developer ID Application: …" apps/macos/build-app.sh
 #   SIGN_IDENTITY=- apps/macos/build-app.sh # ad hoc: runs, but macOS refuses to register the service
 #
+#   RELEASE=v1.2.3 UNIVERSAL=1 apps/macos/build-app.sh   # what the release pipeline runs
+#
 # Go is built in the box (make build-darwin); Swift and codesign run on the Mac.
+#   RELEASE=vX.Y.Z  release build: that version in the binaries (they update
+#                   themselves only then) and in Info.plist
+#   UNIVERSAL=1     arm64 + x86_64 in one bundle (lipo; needs both Go builds)
+#   SKIP_GO=1       take bin/darwin_* as they are (built elsewhere, e.g. by CI
+#                   on Linux, so that the Mac needs no Go)
 set -eu
 cd "$(dirname "$0")/../.."
 REPO=$PWD
+RELEASE=${RELEASE:-}
+VERSION=${VERSION:-${RELEASE#v}}
 VERSION=${VERSION:-0.8.0}
+UNIVERSAL=${UNIVERSAL:-}
 BUILD=${BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
 BUNDLE_ID=${BUNDLE_ID:-de.swiftbird.boundgate}
 ARCH=$(uname -m | sed 's/x86_64/amd64/')
 APP=dist/BoundGate.app
 
-echo "== Go binaries (box)"
-make build-darwin >/dev/null
+ARCHS=$ARCH; SWIFT_ARCH=""
+if [ -n "$UNIVERSAL" ]; then ARCHS="arm64 amd64"; SWIFT_ARCH="--arch arm64 --arch x86_64"; fi
+if [ -z "${SKIP_GO:-}" ]; then
+  echo "== Go binaries (box)"
+  for a in $ARCHS; do make build-darwin GOARCH=$a ${RELEASE:+VERSION=$RELEASE} >/dev/null; done
+fi
+GOBIN=bin/darwin_$ARCH
+if [ -n "$UNIVERSAL" ]; then
+  GOBIN=bin/darwin_universal; mkdir -p $GOBIN
+  for b in boundgate-node boundgatectl; do lipo -create -output $GOBIN/$b bin/darwin_arm64/$b bin/darwin_amd64/$b; done
+fi
 echo "== Swift app (release)"
-swift build --package-path apps/macos -c release --product BoundGate 2>&1 | tail -1
-swift build --package-path apps/macos -c release --product bgtool 2>&1 | tail -1
-swift build --package-path apps/macos -c release --product boundgate-sekey 2>&1 | tail -1
-BIN=$(swift build --package-path apps/macos -c release --show-bin-path)
+for p in BoundGate bgtool boundgate-sekey; do
+  swift build --package-path apps/macos -c release $SWIFT_ARCH --product $p 2>&1 | tail -1
+done
+BIN=$(swift build --package-path apps/macos -c release $SWIFT_ARCH --show-bin-path)
 
 echo "== bundle"
 rm -rf "$APP" dist/icon
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/LaunchDaemons" dist/icon
 cp "$BIN/BoundGate" "$APP/Contents/MacOS/BoundGate"
-cp "bin/darwin_$ARCH/boundgate-node" "bin/darwin_$ARCH/boundgatectl" "$APP/Contents/MacOS/"
+cp "$GOBIN/boundgate-node" "$GOBIN/boundgatectl" "$APP/Contents/MacOS/"
 # Secure Enclave bridge of the daemon (key_kind auto / secure-enclave); the
 # daemon looks for it next to itself
 cp "$BIN/boundgate-sekey" "$APP/Contents/MacOS/boundgate-sekey"

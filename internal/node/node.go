@@ -44,6 +44,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/profile"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/version"
 )
 
 // Config for the daemon.
@@ -175,6 +176,7 @@ type Status struct {
 	SPKI            string    `json:"spki"`
 	Fingerprint     string    `json:"fingerprint"`
 	KeyKind         string    `json:"key_kind"`
+	Version         string    `json:"version"` // release tag of this daemon, or "dev"
 	HardwareBound   bool      `json:"hardware_bound"`
 	Enrollment      string    `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
 	EnrollmentError string    `json:"enrollment_error,omitempty"`
@@ -346,6 +348,7 @@ func New(cfg Config) (*Node, error) {
 		SPKI:          spki.String(),
 		Fingerprint:   spki.Fingerprint(),
 		KeyKind:       key.Kind(),
+		Version:       version.Version,
 		HardwareBound: key.HardwareBound(),
 		Enrollment:    "unknown",
 		Control:       cfg.ControlAddr,

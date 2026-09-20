@@ -95,6 +95,20 @@ public struct DaemonSettings: Codable, Sendable {
     }
 }
 
+/// What the daemon knows about releases (GET /v1/update). The daemon verifies
+/// the release's signature; the app only shows the result and asks it to install.
+public struct UpdateStatus: Codable, Sendable, Equatable {
+    public var current: String
+    public var latest: String?
+    public var available: Bool
+    public var checkedAt: Date?
+    public var error: String?
+    public var pageUrl: String?
+    public var canInstall: Bool
+    public var installHint: String?
+    public var installing: Bool?
+}
+
 struct ErrorBody: Codable {
     var error: String
     /// set when enrolling needs the user to accept this control plane key first
