@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -155,6 +156,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, timeo
 		raw = b
 		rd = bytes.NewReader(b)
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, rd)
@@ -167,6 +169,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, timeo
 	}
 	rsp, err := c.http.Do(req)
 	if err != nil {
+		// our own deadline, not the caller's: say what happened instead of
+		// `Get "https://…/snapshot?since=4&wait=30s": context deadline exceeded`
+		if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
+			return 0, fmt.Errorf("control plane %s gave no answer within %s (%s %s): %w", c.URL, timeout, method, strings.SplitN(path, "?", 2)[0], context.DeadlineExceeded)
+		}
 		return 0, fmt.Errorf("control plane %s: %w", c.URL, err)
 	}
 	defer rsp.Body.Close()

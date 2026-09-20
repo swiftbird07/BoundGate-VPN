@@ -66,6 +66,11 @@ changing its roles: it drops to `confirmed` and is out of the network until
 an admin key has signed the new binding. `boundgatectl admin sign` prints
 the tags it is about to sign.
 
+Nodes older than v0.1.3 do not know the field and refuse a binding that
+carries it, as they refuse every unknown field: such a node ignores tagged
+peers, and does not come up if it is tagged itself. Update the nodes first,
+then hand out tags. Untagged nodes are unaffected.
+
 Not signed: the name, the public address of a hub, platform, key kind and
 what the node itself reported about its key (`hardware_claimed`). A wrong
 public address only fails the pinned handshake; the others are claims
