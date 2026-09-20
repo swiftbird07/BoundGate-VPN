@@ -7,6 +7,7 @@
   import Time from '../lib/components/Time.svelte';
   import Badge from '../lib/components/Badge.svelte';
   import Copy from '../lib/components/Copy.svelte';
+  import SignCommand from '../lib/components/SignCommand.svelte';
   import Dialog from '../lib/components/Dialog.svelte';
   import { toast, fail } from '../lib/toast.svelte';
 
@@ -139,7 +140,7 @@
         </div>
       {/if}
       <p class="small muted">Run this where an admin SSH key (YubiKey) is available. It shows the list again, from the bytes it signs; compare the fingerprints there. Can sign: {change.signable_by.join(', ')}. The token is single-use and expires <Time at={change.sign_expires_at} />.</p>
-      <div class="cmd"><pre>{change.sign_command}</pre><Copy text={change.sign_command} /></div>
+      <SignCommand command={change.sign_command} />
       <div class="row" style="justify-content:flex-end; margin-top:12px"><button class="btn primary" onclick={closeChange}>Done</button></div>
     </Dialog>
   {/if}

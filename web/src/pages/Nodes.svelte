@@ -8,6 +8,7 @@
   import Drawer from '../lib/components/Drawer.svelte';
   import Dialog from '../lib/components/Dialog.svelte';
   import Copy from '../lib/components/Copy.svelte';
+  import SignCommand from '../lib/components/SignCommand.svelte';
   import { toast, fail } from '../lib/toast.svelte';
   import { when } from '../lib/util';
 
@@ -154,7 +155,7 @@
         <div class="callout strong">
           <h3>Sign the binding</h3>
           <p class="small muted">Run this where the admin SSH key (YubiKey) is available. The token is single-use and expires {when(signCmd.expires)}.</p>
-          <div class="cmd"><pre>{signCmd.cmd}</pre><Copy text={signCmd.cmd} /></div>
+          <SignCommand command={signCmd.cmd} />
         </div>
       {/if}
       <div class="row">

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"golang.org/x/crypto/ssh"
 
@@ -68,11 +71,21 @@ func signWithSSHKeygen(keyFile, namespace string, message []byte, quiet bool) (s
 		fmt.Printf("signing with: %s via %s\nit asks for the passphrase of the file and, for a security key, for PIN and touch\n", keyFile, bin)
 	}
 	cmd := exec.Command(bin, "-Y", "sign", "-n", namespace, "-f", keyFile, msg)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	var said bytes.Buffer // prompts go to the terminal itself, messages to stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, io.MultiWriter(os.Stderr, &said)
 	if err := cmd.Run(); err != nil {
 		hint := ""
-		if runtime.GOOS == "darwin" && bin == "/usr/bin/ssh-keygen" {
+		switch {
+		case runtime.GOOS == "darwin" && bin == "/usr/bin/ssh-keygen":
 			hint = " (the ssh-keygen of macOS cannot use security keys: brew install openssh, or set BOUNDGATE_SSH_KEYGEN)"
+		case strings.Contains(said.String(), "invalid format"):
+			// OpenSSH has one message for every error a security key reports
+			hint = `
+"invalid format" is what OpenSSH says for any error from the security key, not about the file. Usually one of:
+  - the key was not touched while it blinked (it gives up after some seconds)
+  - a wrong PIN; after three wrong ones in a row the key refuses until it is unplugged and plugged in again
+  - another security key is plugged in than the one this key file was made on
+Nothing was sent: the token is still good until it expires. Unplug the key, plug it in again and repeat the command.`
 		}
 		return "", fmt.Errorf("admin sign: %s: %w%s", bin, err, hint)
 	}
