@@ -139,6 +139,19 @@ yellow as fill and marker, orange for warnings.
 | CLI | `/Applications/BoundGate.app/Contents/MacOS/boundgatectl` |
 
 Removing: gear › *Remove background service*, then delete the app.
+
+**"The background service does not answer" after replacing the app.** macOS
+ties a registered daemon to the code signature of the app that registered it.
+An app with another signature in the same place (seen when a build signed
+with an *Apple Development* certificate was replaced by a *Developer ID* one)
+leaves an entry launchd refuses to start: `launchctl print
+system/de.swiftbird.boundgate.node` says `job state = spawn failed`,
+`last exit code = 78: EX_CONFIG`, `needs LWCR update`, and the daemon's log
+stays empty because it never runs. The card offers *Register the service
+again* (unregister, register; older builds: gear › *Remove background
+service*, then *Install service*). The node's identity and state are files
+under `/var/db/boundgate` and are not touched. Updates between releases keep
+the same Developer ID and are not expected to trigger this.
 `/var/db/boundgate` is the device identity and stays until you delete it.
 
 ## Not verified yet

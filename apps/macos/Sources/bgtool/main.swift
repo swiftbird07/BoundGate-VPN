@@ -47,6 +47,7 @@ struct MockService: ServiceControlling {
     let cases: [(String, NodeStatus?, ServiceState, String?)] = [
         ("1-service", nil, .notRegistered, "The background service is not running."),
         ("2-approval", nil, .requiresApproval, "The background service is not running."),
+        ("2b-service-down", nil, .enabled, "The background service is not running."),
         ("3-setup", NodeStatus(state: "unconfigured"), .enabled, nil),
         ("4-enroll", base("down", "unknown"), .enabled, nil),
         ("5-pending", base("down", "pending"), .enabled, nil),

@@ -100,7 +100,16 @@ public struct PanelView: View {
         case .serviceDown(let why):
             Card {
                 Text("The background service does not answer").font(.display(15)).foregroundStyle(t.text)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(why).font(.body(12)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
+                if model.service == .enabled {
+                    // macOS ties a registered service to the app that registered it: after the app
+                    // was replaced by one with another signature, it refuses to start the old entry
+                    Text("If the app was replaced or moved, macOS may refuse to start the service it registered before. Registering it again fixes that; this Mac keeps its identity.")
+                        .font(.body(12)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
+                    Button("Register the service again") { model.reinstallService() }
+                        .buttonStyle(BGButtonStyle(kind: .primary, large: true))
+                }
                 Text("Logs: /var/log/boundgate").font(.mono(11)).foregroundStyle(t.text3)
             }
         case .unconfigured: SetupCard(model: model)

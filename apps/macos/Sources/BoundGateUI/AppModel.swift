@@ -130,6 +130,19 @@ public final class AppModel: ObservableObject {
         refresh()
     }
 
+    /// Removes the registration and makes a new one, for a service macOS no
+    /// longer starts (the app was replaced by one with another signature, or
+    /// moved). State and identity of the daemon are files and stay.
+    public func reinstallService() {
+        actionError = nil
+        let installer = self.installer
+        run("Registering…", { _ in
+            try? installer.unregister()
+            // launchd needs a moment to let go of the old entry
+            Thread.sleep(forTimeInterval: 2)
+        }, then: { [weak self] in self?.installService() })
+    }
+
     public func uninstallService() {
         actionError = nil
         let installer = self.installer
