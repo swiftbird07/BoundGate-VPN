@@ -29,3 +29,7 @@ cd deploy/compose && docker compose exec node-a boundgatectl up && ./setup-dev.s
 make e2e                            # up -> login -> targets -> ACL -> hub failover -> session revoke -> node revoke -> re-enroll -> sign flow -> tampering -> key pin -> admin UI/auth
 open http://localhost:18080         # admin UI through the lab's devproxy; first passkey needs deploy/compose/state/control/bootstrap.token
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).

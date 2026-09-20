@@ -29,7 +29,7 @@ struct MockService: ServiceControlling {
     let pin = "8e3d 11c1 5db7 dc80 431b b248 6a13 d438 6030 ca13 7170 dfa9 ac07 2b93 cb47 a78d"
     func base(_ state: String, _ enrollment: String) -> NodeStatus {
         var s = NodeStatus(state: state)
-        s.enrollment = enrollment; s.nodeName = "Martins-MacBook-Pro-14"; s.fingerprint = fp; s.control = "bg.example.com:443"
+        s.enrollment = enrollment; s.nodeName = "Adas-MacBook-Pro"; s.fingerprint = fp; s.control = "bg.example.com:443"
         s.controlPin = pin; s.keyKind = "softkey"; s.hardwareBound = false
         return s
     }
