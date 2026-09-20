@@ -109,14 +109,22 @@ jobs:
             | jq '.type = "boundgate-build"' > build.json
           cat build.json
           auth() { curl -fsS -H "Authorization: token $TOKEN" "$@"; }
+          # the network between runner and server has bad moments (a name that does not resolve, once):
+          # an upload is tried again, after removing what an attempt may have left under that name
+          upload() { # upload RELEASE-ID FILE
+            name=$(basename "$2")
+            for try in 1 2 3 4 5; do
+              for old in $(auth "$API/releases/$1" | jq -r --arg n "$name" '.assets[]? | select(.name == $n) | .id'); do auth -X DELETE "$API/releases/$1/assets/$old" >/dev/null || true; done
+              if auth -X POST -F "attachment=@$2" "$API/releases/$1/assets?name=$name" >/dev/null; then echo "uploaded $name"; return 0; fi
+              echo "upload of $name failed (attempt $try)"; sleep $((try * 10))
+            done
+            return 1
+          }
           # a re-run replaces the draft of the same tag; a published release is never touched
           for id in $(auth "$API/releases?draft=true&limit=50" | jq -r --arg v "$V" '.[] | select(.tag_name == $v and .draft) | .id'); do
             auth -X DELETE "$API/releases/$id" >/dev/null
           done
           ID=$(jq -n --arg t "$V" '{tag_name:$t, name:$t, draft:true, body:"Built by CI, not signed yet. `make release VERSION=\($t)` on the maintainer\u0027s machine signs and publishes it."}' \
             | auth -X POST -H 'Content-Type: application/json' -d @- "$API/releases" | jq -r .id)
-          for f in dist/release/*.tar.gz build.json; do
-            auth -X POST -F "attachment=@$f" "$API/releases/$ID/assets?name=$(basename "$f")" >/dev/null
-            echo "uploaded $(basename "$f")"
-          done
+          for f in dist/release/*.tar.gz build.json; do upload "$ID" "$f"; done
           echo "draft $V is ready to be signed"

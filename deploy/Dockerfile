@@ -11,10 +11,12 @@ FROM alpine:3.20
 RUN apk add --no-cache iproute2 nftables ca-certificates curl \
  && mkdir -p /var/lib/boundgate /var/log/boundgate /etc/boundgate /run/boundgate
 ARG TARGETARCH
-ARG SOURCE=https://gitlab.net407.com/SBH/BoundGate-VPN
+# the public source; ghcr.io also uses this label to show the package on that repository
+ARG SOURCE=https://github.com/swiftbird07/BoundGate-VPN
 ARG REVISION=unknown
 LABEL org.opencontainers.image.source=$SOURCE \
       org.opencontainers.image.revision=$REVISION \
+      org.opencontainers.image.licenses=MIT \
       org.opencontainers.image.title="BoundGate" \
       org.opencontainers.image.description="Device-bound zero-trust overlay: control plane, node, CLI and mux"
 COPY bin/linux_${TARGETARCH}/boundgate-control bin/linux_${TARGETARCH}/boundgate-node \
