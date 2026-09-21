@@ -273,21 +273,23 @@ export function parse(cedar: string): Rule | null {
 
 /** describe renders a rule as one English sentence for lists and previews. */
 export function describe(r: Rule): string {
-  const who = (() => {
+  const who = ((): string => {
     switch (r.principal.kind) {
       case 'any': return 'any node';
       case 'node': return `node ${r.principal.id}`;
       case 'group': return `users in group “${r.principal.name}”`;
       case 'user': return `user ${r.principal.subject}`;
       case 'role': return `nodes with role ${r.principal.role}`;
+      case 'tag': return `nodes tagged “${r.principal.tag}”`;
     }
   })();
-  const where = (() => {
+  const where = ((): string => {
     switch (r.resource.kind) {
       case 'any': return 'anything';
       case 'network': return `network ${r.resource.prefix}`;
       case 'node': return `node ${r.resource.id}`;
       case 'host': return `host ${r.resource.ip}`;
+      case 'tag': return `nodes tagged “${r.resource.tag}”`;
     }
   })();
   let s = `${r.effect === 'permit' ? 'Allow' : 'Deny'} ${who} → ${where}`;

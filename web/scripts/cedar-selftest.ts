@@ -10,6 +10,7 @@ rules.push({ effect: 'forbid', principal: { kind: 'group', name: 'vpn "users"' }
 rules.push({ effect: 'permit', principal: { kind: 'node', id: 'abc123' }, resource: { kind: 'node', id: 'def456' }, when: [], unless: [] });
 rules.push({ effect: 'permit', principal: { kind: 'user', subject: 'u1' }, resource: { kind: 'host', ip: '10.60.0.11' }, when: [], unless: [] });
 rules.push({ effect: 'permit', principal: { kind: 'role', role: 'subnet-router' }, resource: { kind: 'any' }, when: [], unless: [] });
+rules.push({ effect: 'permit', principal: { kind: 'tag', tag: 'priv_client' }, resource: { kind: 'tag', tag: 'server' }, when: [], unless: [] });
 for (const t of condTypes) {
   const c = newCond(t.type);
   rules.push({ ...emptyRule(), when: [c] });
@@ -24,7 +25,8 @@ for (const r of rules) {
   const text = generate(r);
   const back = parse(text);
   if (JSON.stringify(back) !== JSON.stringify(r)) { bad++; console.error('ROUND TRIP FAILED\n', text, '\nwant', JSON.stringify(r), '\ngot ', JSON.stringify(back)); }
-  if (!describe(r)) bad++;
+  const said = describe(r);
+  if (!said || said.includes('undefined')) { bad++; console.error('NO WORDS FOR', text, '\n', said); }
   console.log(JSON.stringify({ cedar: text }));
 }
 // hand-written policies outside the builder's shape stay raw
