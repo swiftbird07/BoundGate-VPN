@@ -42,3 +42,13 @@ type Configurator interface {
 	// removes the rules.
 	SetNAT(ctx context.Context, pool netip.Prefix, dsts []netip.Prefix, ifname string) error
 }
+
+// Watcher is a configurator that notices when the machine's own networks
+// change (another Wi-Fi, a cable, a VPN of someone else). Host routes to the
+// control plane and hubs point to the gateway of the network they were set
+// on; after a change they must be set again.
+type Watcher interface {
+	// Watch calls changed, debounced, until ctx ends; false when it cannot
+	// watch on this machine.
+	Watch(ctx context.Context, changed func()) bool
+}

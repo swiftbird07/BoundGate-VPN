@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge boundgate-embedtest
 
-.PHONY: test-lib apple-core ios-project image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: test-lib apple-core ios-project image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin build-windows windows-zip test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -52,8 +52,24 @@ build-darwin:
 	  box env GOOS=darwin GOARCH=$(GOARCH) CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/darwin_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
 	done
 
+# Windows (M10): service, CLI and tray, cross-compiled in the box (no cgo);
+# windows-zip packs them with the install scripts (docs/WINDOWS.md).
+WINARCH ?= amd64
+build-windows:
+	@mkdir -p bin/windows_$(WINARCH)
+	@for b in boundgate-node boundgatectl; do \
+	  echo "building $$b for windows/$(WINARCH)"; \
+	  box env GOOS=windows GOARCH=$(WINARCH) CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/windows_$(WINARCH)/$$b.exe ./cmd/$$b || exit 1; \
+	done
+	@echo "building boundgate-tray for windows/$(WINARCH)"
+	@box env GOOS=windows GOARCH=$(WINARCH) CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS) -H=windowsgui" -o bin/windows_$(WINARCH)/boundgate-tray.exe ./cmd/boundgate-tray
+
+windows-zip: build-windows
+	deploy/windows/zip.sh $(VERSION) $(WINARCH) bin/windows_$(WINARCH) dist
+
 test: web-test test-lib
 	box go vet ./...
+	box env GOOS=windows go vet ./...
 	box go test -count=1 ./...
 
 # BoundGateCore.xcframework for the iOS app and its packet tunnel (docs/IOS.md);

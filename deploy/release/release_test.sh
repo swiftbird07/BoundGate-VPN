@@ -83,15 +83,17 @@ export FAKE=$G PATH="$T/bin:$PATH" GITEA_URL=http://gitea.test GITEA_REPO=o/r GI
 export GITHUB_URL=http://github.test GITHUB_API=http://api.github.test GITHUB_UPLOADS=http://uploads.github.test GITHUB_REPO=go/gr GITHUB_TOKEN=gh-token
 
 V=v0.1.11; HEAD=$(git rev-parse HEAD)
-# what CI leaves in the draft: two tarballs and its build record
+# what CI leaves in the draft: two tarballs, a Windows zip and its build record
 ci_draft() {
   rm -rf "$G/assets" "$G/uploaded" "$G/calls" "$G/deleted" "$G/patched" "$G"/gh-*; mkdir -p "$G/assets" "$G/uploaded" "$G/gh-uploaded"; echo '[]' > "$G/gh-releases.json"
   for a in amd64 arm64; do echo "linux $a $1" > "$G/assets/boundgate-$V-linux-$a.tar.gz"; done
+  echo "windows $1" > "$G/assets/boundgate-$V-windows-amd64.zip"
   COMMIT=$HEAD sh deploy/release/manifest.sh $V "$G/assets" registry.test/boundgate sha256:$(printf %064d 7) | jq '.type = "boundgate-build"' > "$T/build.json"
   cp "$T/build.json" "$G/assets/build.json"
   jq -n --arg v $V '{id:7, tag_name:$v, draft:true, assets:[
     {id:1, name:"boundgate-\($v)-linux-amd64.tar.gz", browser_download_url:"http://gitea.test/dl/boundgate-\($v)-linux-amd64.tar.gz"},
     {id:2, name:"boundgate-\($v)-linux-arm64.tar.gz", browser_download_url:"http://gitea.test/dl/boundgate-\($v)-linux-arm64.tar.gz"},
+    {id:4, name:"boundgate-\($v)-windows-amd64.zip", browser_download_url:"http://gitea.test/dl/boundgate-\($v)-windows-amd64.zip"},
     {id:3, name:"build.json", browser_download_url:"http://gitea.test/dl/build.json"}]} | [.]' > "$G/releases.json"
   echo "{\"tag_name\":\"$V\"}" > "$G/latest.json"
 }
@@ -103,11 +105,11 @@ $R > "$T/out" 2>&1 || { cat "$T/out"; fail "release failed"; }
 grep -q "released $V" "$T/out" || fail "did not pick $V: $(cat "$T/out")"
 [ "$(git ls-remote --tags origin refs/tags/$V | wc -l | tr -d ' ')" = 1 ] || fail "tag not pushed"
 for f in manifest.json manifest.json.sig BoundGate-0.1.11-macos.zip BoundGate-0.1.11.dmg; do [ -f "$G/uploaded/$f" ] || fail "$f not uploaded"; done
-[ ! -e "$G/uploaded/boundgate-$V-linux-amd64.tar.gz" ] || fail "CI's files were uploaded a second time"
+[ ! -e "$G/uploaded/boundgate-$V-linux-amd64.tar.gz" ] && [ ! -e "$G/uploaded/boundgate-$V-windows-amd64.zip" ] || fail "CI's files were uploaded a second time"
 M=$G/uploaded/manifest.json
 sed 's/^/boundgate-release /' private/release_signing_key.pub > "$T/allowed"
 ssh-keygen -Y verify -f "$T/allowed" -I boundgate-release -n boundgate-release -s "$M.sig" < "$M" >/dev/null 2>&1 || fail "uploaded manifest does not verify"
-jq -e --arg v $V --arg c "$HEAD" '.type == "boundgate-release" and .version == $v and .commit == $c and .image.digest == "sha256:'"$(printf %064d 7)"'" and (.assets | length) == 4' "$M" >/dev/null || fail "manifest: $(cat "$M")"
+jq -e --arg v $V --arg c "$HEAD" '.type == "boundgate-release" and .version == $v and .commit == $c and .image.digest == "sha256:'"$(printf %064d 7)"'" and (.assets | length) == 5 and ([.assets[] | select(.os == "windows" and .kind == "binaries")] | length) == 1' "$M" >/dev/null || fail "manifest: $(cat "$M")"
 for n in $(jq -r '.assets[].name' "$M"); do
   f=$G/assets/$n; [ -f "$f" ] || f=dist/$n
   [ "$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | .sha256' "$M")" = "$(sha "$f")" ] || fail "hash of $n"
@@ -116,8 +118,8 @@ jq -e '.draft == false' "$G/patched" >/dev/null || fail "draft not published"
 grep -qx 3 "$G/deleted" || fail "CI's build.json was not removed from the published release"
 # order: nothing is published before the signature is up
 [ "$(grep -n 'PATCH http://gitea.test' "$G/calls" | cut -d: -f1)" -gt "$(grep -n 'gitea.test.*name=manifest.json.sig' "$G/calls" | cut -d: -f1)" ] || fail "published before the signature was uploaded"
-# the mirror: the same six files, the manifest and signature byte for byte, published last, as the latest release
-[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 6 ] || fail "GitHub got: $(ls "$G/gh-uploaded")"
+# the mirror: the same seven files, the manifest and signature byte for byte, published last, as the latest release
+[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 7 ] || fail "GitHub got: $(ls "$G/gh-uploaded")"
 for f in manifest.json manifest.json.sig; do cmp -s "$G/uploaded/$f" "$G/gh-uploaded/$f" || fail "GitHub's $f differs from Gitea's"; done
 for n in $(jq -r '.assets[].name' "$M"); do [ "$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | .sha256' "$M")" = "$(sha "$G/gh-uploaded/$n")" ] || fail "GitHub's $n is not the file the manifest names"; done
 jq -e --arg v $V '.tag_name == $v and .draft == true' "$G/gh-created" >/dev/null && jq -e '.draft == false and .make_latest == "true"' "$G/gh-patched" >/dev/null || fail "GitHub release: $(cat "$G/gh-created" "$G/gh-patched")"
@@ -138,7 +140,7 @@ grep -q "somebody else made" "$T/out" && [ -e "$G/patched" ] && [ ! -e "$G/gh-cr
 $R $V > "$T/out" 2>&1 || { cat "$T/out"; fail "mirror-only run failed"; }
 grep -q "is published on http://gitea.test already" "$T/out" && grep -q "mirrored $V" "$T/out" || fail "mirror-only run: $(cat "$T/out")"
 ! grep -q 'POST http://gitea.test\|PATCH http://gitea.test' "$G/calls" || fail "the mirror-only run changed the published release"
-[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 6 ] || fail "mirror-only run uploaded: $(ls "$G/gh-uploaded")"
+[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 7 ] || fail "mirror-only run uploaded: $(ls "$G/gh-uploaded")"
 # and once it is there, nothing is uploaded again
 rm -rf "$G/gh-uploaded"; mkdir "$G/gh-uploaded"; jq -n --arg v $V '[{id:70, tag_name:$v, draft:false}]' > "$G/gh-releases.json"
 sh deploy/release/mirror-github.sh $V > "$T/out" 2>&1 && grep -q "on GitHub already" "$T/out" && [ -z "$(ls "$G/gh-uploaded")" ] || fail "mirrored twice: $(cat "$T/out")"

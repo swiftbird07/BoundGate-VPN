@@ -10,10 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -87,28 +85,42 @@ type config struct {
 }
 
 func main() {
-	cfgPath := flag.String("config", "", "configuration file (default: node.yaml next to the executable, else /etc/boundgate/node.yaml)")
+	if handled, err := serviceCommand(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "boundgate-node:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	cfgPath := flag.String("config", "", "configuration file (default: node.yaml next to the executable, else "+defaults.config+")")
 	flag.Parse()
 	if *cfgPath == "" {
-		*cfgPath = "/etc/boundgate/node.yaml"
-		// a package ships its configuration next to the daemon; a macOS app
-		// bundle has it in Contents/Resources (the daemon is in Contents/MacOS)
-		if exe, err := os.Executable(); err == nil {
-			for _, p := range []string{filepath.Join(filepath.Dir(exe), "node.yaml"), filepath.Join(filepath.Dir(exe), "..", "Resources", "node.yaml")} {
-				if fileExists(p) {
-					*cfgPath = p
-					break
-				}
-			}
-		}
+		*cfgPath = defaultConfigPath()
 	}
-	if err := run(*cfgPath); err != nil {
+	if err := runMain(*cfgPath); err != nil {
 		fmt.Fprintln(os.Stderr, "boundgate-node:", err)
 		os.Exit(1)
 	}
 }
 
-func run(cfgPath string) error {
+// defaultConfigPath: node.yaml next to the executable (a package, the
+// Windows zip), in a macOS app bundle's Contents/Resources, else the
+// platform's default.
+func defaultConfigPath() string {
+	p := defaults.config
+	if exe, err := os.Executable(); err == nil {
+		for _, c := range []string{filepath.Join(filepath.Dir(exe), "node.yaml"), filepath.Join(filepath.Dir(exe), "..", "Resources", "node.yaml")} {
+			if fileExists(c) {
+				return c
+			}
+		}
+	}
+	return p
+}
+
+// run is the daemon until ctx ends: a signal on Unix, the service manager on
+// Windows.
+func run(ctx context.Context, cfgPath string) error {
 	var cfg config
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -118,13 +130,16 @@ func run(cfgPath string) error {
 		return fmt.Errorf("config: %w", err)
 	}
 	if cfg.StateDir == "" {
-		cfg.StateDir = "/var/lib/boundgate"
+		cfg.StateDir = defaults.stateDir
 	}
 	if cfg.ProfilesDir == "" {
-		cfg.ProfilesDir = "/etc/boundgate/profiles"
+		cfg.ProfilesDir = defaults.profilesDir
 	}
 	if cfg.Socket == "" {
-		cfg.Socket = "/run/boundgate/node.sock"
+		cfg.Socket = ipc.DefaultSocket()
+	}
+	if cfg.LogDir == "" {
+		cfg.LogDir = defaults.logDir // Windows: a service has no console to write to
 	}
 	logs, err := logging.Open(logging.Options{Dir: cfg.LogDir, Stdout: cfg.LogStdout || cfg.LogDir == "", Component: "node"})
 	if err != nil {
@@ -133,8 +148,6 @@ func run(cfgPath string) error {
 	defer logs.Close()
 	slog.SetDefault(logs.System)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	// A configuration file that names the control plane is final. Without
 	// one, the user decides (boundgatectl configure, or the app): setup mode
 	// until then, and `reset` leads back here.

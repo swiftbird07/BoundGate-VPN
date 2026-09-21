@@ -23,6 +23,8 @@ func TestAutoKeyKind(t *testing.T) {
 		{[]string{"device.sekey"}, true, "secure-enclave"},
 		{[]string{"device.sekey"}, false, "secure-enclave"}, // the helper fails later and says why; never a second identity
 		{[]string{"device.key", "device.sekey", "control.pin"}, true, "secure-enclave"},
+		{[]string{"device.tpm"}, false, "tpm2"}, // a TPM identity stays one
+		{[]string{"device.key", "device.tpm", "control.pin"}, false, "tpm2"},
 	} {
 		dir := t.TempDir()
 		for _, f := range c.files {

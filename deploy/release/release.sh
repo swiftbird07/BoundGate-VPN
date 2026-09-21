@@ -173,7 +173,7 @@ rm -rf "$OUT" "$OUT.build.json"; mkdir -p "$OUT"
 echo "$REL" | jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"' | while IFS="$(printf '\t')" read -r name url; do
   case "$name" in
     build.json) dst=$OUT.build.json ;;
-    boundgate-*-linux-*.tar.gz) dst=$OUT/$name ;;
+    boundgate-*-linux-*.tar.gz|boundgate-*-windows-*.zip) dst=$OUT/$name ;;
     *) continue ;; # leftovers of an earlier attempt: replaced below
   esac
   case "$url" in "$GITEA_URL"/*) ;; *) die "asset $name would be downloaded from $url: the token only goes to $GITEA_URL" ;; esac
@@ -211,7 +211,7 @@ fi
 # ---- 5. upload, publish ----
 for f in "$OUT"/*; do
   name=$(basename "$f")
-  case "$name" in boundgate-*-linux-*.tar.gz) continue ;; esac # CI's, already there
+  case "$name" in boundgate-*-linux-*.tar.gz|boundgate-*-windows-*.zip) continue ;; esac # CI's, already there
   old=$(echo "$REL" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
   for id in $old; do api DELETE "/releases/$RID/assets/$id" >/dev/null; done
   curl -fsS -K "$TMP/auth" -X POST -F "attachment=@$f" "$API/releases/$RID/assets?name=$name" >/dev/null

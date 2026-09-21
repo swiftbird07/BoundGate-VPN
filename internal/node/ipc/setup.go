@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -100,24 +99,9 @@ func listen(socketPath, group string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ipc: listen %s: %w", socketPath, err)
 	}
-	if err := os.Chmod(socketPath, 0o660); err != nil {
+	if err := protect(socketPath, group); err != nil {
 		ln.Close()
 		return nil, err
-	}
-	if group != "" {
-		gid, err := strconv.Atoi(group)
-		if err != nil {
-			g, gerr := user.LookupGroup(group)
-			if gerr != nil {
-				ln.Close()
-				return nil, fmt.Errorf("ipc: socket group: %w", gerr)
-			}
-			gid, _ = strconv.Atoi(g.Gid)
-		}
-		if err := os.Chown(socketPath, -1, gid); err != nil {
-			ln.Close()
-			return nil, fmt.Errorf("ipc: socket group %s: %w", group, err)
-		}
 	}
 	return ln, nil
 }

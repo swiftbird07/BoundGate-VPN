@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"syscall"
 	"time"
 )
 
@@ -49,7 +48,7 @@ func restartWhenReplaced(ctx context.Context, log *slog.Logger, idle func() bool
 			continue
 		}
 		log.Warn("this daemon's executable was replaced (app update); exiting so that launchd starts the new one", "path", exe)
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		terminateSelf()
 		return
 	}
 }

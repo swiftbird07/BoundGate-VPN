@@ -8,6 +8,7 @@
 #
 # File names decide what an asset is:
 #   boundgate-<version>-linux-<arch>.tar.gz   kind binaries
+#   boundgate-<version>-windows-<arch>.zip    kind binaries (service, CLI, tray, install scripts)
 #   BoundGate-<version>-macos.zip             kind app (what the Mac updater installs)
 #   BoundGate-<version>.dmg                   kind dmg (for people)
 # Needs jq and sha256sum or openssl.
@@ -26,6 +27,8 @@ for f in "$DIR"/*; do
     manifest.json|manifest.json.sig) continue ;;
     boundgate-*-linux-amd64.tar.gz) kind=binaries; os=linux; arch=amd64 ;;
     boundgate-*-linux-arm64.tar.gz) kind=binaries; os=linux; arch=arm64 ;;
+    boundgate-*-windows-amd64.zip)  kind=binaries; os=windows; arch=amd64 ;;
+    boundgate-*-windows-arm64.zip)  kind=binaries; os=windows; arch=arm64 ;;
     BoundGate-*-macos.zip)          kind=app;      os=darwin; arch=universal ;;
     BoundGate-*.dmg)                kind=dmg;      os=darwin; arch=universal ;;
     *) echo "manifest: do not know what $n is" >&2; exit 2 ;;

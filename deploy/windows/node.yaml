@@ -1,0 +1,12 @@
+# Configuration of the BoundGate service on Windows. install.ps1 copies it to
+# %ProgramData%\BoundGate\node.yaml once and never overwrites it. It names no
+# control plane: `boundgatectl configure -control HOST` stores that in
+# state\settings.json (see docs/WINDOWS.md).
+#
+# Defaults on Windows: state_dir %ProgramData%\BoundGate\state, log_dir ...\logs,
+# profiles_dir ...\profiles, socket ...\node.sock.
+key_kind: auto                 # a key in the TPM (TPM Base Services); a node that already enrolled keeps its key
+roles: [endpoint]              # Windows nodes are endpoints
+socket_group: BoundGate Users  # members may use the tray app and boundgatectl without administrator rights
+tun_name: BoundGate            # the Wintun adapter's name
+mtu: 1230

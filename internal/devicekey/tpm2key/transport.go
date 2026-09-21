@@ -11,11 +11,7 @@ import (
 	"time"
 
 	"github.com/google/go-tpm/tpm2/transport"
-	"github.com/google/go-tpm/tpm2/transport/linuxtpm"
 )
-
-// DefaultDevice is the kernel's TPM resource manager.
-const DefaultDevice = "/dev/tpmrm0"
 
 // openTPM connects to a TPM. device is a character device path
 // (/dev/tpmrm0), or "unix:PATH" / "tcp:HOST:PORT" for a software TPM that
@@ -34,7 +30,7 @@ func openTPM(device string) (t transport.TPMCloser, raw bool, err error) {
 			return s, true, nil
 		}
 	}
-	t, err = linuxtpm.Open(device)
+	t, err = openDevice(device)
 	if err != nil {
 		return nil, false, fmt.Errorf("tpm2key: open %s: %w", device, err)
 	}

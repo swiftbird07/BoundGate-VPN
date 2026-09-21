@@ -24,7 +24,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -35,10 +34,7 @@ import (
 )
 
 func main() {
-	defSocket := "/run/boundgate/node.sock"
-	if runtime.GOOS == "darwin" {
-		defSocket = "/var/run/boundgate/node.sock"
-	}
+	defSocket := ipc.DefaultSocket()
 	if v := os.Getenv("BOUNDGATE_SOCKET"); v != "" {
 		defSocket = v
 	}

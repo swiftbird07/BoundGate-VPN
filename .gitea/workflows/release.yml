@@ -51,7 +51,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: tests
-        run: go vet ./... && go test ./...
+        run: go vet ./... && GOOS=windows go vet ./... && go test ./...
       - name: binaries
         run: |
           V=${{ gitea.ref_name }}
@@ -64,6 +64,14 @@ jobs:
           mkdir -p dist/release
           for arch in amd64 arm64; do
             tar -C bin/linux_$arch --owner=0 --group=0 --sort=name -czf dist/release/boundgate-$V-linux-$arch.tar.gz .
+          done
+          # Windows: service, CLI, tray (a GUI program: no console window) and the install scripts
+          command -v zip >/dev/null || { apt-get update -qq && apt-get install -y -qq zip; }
+          for arch in amd64 arm64; do
+            mkdir -p bin/windows_$arch
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -ldflags "$LD" -o bin/windows_$arch/ ./cmd/boundgate-node ./cmd/boundgatectl
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -ldflags "$LD -H=windowsgui" -o bin/windows_$arch/ ./cmd/boundgate-tray
+            deploy/windows/zip.sh "$V" $arch bin/windows_$arch dist/release
           done
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -126,5 +134,5 @@ jobs:
           done
           ID=$(jq -n --arg t "$V" '{tag_name:$t, name:$t, draft:true, body:"Built by CI, not signed yet. `make release VERSION=\($t)` on the maintainer\u0027s machine signs and publishes it."}' \
             | auth -X POST -H 'Content-Type: application/json' -d @- "$API/releases" | jq -r .id)
-          for f in dist/release/*.tar.gz build.json; do upload "$ID" "$f"; done
+          for f in dist/release/*.tar.gz dist/release/*.zip build.json; do upload "$ID" "$f"; done
           echo "draft $V is ready to be signed"

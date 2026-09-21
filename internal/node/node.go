@@ -607,6 +607,9 @@ func (n *Node) Run(ctx context.Context) {
 	}
 	go n.heartbeats(ctx)
 	go n.ship.run(ctx)
+	if w, ok := n.net.(netcfg.Watcher); ok && w.Watch(ctx, n.RoutesChanged) {
+		n.log.Info("watching the machine's networks for changes")
+	}
 	for ctx.Err() == nil {
 		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		st, err := n.control.EnrollStatus(sctx)
@@ -1053,6 +1056,20 @@ func (n *Node) NetworkChanged() {
 	}
 }
 
+// RoutesChanged is called when the machine's own networks changed under a
+// daemon (netcfg.Watcher): the host routes to control plane and hubs are set
+// again on the new path, then everything reconnects as in NetworkChanged.
+func (n *Node) RoutesChanged() {
+	n.mu.Lock()
+	s := n.sess
+	n.mu.Unlock()
+	if s != nil {
+		s.repinBypass()
+	}
+	n.log.Info("network changed: host routes renewed, reconnecting")
+	n.NetworkChanged()
+}
+
 // Close tears down on shutdown.
 func (n *Node) Close() {
 	n.Down("node shutting down")
@@ -1428,6 +1445,26 @@ func (s *session) addBypass(ip netip.Addr) error {
 	return nil
 }
 
+// repinBypass removes and sets again every host route of the session, so
+// that each follows the machine's current best path. It holds the session
+// lock like teardown, and does nothing once the session ends: a route set
+// again after teardown removed them would outlive the session.
+func (s *session) repinBypass() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for ip := range s.bypass {
+		_ = s.n.net.DelBypass(ctx, ip)
+		if err := s.n.net.AddBypass(ctx, ip); err != nil {
+			s.n.log.Warn("host route not renewed", "addr", ip, "err", err)
+		}
+	}
+}
+
 // addPeerRoute installs a kernel route for a peer prefix via the TUN so the
 // hub's host stack (and its LAN) can reach it. Counted per announcer.
 func (s *session) addPeerRoute(p netip.Prefix) {
@@ -1532,6 +1569,15 @@ func autoKeyKind(cfg Config, enclave bool) string {
 	switch {
 	case exists("device.sekey"):
 		return sekey.Kind
+	case exists("device.tpm"):
+		return tpm2key.Kind
+	case runtime.GOOS == "windows":
+		// Windows 11 requires a TPM 2.0; without one, opening it fails
+		// with the reason and key_kind softkey is a decision in node.yaml
+		if exists("device.key") {
+			return "softkey" // an enrolled identity stays
+		}
+		return tpm2key.Kind
 	case !enclave:
 		return "softkey"
 	case !exists("device.key"):
@@ -1547,6 +1593,9 @@ func autoKeyKind(cfg Config, enclave bool) string {
 // keyWarning says, for the person in front of the machine, what is wrong with
 // a software key on a machine that could do better, or cannot.
 func keyWarning(kind string, enclave bool) string {
+	if runtime.GOOS == "windows" && kind == "softkey" {
+		return "This PC's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. Set key_kind to auto or tpm2 for a key in the TPM (the PC then has to be approved again)."
+	}
 	if runtime.GOOS != "darwin" || kind != "softkey" {
 		return ""
 	}

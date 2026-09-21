@@ -36,6 +36,14 @@ type journalState struct {
 	NAT    string         `json:"nat_iface,omitempty"`
 }
 
+// Watch passes on to the wrapped configurator when it can watch the network.
+func (j *Journal) Watch(ctx context.Context, changed func()) bool {
+	if w, ok := j.Configurator.(Watcher); ok {
+		return w.Watch(ctx, changed)
+	}
+	return false
+}
+
 // NewJournal journals c into path (created 0600 next to the node's state).
 func NewJournal(c Configurator, path string) *Journal {
 	return &Journal{Configurator: c, path: path}
