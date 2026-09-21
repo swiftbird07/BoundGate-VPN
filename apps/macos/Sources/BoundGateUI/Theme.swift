@@ -42,8 +42,11 @@ extension Font {
 }
 
 private struct ThemeKey: EnvironmentKey { static let defaultValue = Theme.dark }
+private struct StaticRenderKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     var theme: Theme { get { self[ThemeKey.self] } set { self[ThemeKey.self] = newValue } }
+    /// The panel is drawn into an image (bgtool snap): nothing that needs a window, like scrolling.
+    public var staticRender: Bool { get { self[StaticRenderKey.self] } set { self[StaticRenderKey.self] = newValue } }
 }
 
 /// Primary: yellow fill, charcoal text. Secondary: surface step with a border.

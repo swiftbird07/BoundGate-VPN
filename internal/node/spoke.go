@@ -56,6 +56,8 @@ type HubStatus struct {
 	Transport  string    `json:"transport,omitempty"` // quic or tcp (the fallback)
 	Primary    bool      `json:"primary"`
 	Advertised []string  `json:"advertised,omitempty"`
+	// What this tunnel carried since Since: IP packets from and to the hub.
+	transport.TunnelStats
 }
 
 func newSpokeManager(s *session) *spokeManager {
@@ -542,6 +544,7 @@ func (m *spokeManager) hubs() []HubStatus {
 		hs := HubStatus{Name: l.hub.Name, Addr: l.hub.PublicAddr, State: l.state, Error: l.err, Since: l.since, Primary: l == m.primary}
 		if l.tunnel != nil {
 			hs.Transport = l.tunnel.Transport()
+			hs.TunnelStats = l.tunnel.Stats()
 		}
 		for _, a := range l.advertised {
 			hs.Advertised = append(hs.Advertised, a.String())

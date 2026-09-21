@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"sync/atomic"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -106,6 +107,21 @@ func (l *quicClientLink) Close(code quic.ApplicationErrorCode, reason string) er
 type ClientTunnel struct {
 	link      clientLink
 	transport string // "quic" or "tcp"
+
+	bytesIn, bytesOut, packetsIn, packetsOut atomic.Uint64
+}
+
+// TunnelStats counts the IP packets a tunnel carried, seen from this end.
+type TunnelStats struct {
+	BytesIn    uint64 `json:"bytes_in"`
+	BytesOut   uint64 `json:"bytes_out"`
+	PacketsIn  uint64 `json:"packets_in"`
+	PacketsOut uint64 `json:"packets_out"`
+}
+
+// Stats returns what the tunnel carried so far.
+func (t *ClientTunnel) Stats() TunnelStats {
+	return TunnelStats{BytesIn: t.bytesIn.Load(), BytesOut: t.bytesOut.Load(), PacketsIn: t.packetsIn.Load(), PacketsOut: t.packetsOut.Load()}
 }
 
 // Dial performs the QUIC/mTLS handshake and the CONNECT-IP request. Any
@@ -190,10 +206,24 @@ func (e *DialError) Unwrap() error { return e.Err }
 func (t *ClientTunnel) Transport() string { return t.transport }
 
 // ReadPacket reads one IP packet from the gateway.
-func (t *ClientTunnel) ReadPacket(b []byte) (int, error) { return t.link.ReadPacket(b) }
+func (t *ClientTunnel) ReadPacket(b []byte) (int, error) {
+	n, err := t.link.ReadPacket(b)
+	if err == nil {
+		t.bytesIn.Add(uint64(n))
+		t.packetsIn.Add(1)
+	}
+	return n, err
+}
 
 // WritePacket sends one IP packet to the gateway.
-func (t *ClientTunnel) WritePacket(b []byte) (icmp []byte, err error) { return t.link.WritePacket(b) }
+func (t *ClientTunnel) WritePacket(b []byte) (icmp []byte, err error) {
+	icmp, err = t.link.WritePacket(b)
+	if err == nil && icmp == nil { // an ICMP answer means the packet did not fit and was not sent
+		t.bytesOut.Add(uint64(len(b)))
+		t.packetsOut.Add(1)
+	}
+	return icmp, err
+}
 
 // LocalPrefixes returns the addresses the gateway assigned.
 func (t *ClientTunnel) LocalPrefixes(ctx context.Context) ([]netip.Prefix, error) {

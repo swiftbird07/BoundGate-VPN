@@ -108,6 +108,18 @@ func (c *Client) Reconnect() {
 	}
 }
 
+// Transport says what carried the last answer of the control plane: "h3"
+// (HTTP/3 over UDP), "h2" (the TCP fallback) or "" before the first one.
+func (c *Client) Transport() string {
+	rt, ok := c.http.Transport.(*dualTransport)
+	if !ok {
+		return ""
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.last
+}
+
 // dualTransport prefers HTTP/3 and falls back to TCP when the QUIC dial or
 // request fails before a response arrived. It retries HTTP/3 periodically
 // so a temporary UDP problem does not stick.
@@ -120,6 +132,7 @@ type dualTransport struct {
 	tcp          *http.Transport
 	tcpUntil     time.Time
 	fallbackSeen bool
+	last         string // what carried the last answer: "h3" or "h2"
 }
 
 const h3RetryAfter = 5 * time.Minute
@@ -130,11 +143,12 @@ func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	h3, tcp := d.h3, d.tcp
 	d.mu.Unlock()
 	if useTCP {
-		return tcp.RoundTrip(req)
+		return d.overTCP(tcp, req)
 	}
 	rsp, err := h3.RoundTrip(req)
 	if err == nil {
 		d.mu.Lock()
+		d.last = "h3"
 		if d.fallbackSeen {
 			d.log.Info("control plane reachable over HTTP/3 again")
 			d.fallbackSeen = false
@@ -159,7 +173,17 @@ func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		d.fallbackSeen = true
 	}
 	d.mu.Unlock()
-	return tcp.RoundTrip(req)
+	return d.overTCP(tcp, req)
+}
+
+func (d *dualTransport) overTCP(tcp *http.Transport, req *http.Request) (*http.Response, error) {
+	rsp, err := tcp.RoundTrip(req)
+	if err == nil {
+		d.mu.Lock()
+		d.last = "h2"
+		d.mu.Unlock()
+	}
+	return rsp, err
 }
 
 // reset replaces both transports and gives HTTP/3 another try: what made it

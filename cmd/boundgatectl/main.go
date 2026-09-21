@@ -364,6 +364,12 @@ func printStatus(s node.Status, asJSON bool) error {
 				line += ": " + h.Error
 			}
 			fmt.Println(line)
+			if h.PacketsIn > 0 || h.PacketsOut > 0 {
+				fmt.Printf("              received %s (%d packets), sent %s (%d packets)\n", byteCount(h.BytesIn), h.PacketsIn, byteCount(h.BytesOut), h.PacketsOut)
+			}
+		}
+		if s.Interface != "" {
+			fmt.Printf("device:       %s, mtu %d\n", s.Interface, s.MTU)
 		}
 		for _, p := range s.Paths {
 			fmt.Printf("path          %s, %s (%s)\n", p.Peer, p.Via, p.Side)
@@ -471,4 +477,18 @@ func verifyRelease(manifestPath, sigPath string) error {
 	}
 	fmt.Printf("%s: signed by a built-in release key, %d assets\n", m.Version, len(m.Assets))
 	return nil
+}
+
+// byteCount prints a size the way people read it: 1.4 MB, 312 kB.
+func byteCount(n uint64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := uint64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGTPE"[exp])
 }

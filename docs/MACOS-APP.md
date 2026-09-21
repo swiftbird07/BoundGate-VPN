@@ -121,6 +121,21 @@ swift run --package-path apps/macos bgtool snap /tmp/snap    # every panel state
 BOUNDGATE_SOCKET=… swift run --package-path apps/macos bgtool status
 ```
 
+While connected, the card ends in a closed "Details" row (the choice is
+remembered). Open, it shows what the daemon reports in `/v1/status`:
+
+| Section | Rows | From |
+|---|---|---|
+| Traffic | received, sent (total and per second), packets | `hubs[].bytes_in/_out`, `packets_in/_out`, plus `paths[].bytes_in/_out`; the rate is the difference of two polls |
+| Tunnel | protocol (`CONNECT-IP · HTTP/3 (QUIC)` or `… HTTP/1.1 (TCP)` on the fallback), hub address, tunnel device and MTU, standby hubs, direct and relayed paths, all routes | `hubs[].transport`, `interface`, `mtu`, `paths`, `routes` |
+| Control plane | address, protocol (`HTTP/3 (QUIC)` or `HTTP/2 (TCP fallback)`), policies and snapshot version, open and denied connections | `control`, `control_transport`, `policies`, `snapshot_version`, `flows`, `flows_denied` |
+| This Mac | device key, version | `key_kind`, `version` |
+
+The counters are IP packets through the tunnel, counted by the daemon per hub
+tunnel since that tunnel came up; a reconnect starts them again. A daemon
+before v0.1.5 does not count, and the section says so instead of showing zeros.
+`boundgatectl status` prints the same numbers.
+
 The app works with any daemon on `/var/run/boundgate/node.sock`
 (`BOUNDGATE_SOCKET` overrides), including one installed with
 `deploy/macos/install.sh`; "Install service" is only offered when none

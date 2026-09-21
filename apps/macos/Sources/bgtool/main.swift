@@ -35,7 +35,13 @@ struct MockService: ServiceControlling {
     }
     var connected = base("up", "approved")
     connected.overlayIp = "10.44.0.5"; connected.since = Date().addingTimeInterval(-3725)
-    connected.hubs = [HubStatus(name: "hel1", addr: "hel1.example.com:443", state: "connected", error: nil, primary: true)]
+    var hel1 = HubStatus(name: "hel1", addr: "hel1.example.com:443", state: "connected", error: nil, transport: "quic", primary: true)
+    hel1.bytesIn = 184_320_551; hel1.bytesOut = 12_804_113; hel1.packetsIn = 151_204; hel1.packetsOut = 88_410
+    connected.hubs = [hel1, HubStatus(name: "fsn1", addr: "fsn1.example.com:443", state: "connected", error: nil, transport: "quic", primary: false)]
+    connected.paths = [PathStatus(peer: "nas", via: "direct", bytesIn: 48_220_104, bytesOut: 1_204_551)]
+    connected.interface = "utun5"; connected.mtu = 1230; connected.controlTransport = "h3"; connected.version = "v0.1.5"
+    connected.policies = 4; connected.flows = 17; connected.flowsDenied = 2; connected.snapshotVersion = 212
+    connected.keyKind = "secure-enclave"; connected.hardwareBound = true
     connected.routes = ["10.44.0.0/16", "10.60.0.0/24", "172.16.8.0/22"]
     connected.skippedRoutes = ["192.168.178.0/24 (overlaps 192.168.178.0/24 on en0)"]
     connected.user = UserStatus(subject: "u1", username: "martin", email: nil, groups: ["vpn-users"], expiresAt: nil)
@@ -53,6 +59,7 @@ struct MockService: ServiceControlling {
     soft.keyWarning = "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. This Mac has a Secure Enclave; the node kept the software key it enrolled with. A new identity in the Secure Enclave cannot be copied (the Mac then has to be approved again)."
     soft.hardwareKeyAvailable = true
     var softOnly = connected
+    softOnly.keyKind = "softkey"; softOnly.hardwareBound = false
     softOnly.keyWarning = "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. No usable Secure Enclave was found (Intel Macs without a T2 chip have none, or the helper boundgate-sekey is missing from the app), so it cannot be bound to the hardware."
     let cases: [(String, NodeStatus?, ServiceState, String?)] = [
         ("1-service", nil, .notRegistered, "The background service is not running."),
@@ -68,6 +75,7 @@ struct MockService: ServiceControlling {
         ("6-ready", base("down", "approved"), .enabled, nil),
         ("7-login", login, .enabled, nil),
         ("8-connected", connected, .enabled, nil),
+        ("8b-connected-details", connected, .enabled, nil),
         ("9-error", failed, .enabled, nil),
     ]
     for (name, status, svc, unreachable) in cases {
@@ -75,8 +83,10 @@ struct MockService: ServiceControlling {
             let m = AppModel(client: DaemonClient(socketPath: "/nonexistent"), installer: MockService(s: svc))
             m.status = status; m.service = svc; m.unreachable = unreachable
             if name == "6-ready" { m.profiles = ["home", "work"] }
+            if name.hasPrefix("8") { m.rate = Traffic.Rate(bytesInPerSecond: 2_412_000, bytesOutPerSecond: 96_400) }
+            UserDefaults.standard.set(name == "8b-connected-details", forKey: "showDetails")
             if name == "4b-enroll-pin" { m.pinToConfirm = "5c1f aa42 0702 4bc8 c981 a780 ff32 7b82 8156 9d8c 512a 53d4 8c4a 5df5 0add 4db5" }
-            let v = PanelView(model: m).environment(\.colorScheme, scheme)
+            let v = PanelView(model: m).environment(\.colorScheme, scheme).environment(\.staticRender, true)
             try png(v, scale: 2, to: dir.appendingPathComponent("\(name)-\(scheme == .dark ? "dark" : "light").png"))
         }
     }

@@ -25,6 +25,12 @@ public struct HubStatus: Codable, Equatable, Sendable, Identifiable {
     public var error: String?
     public var transport: String?   // "quic", or "tcp" on the fallback for networks that block UDP
     public var primary: Bool
+    public var since: Date?
+    /// what the tunnel to this hub carried since `since` (daemons before v0.1.5 do not count)
+    public var bytesIn: UInt64?
+    public var bytesOut: UInt64?
+    public var packetsIn: UInt64?
+    public var packetsOut: UInt64?
 
     public init(name: String, addr: String, state: String, error: String? = nil, transport: String? = nil, primary: Bool = false) {
         self.name = name; self.addr = addr; self.state = state; self.error = error; self.transport = transport; self.primary = primary
@@ -32,6 +38,21 @@ public struct HubStatus: Codable, Equatable, Sendable, Identifiable {
 
     public var id: String { name }
     public var connected: Bool { state == "connected" }
+}
+
+/// A tunnel with another node that does not go through a hub's routing: direct, or relayed.
+public struct PathStatus: Codable, Equatable, Sendable, Identifiable {
+    public var peer: String
+    public var via: String     // "direct" or "relay <hub>"
+    public var side: String?
+    public var since: Date?
+    public var bytesIn: UInt64?
+    public var bytesOut: UInt64?
+
+    public init(peer: String, via: String, bytesIn: UInt64? = nil, bytesOut: UInt64? = nil) {
+        self.peer = peer; self.via = via; self.bytesIn = bytesIn; self.bytesOut = bytesOut
+    }
+    public var id: String { peer + via }
 }
 
 public struct NodeStatus: Codable, Equatable, Sendable {
@@ -43,6 +64,7 @@ public struct NodeStatus: Codable, Equatable, Sendable {
     public var user: UserStatus?
     public var loginRequired: Bool?
     public var hubs: [HubStatus]?
+    public var paths: [PathStatus]?
     public var routes: [String]?
     public var skippedRoutes: [String]?
     public var since: Date?
@@ -62,6 +84,13 @@ public struct NodeStatus: Codable, Equatable, Sendable {
     public var control: String?
     public var controlError: String?
     public var controlPin: String?
+    /// what carried the control plane's last answer: "h3" (UDP) or "h2" (the TCP fallback)
+    public var controlTransport: String?
+    /// tunnel device and its MTU while connected
+    public var interface: String?
+    public var mtu: Int?
+    public var version: String?
+    public var snapshotVersion: UInt64?
     public var adminKeys: [String]?
     public var binding: String?
     public var bindingError: String?

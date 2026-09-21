@@ -262,6 +262,10 @@ func TestApprovedDeviceGetsTunnelAndEcho(t *testing.T) {
 		string(got[20:]) != "hello" {
 		t.Fatalf("unexpected echo %x", got)
 	}
+	want := transport.TunnelStats{BytesIn: uint64(n), BytesOut: uint64(len(pkt)), PacketsIn: 1, PacketsOut: 1}
+	if st := tun.Stats(); st != want {
+		t.Fatalf("stats %+v, want %+v", st, want)
+	}
 }
 
 func TestUnknownDeviceFailsHandshake(t *testing.T) {

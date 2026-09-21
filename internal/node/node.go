@@ -202,6 +202,12 @@ type Status struct {
 	Control              string `json:"control"`
 	// ControlError is the last error of the control channel ("" = fine).
 	ControlError string `json:"control_error,omitempty"`
+	// ControlTransport: what carried the control plane's last answer, "h3"
+	// (HTTP/3 over UDP) or "h2" (the TCP fallback).
+	ControlTransport string `json:"control_transport,omitempty"`
+	// Interface and MTU of the tunnel device while the overlay is up.
+	Interface string `json:"interface,omitempty"`
+	MTU       int    `json:"mtu,omitempty"`
 	// ControlPin is the fingerprint of the pinned control-plane key.
 	ControlPin string `json:"control_pin,omitempty"`
 	// AdminKeys are the admin signing keys this node accepts (type + SHA256
@@ -673,10 +679,13 @@ func (n *Node) Status() Status {
 func (n *Node) publishStatus() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.status.ControlTransport = n.control.Transport()
 	s := n.sess
 	if s == nil {
+		n.status.Interface, n.status.MTU = "", 0
 		return
 	}
+	n.status.Interface, n.status.MTU = s.ifname, n.cfg.MTU
 	n.status.Hubs, n.status.Routes, n.status.Tunnels, n.status.LoginRequired, n.status.Paths = nil, nil, 0, false, nil
 	if s.paths != nil {
 		n.status.Paths = s.paths.status()

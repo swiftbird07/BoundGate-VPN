@@ -30,6 +30,9 @@ public final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(profile, forKey: "profile") }
     }
     @Published public var loginInProgress = false
+    /// what goes through the tunnels right now, from two readings of the daemon's counters
+    @Published public var rate: Traffic.Rate?
+    private var lastTraffic: Traffic.Reading?
 
     let client: DaemonClient
     let installer: ServiceControlling
@@ -91,6 +94,9 @@ public final class AppModel: ObservableObject {
                 case .success(let s): self.status = s; self.unreachable = nil
                 case .failure(let e): self.status = nil; self.unreachable = e.localizedDescription
                 }
+                let now = Traffic.Reading(status: self.status, at: Date())
+                self.rate = Traffic.rate(from: self.lastTraffic, to: now)
+                self.lastTraffic = now
                 if !names.isEmpty || self.status != nil { self.profiles = names }
                 if self.status != nil { self.pollUpdate() }
             }
