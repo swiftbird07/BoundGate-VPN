@@ -35,8 +35,10 @@ func newTestPlatform(t *testing.T) *testPlatform {
 func (p *testPlatform) Apply(netcfg.NetworkSettings) (int, error) {
 	return -1, errors.New("this test brings no tunnel up")
 }
-func (p *testPlatform) Release()                   {}
-func (p *testPlatform) PublicKey() ([]byte, error) { return x509.MarshalPKIXPublicKey(&p.priv.PublicKey) }
+func (p *testPlatform) Release() {}
+func (p *testPlatform) PublicKey() ([]byte, error) {
+	return x509.MarshalPKIXPublicKey(&p.priv.PublicKey)
+}
 func (p *testPlatform) Sign(d []byte) ([]byte, error) {
 	p.mu.Lock()
 	p.signs++

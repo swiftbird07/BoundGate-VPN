@@ -7,7 +7,7 @@ VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
-BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge
+BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge boundgate-embedtest
 
 .PHONY: image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
@@ -174,7 +174,7 @@ cooldown:
 	box gocooldown check
 
 compose-up: build-linux
-	mkdir -p $(foreach s,control hub1 hub2 node-a node-r node-t,deploy/compose/state/$(s) deploy/compose/logs/$(s))
+	mkdir -p $(foreach s,control hub1 hub2 node-a node-r node-t node-m,deploy/compose/state/$(s) deploy/compose/logs/$(s))
 	GOARCH=$(GOARCH) $(COMPOSE) up -d --build
 
 compose-down:

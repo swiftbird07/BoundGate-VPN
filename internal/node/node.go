@@ -724,6 +724,12 @@ func (n *Node) publishStatus() {
 		return
 	}
 	n.status.Interface, n.status.MTU = s.ifname, n.cfg.MTU
+	if s.dev != nil {
+		// an embedded node learns the name from the platform's device
+		if name, err := s.dev.Name(); err == nil && name != "" {
+			n.status.Interface = name
+		}
+	}
 	n.status.Hubs, n.status.Routes, n.status.Tunnels, n.status.LoginRequired, n.status.Paths = nil, nil, 0, false, nil
 	if s.paths != nil {
 		n.status.Paths = s.paths.status()

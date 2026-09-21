@@ -256,7 +256,6 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	return ipc.Serve(ctx, cfg.Socket, n, opt)
 }
 
-
 // running is the node of the current runNode, for restartWhenReplaced.
 var running atomic.Pointer[node.Node]
 

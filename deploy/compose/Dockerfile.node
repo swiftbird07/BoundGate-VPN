@@ -5,6 +5,8 @@ ARG GOARCH=arm64
 RUN apk add --no-cache iproute2 nftables curl ca-certificates
 COPY bin/linux_${GOARCH}/boundgate-node /usr/local/bin/boundgate-node
 COPY bin/linux_${GOARCH}/boundgatectl /usr/local/bin/boundgatectl
+# lab only: the embedded engine of the apps, on Linux (node-m)
+COPY bin/linux_${GOARCH}/boundgate-embedtest /usr/local/bin/boundgate-embedtest
 RUN mkdir -p /var/lib/boundgate /var/log/boundgate /etc/boundgate /run/boundgate
 ENTRYPOINT []
 CMD ["boundgate-node"]

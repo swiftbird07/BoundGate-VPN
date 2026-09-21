@@ -378,4 +378,23 @@ wait_for 60 sh -c "docker compose -f docker-compose.yml exec -T node-a ping -c 1
 $COMPOSE start "$RHUB" >/dev/null
 wait_for 30 status_is node-a '[.hubs[] | select(.state == "connected")] | length == 2' || fail "node-a did not reconnect to $RHUB"
 
-echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 + M6 + signed admin key list + M7 paths end-to-end"
+echo "== 16. the apps' embedded engine (node-m): settings in one piece, the tunnel by descriptor, the key as a signer"
+x node-m boundgatectl logout >/dev/null 2>&1 || true
+x node-m boundgatectl down >/dev/null 2>&1 || true
+status_is node-m '.binding == "verified" and .kind == "interactive"' || fail "node-m is not approved"
+x node-m boundgatectl up >/dev/null
+wait_for 20 status_is node-m '.login_required == true' || fail "hubs did not ask node-m for a login"
+$S login node-m >/dev/null
+wait_for 20 status_is node-m '.state == "up" and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "node-m not connected to both hubs"
+# what the platform was handed: address, MTU and the routes, on the device it opened
+x node-m sh -c "ip -br addr show bgm0 | grep -q ' $(x node-m boundgatectl -json status | jq -r .overlay_ip)/32' && ip route | grep -q '^10.60.0.0/24 dev bgm0' && [ \$(cat /sys/class/net/bgm0/mtu) = 1230 ]" || fail "node-m's platform did not get the settings"
+wait_for 10 sh -c 'docker compose -f docker-compose.yml exec -T node-m curl -sf --max-time 3 http://10.60.0.10 | grep -q "^Name: target"' || fail "target unreachable from node-m"
+# down releases the device; up gets a new one from the platform
+x node-m boundgatectl down >/dev/null
+x node-m sh -c '! ip link show bgm0 2>/dev/null' || fail "the tun device outlived down"
+x node-m boundgatectl up >/dev/null
+wait_for 20 sh -c 'docker compose -f docker-compose.yml exec -T node-m curl -sf --max-time 3 http://10.60.0.10 | grep -q "^Name: target"' || fail "target unreachable after down and up"
+x node-m boundgatectl logout >/dev/null
+x node-m boundgatectl down >/dev/null
+
+echo "PASS: M1.5 + M1.6 + M2 + M3 + M4 + M6 + signed admin key list + M7 paths + M8.5 embedded engine end-to-end"

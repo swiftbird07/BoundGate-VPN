@@ -90,6 +90,12 @@ See `ACL.md` for the entity model, the enforcement points and the flow log.
   (PATHS.md): directly where one announces an address, otherwise through a
   hub's CONNECT-UDP relay, which moves their ciphertext and cannot read it.
   The hub path stays the fallback at every moment.
+* The same node runs **embedded** in an app (EMBED.md): the iOS packet
+  tunnel, a macOS network extension, Android's `VpnService`. The platform
+  holds the device key and signs through a callback, takes the network
+  configuration in one piece and hands back the tunnel's descriptor; the app
+  talks to the engine with the daemon's socket requests, served in memory.
+  An embedded node is an endpoint.
 * A subnet router is assigned its announced prefixes in addition to its
   overlay address (CONNECT-IP only lets a peer receive for, and send from,
   assigned addresses). In `snat` mode it masquerades overlay sources behind

@@ -9,7 +9,7 @@
 #   make e2e                   # full M1.5..M3 check incl. HA, revocation, signed bindings, login, ACL
 #
 # Networks:
-#   public   172.30.0.0/24  control (.5), idp (.6), hub1 (.10), hub2 (.11), node-a (.20), node-r (.30), node-t (.40, TPM key)
+#   public   172.30.0.0/24  control (.5), idp (.6), hub1 (.10), hub2 (.11), node-a (.20), node-r (.30), node-t (.40, TPM key), node-m (.50, embedded engine)
 #   internal 10.60.0.0/24   hub1 (.2), hub2 (.3), target (.10), target-tls (.11)   "behind the hubs"
 #   lan      192.168.178.0/24 node-r (.30), target-lan (.10)        "Martin's home LAN"
 #   overlay  10.21.0.0/16   assigned by the control plane at approval
@@ -152,6 +152,18 @@ services:
       - ./state/node-a:/var/lib/boundgate
       - ./logs/node-a:/var/log/boundgate
     command: ["boundgate-node", "-config", "/etc/boundgate/node-a.yaml"]
+
+  # M8.5: the node of the iOS and Android apps (internal/embed) with Linux
+  # playing the platform: a tun by descriptor, settings in one piece, the
+  # device key as a signer. Driven with boundgatectl like the others.
+  node-m:
+    <<: *node
+    networks:
+      public:
+        ipv4_address: 172.30.0.50
+    volumes:
+      - ./state/node-m:/var/lib/boundgate
+    command: ["boundgate-embedtest", "-control", "control:443", "-server-name", "nodes.control", "-name", "node-m"]
 
   node-r:
     <<: *node
