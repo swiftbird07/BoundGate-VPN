@@ -134,7 +134,32 @@ type Table struct {
 	full     bool
 	overflow uint64
 	strays   uint64
+	// frags: the fragmented packets whose first fragment passed a moment ago
+	frags map[fragKey]fragState
 }
+
+// fragKey is what the fragments of one IPv4 packet have in common.
+type fragKey struct {
+	Src, Dst netip.Addr
+	Proto    uint8
+	ID       uint16
+}
+
+type fragState struct {
+	e     *Entry
+	until time.Time
+}
+
+const (
+	// fragTTL is how long the rest of a packet may follow its first fragment.
+	fragTTL = 10 * time.Second
+	// maxFrags bounds the fragment table; above it the rest of new fragmented
+	// packets is dropped (fail closed).
+	maxFrags = 4096
+	// minFragOffset: a later fragment that starts inside the transport header
+	// could rewrite the ports the decision was made on (RFC 1858).
+	minFragOffset = 24
+)
 
 // New creates a table; onEvent may be nil.
 func New(t Timeouts, onEvent func(Event)) *Table {
@@ -160,7 +185,7 @@ func New(t Timeouts, onEvent func(Event)) *Table {
 	if onEvent == nil {
 		onEvent = func(Event) {}
 	}
-	return &Table{m: make(map[Key]*Entry), t: t, onEvent: onEvent}
+	return &Table{m: make(map[Key]*Entry), frags: make(map[fragKey]fragState), t: t, onEvent: onEvent}
 }
 
 // Len returns the number of tracked flows.
@@ -195,6 +220,51 @@ func (t *Table) Overflow() uint64 {
 // Handle classifies one packet. h must be the parsed header of pkt.
 func (t *Table) Handle(h netparse.Header, pkt []byte, origin Origin, decide Decider) (Outcome, *Entry) {
 	now := time.Now()
+	if h.Fragment() {
+		return t.fragment(h, len(pkt), now)
+	}
+	out, e := t.handle(h, pkt, origin, decide, now)
+	if out == Pass && e != nil && h.MoreFragments {
+		// the first fragment carries the ports and was decided like a whole
+		// packet; the others have none and follow it
+		t.mu.Lock()
+		if len(t.frags) < maxFrags {
+			t.frags[fragKey{h.Src, h.Dst, h.Proto, h.FragID}] = fragState{e: e, until: now.Add(fragTTL)}
+		}
+		t.mu.Unlock()
+	}
+	return out, e
+}
+
+// fragment passes a later fragment of a packet whose first fragment passed.
+// It never opens a flow and is never reported: without ports there is
+// nothing to decide and nothing to say about it.
+func (t *Table) fragment(h netparse.Header, n int, now time.Time) (Outcome, *Entry) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	f, ok := t.frags[fragKey{h.Src, h.Dst, h.Proto, h.FragID}]
+	if !ok || now.After(f.until) || !f.e.Allowed || h.FragOffset < minFragOffset {
+		t.strays++
+		return Drop, nil
+	}
+	if !h.MoreFragments {
+		delete(t.frags, fragKey{h.Src, h.Dst, h.Proto, h.FragID})
+	}
+	f.e.LastSeen = now
+	f.e.count(netip.AddrPortFrom(h.Src, srcPortOf(f.e, h.Src)), n)
+	return Pass, f.e
+}
+
+// srcPortOf gives the port a fragment would carry: the one of its flow's end
+// with that address.
+func srcPortOf(e *Entry, src netip.Addr) uint16 {
+	if e.Originator.Addr() == src {
+		return e.Originator.Port()
+	}
+	return e.Target.Port()
+}
+
+func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Decider, now time.Time) (Outcome, *Entry) {
 	key := KeyOf(h)
 	src := netip.AddrPortFrom(h.Src, h.SrcPort)
 	t.mu.Lock()
@@ -354,6 +424,11 @@ func (t *Table) Expire(now time.Time) int {
 		if now.Sub(e.LastSeen) > t.timeout(e) {
 			delete(t.m, k)
 			closed = append(closed, e)
+		}
+	}
+	for k, f := range t.frags {
+		if now.After(f.until) {
+			delete(t.frags, k)
 		}
 	}
 	t.mu.Unlock()

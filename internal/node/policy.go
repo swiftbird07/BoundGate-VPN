@@ -24,7 +24,23 @@ import (
 // admit runs one packet through the flow table; new peer-originated flows
 // are decided by the Cedar engine of the current snapshot.
 func (s *session) admit(h netparse.Header, pkt []byte, origin flow.Origin) (flow.Outcome, *flow.Entry) {
-	return s.flows.Handle(h, pkt, origin, s.decide)
+	out, e := s.flows.Handle(h, pkt, origin, s.decide)
+	if out == flow.Pass {
+		// Every packet of the overlay passes here, on every node it crosses:
+		// TCP connections are told the segment size that fits the tunnel, so
+		// they work with a peer whose own MTU is larger (an older client)
+		// and with servers that send without the DF bit.
+		netparse.ClampMSS(h, pkt, s.mss(h.Version))
+	}
+	return out, e
+}
+
+// mss is the largest TCP segment that fits a tunnel packet of this node.
+func (s *session) mss(version int) uint16 {
+	if version == 6 {
+		return uint16(s.n.cfg.MTU - 60)
+	}
+	return uint16(s.n.cfg.MTU - 40)
 }
 
 // decide is the flow table's Decider. Fail closed: no engine, a stale

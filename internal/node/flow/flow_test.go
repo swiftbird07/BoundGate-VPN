@@ -293,3 +293,65 @@ func TestStrayTCPSegmentsAreNotReportedAsDenied(t *testing.T) {
 		t.Fatal("a permitted connection from before a reconnect must go on")
 	}
 }
+
+// A server that sends without the DF bit gets its packets fragmented on the
+// way into the tunnel (seen with www.heise.de behind an exit node). The rest
+// of a packet has no ports: it follows its first fragment or it is dropped.
+func TestFragmentsFollowTheirFirstFragment(t *testing.T) {
+	var events []EventType
+	tb := New(Timeouts{}, func(e Event) { events = append(events, e.Type) })
+	allow := func(*Entry) Result { return Result{Allow: true} }
+	mac, hub := Origin{Local: true}, Origin{Principal: "hub"}
+
+	syn := tcp("10.25.0.1", "193.99.144.85", 50273, 443, netparse.TCPSyn, nil)
+	if out, _ := tb.Handle(parse(t, syn), syn, mac, allow); out != Pass {
+		t.Fatal("syn")
+	}
+	frag := func(id uint16, offset int, more bool, payload int) []byte {
+		p := tcp("193.99.144.85", "10.25.0.1", 443, 50273, netparse.TCPAck, make([]byte, payload))
+		binary.BigEndian.PutUint16(p[4:6], id)
+		ff := uint16(offset / 8)
+		if more {
+			ff |= 0x2000
+		}
+		binary.BigEndian.PutUint16(p[6:8], ff)
+		return p
+	}
+	first, rest := frag(49804, 0, true, 1168), frag(49804, 1208, false, 32)
+	out, e := tb.Handle(parse(t, first), first, hub, allow)
+	if out != Pass {
+		t.Fatal("first fragment of a permitted connection")
+	}
+	out, e2 := tb.Handle(parse(t, rest), rest, hub, allow)
+	if out != Pass || e2 != e {
+		t.Fatalf("the rest must pass with the flow of its first fragment: %v", out)
+	}
+	if e.BytesOut != uint64(len(first)+len(rest)) {
+		t.Fatalf("both fragments count for the flow: %d", e.BytesOut)
+	}
+	if tb.Len() != 1 {
+		t.Fatalf("a fragment opened a flow of its own: %d flows", tb.Len())
+	}
+	// the packet is complete: the same id does not pass a second time
+	if out, _ := tb.Handle(parse(t, rest), rest, hub, allow); out != Drop {
+		t.Fatal("a fragment after the last one passed")
+	}
+	// no first fragment, or one that starts inside the transport header
+	for _, p := range [][]byte{frag(7, 1208, false, 32), frag(49805, 8, false, 32)} {
+		if p[5] == 0xcd { // 49805: give it a first fragment that passed
+			f := frag(49805, 0, true, 1168)
+			tb.Handle(parse(t, f), f, hub, allow)
+		}
+		if out, _ := tb.Handle(parse(t, p), p, hub, allow); out != Drop {
+			t.Fatalf("fragment %x passed", p[4:8])
+		}
+	}
+	for _, ev := range events {
+		if ev == EventDeny {
+			t.Fatal("a dropped fragment is nothing to report")
+		}
+	}
+	if tb.Strays() != 3 {
+		t.Fatalf("strays %d", tb.Strays())
+	}
+}

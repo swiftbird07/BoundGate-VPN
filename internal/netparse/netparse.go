@@ -46,7 +46,18 @@ type Header struct {
 	Payload int
 	// TCPFlags is the flags byte for TCP, 0 otherwise.
 	TCPFlags uint8
+	// IPv4 fragmentation: FragOffset is the offset of this fragment in
+	// bytes (0 for a whole packet and for a first fragment), MoreFragments
+	// the MF bit, FragID the identification that the fragments of one
+	// packet share. A fragment with FragOffset > 0 has no transport header:
+	// its ports are 0.
+	FragOffset    int
+	MoreFragments bool
+	FragID        uint16
 }
+
+// Fragment reports whether the packet is a fragment other than the first.
+func (h Header) Fragment() bool { return h.FragOffset > 0 }
 
 // TCP flag bits.
 const (
@@ -76,8 +87,11 @@ func Parse(b []byte) (h Header, ok bool) {
 		h.Dst = netip.AddrFrom4([4]byte(b[16:20]))
 		h.Proto = b[9]
 		// fragments other than the first carry no transport header
-		fragOff := binary.BigEndian.Uint16(b[6:8]) & 0x1fff
-		if fragOff == 0 {
+		ff := binary.BigEndian.Uint16(b[6:8])
+		h.FragOffset = int(ff&0x1fff) * 8
+		h.MoreFragments = ff&0x2000 != 0
+		h.FragID = binary.BigEndian.Uint16(b[4:6])
+		if h.FragOffset == 0 {
 			parseL4(&h, b[ihl:], ihl)
 		}
 		return h, true
