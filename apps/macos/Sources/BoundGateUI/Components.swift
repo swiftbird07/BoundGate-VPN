@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 struct Card<Content: View>: View {
     @Environment(\.theme) private var t
@@ -75,10 +79,9 @@ struct InfoRow: View {
     }
 }
 
-/// 64 hex digits in four rows of four groups: made for reading aloud and
-/// comparing, which is the whole point of showing it.
 /// The one thing this product promises is a key that cannot be copied. When a
 /// Mac does not have one, that is said loudly, on every card, until it is fixed.
+#if os(macOS)
 struct KeyWarningView: View {
     @ObservedObject var model: AppModel
     @Environment(\.theme) private var t
@@ -110,6 +113,19 @@ struct KeyWarningView: View {
         if a.runModal() == .alertFirstButtonReturn { model.useHardwareKey() }
     }
 }
+#endif
+
+/// Puts text on the clipboard, on either platform.
+func copyToClipboard(_ s: String) {
+    #if os(macOS)
+    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType: .string)
+    #else
+    UIPasteboard.general.string = s
+    #endif
+}
+
+/// 64 hex digits in four rows of four groups: made for reading aloud and
+/// comparing, which is the whole point of showing it.
 
 struct FingerprintView: View {
     var title: String
@@ -129,7 +145,7 @@ struct FingerprintView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button(copied ? "Copied" : "Copy") {
-                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(fingerprint, forType: .string)
+                    copyToClipboard(fingerprint)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 }.buttonStyle(.plain).font(.body(11, .semibold)).foregroundStyle(t.text2)
@@ -147,6 +163,7 @@ struct FingerprintView: View {
 /// A native pop-up menu from plain SwiftUI buttons: styled like the rest of
 /// the panel (and visible in rendered snapshots, which AppKit-backed SwiftUI
 /// menus are not).
+#if os(macOS)
 @MainActor
 enum PopupMenu {
     enum Item { case action(String, checked: Bool = false, () -> Void), separator }
@@ -174,3 +191,4 @@ enum PopupMenu {
         withExtendedLifetime(targets) {}
     }
 }
+#endif

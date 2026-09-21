@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge boundgate-embedtest
 
-.PHONY: test-lib apple-core image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: test-lib apple-core ios-project image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -55,6 +55,15 @@ build-darwin:
 test: web-test test-lib
 	box go vet ./...
 	box go test -count=1 ./...
+
+# BoundGateCore.xcframework for the iOS app and its packet tunnel (docs/IOS.md);
+# the one target that runs Go on the Mac (~/.local/go-apple)
+apple-core:
+	VERSION=$(VERSION) apps/ios/core/build.sh
+
+# apps/ios/BoundGate.xcodeproj from apps/ios/project.yml (xcodegen on the Mac)
+ios-project:
+	cd apps/ios && xcodegen generate
 
 # libboundgate (the apps' core, docs/EMBED.md) as a C archive, driven from C
 test-lib:

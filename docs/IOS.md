@@ -1,0 +1,155 @@
+# BoundGate for iOS (M9a)
+
+The iOS app runs the same node as every other BoundGate device, embedded
+(EMBED.md): in the app while no tunnel runs, and in a packet tunnel extension
+while the user wants the VPN. The device key is a P-256 key in the Secure
+Enclave.
+
+Status 2026-09-21:
+
+* App and extension build for devices and Apple silicon simulators.
+* The UI renders in the simulator.
+* Not run on an iPhone yet: that needs the real core, provisioning profiles
+  and a device (see "What is still open").
+
+## Pieces
+
+| Where | What |
+|---|---|
+| `apps/ios/project.yml` | xcodegen spec. Targets `BoundGateiOS` (the app, product name BoundGate) and `BoundGateTunnel` (the `NEPacketTunnelProvider` extension). `make ios-project` writes `apps/ios/BoundGate.xcodeproj` (not committed). |
+| `apps/ios/Shared` | Compiled into both targets. `CoreEngine` (Swift over `boundgate.h`: callbacks, requests, stop), `DeviceKey` (Secure Enclave key in the shared keychain group), `AppConfig` (identifiers from the Info.plist). |
+| `apps/ios/Tunnel` | `PacketTunnelProvider`, described below. |
+| `apps/ios/App` | The app entry, `TunnelController` (VPN configuration, the app's own engine, switching to the tunnel's) and `ProviderTransport`. |
+| `apps/macos` package | `BoundGateKit` (models, `DaemonClient` over a `NodeTransport`) and `BoundGateUI` (theme, cards, `DetailsView`, and for iOS `MobileModel` + `MobileView`). The Mac app and the iOS app share them. |
+| `build/apple/BoundGateCore.xcframework` | The node from Go (`cmd/libboundgate`), built by `make apple-core`. |
+
+What `PacketTunnelProvider` does:
+
+* It starts the engine with `auto_up` and a 30 MiB Go heap limit.
+* It answers `apply` with `setTunnelNetworkSettings`: the overlay address,
+  the included routes, the excluded host routes for control plane, hubs and
+  IdP, and the MTU. It then hands the core the utun (`bg_utun_fd`).
+* It ends the VPN when the node's overlay goes down.
+* It forwards app messages to the node and reports its memory.
+
+## Identifiers
+
+They follow the Mac app and are set once in `project.yml`:
+
+| | |
+|---|---|
+| App | `de.swiftbird.boundgate` |
+| Packet tunnel | `de.swiftbird.boundgate.tunnel` |
+| App group (state directory `boundgate/` in its container) | `group.de.swiftbird.boundgate` |
+| Keychain group (device key) | `$(AppIdentifierPrefix)de.swiftbird.boundgate.shared` |
+| Team, signing | `35RRDYK76R`, automatic |
+
+Both targets need these capabilities in the developer portal, and Xcode
+creates the profiles with automatic signing:
+
+* App Groups
+* Keychain Sharing
+* Network Extensions (Packet Tunnel)
+
+## How it runs
+
+* **Tunnel off.** The app runs its own engine on the shared state directory.
+  It can show status, save the control plane, enroll with pin comparison, sign
+  in and out, and forget. `apply` is refused: routing is the extension's job.
+* **Connect.** The app saves the VPN configuration. The first time, iOS asks
+  "Add VPN Configurations". The app then stops its engine, which releases the
+  directory lock, and starts the tunnel.
+* **Tunnel on.** The extension's engine holds the directory. The app's
+  requests (`GET /v1/status`, `POST /v1/login`, …) go to it as provider
+  messages. `GET /x/memory` answers the extension's `phys_footprint`, and the
+  app shows it under Details as "Tunnel memory: x of 50 MiB".
+* **Start fails.** If the overlay does not come up within 25 seconds (not
+  approved, control plane unreachable), the tunnel ends with the node's own
+  explanation.
+* **Disconnect.** The tunnel stops and releases the lock. The app takes its
+  engine back and retries while the lock is still held.
+* **Wi-Fi ↔ cellular.** `NWPathMonitor` and `wake()` call
+  `bg_network_changed`.
+
+The device key is created by the app on first start and only loaded by the
+extension. Its access control is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+with `.privateKeyUsage` and no user presence, so the tunnel can reconnect
+while the phone is locked. The simulator has no Secure Enclave: there the key
+is a software key and is reported as `softkey`, not hardware-bound.
+
+## Building the core
+
+`make apple-core` runs `apps/ios/core/build.sh`:
+
+* `box go mod vendor`: the modules come from the box and its cooldown, so the
+  Mac needs no module proxy.
+* It builds C archives with the Go toolchain in `~/.local/go-apple`:
+  iOS arm64, iOS simulator arm64, and macOS arm64+x86_64.
+* It adds `boundgate.h` with a module map that links `resolv`, `Security` and
+  `CoreFoundation`, and runs `xcodebuild -create-xcframework`.
+
+This is the one place Go runs on the Mac instead of the box (decided
+2026-09-21). The toolchain is the official go.dev tarball in the same version
+as the box, checked against its published SHA-256 and not on `PATH`.
+
+**Not done yet.** On 2026-09-21 `go.dev`, `dl.google.com` and
+`storage.googleapis.com` were not reachable from the Mac: the TCP connect
+timed out, while `google.com`, GitHub and others worked. It looks like an
+egress filter, so the toolchain is not installed yet. Once the download works
+or the tarball is provided:
+
+```bash
+mkdir -p ~/.local && tar -C ~/.local -xzf go1.26.7.darwin-arm64.tar.gz && mv ~/.local/go ~/.local/go-apple
+```
+
+```bash
+make apple-core VERSION=v0.1.6
+```
+
+Check the SHA-256 against go.dev/dl first, with
+`/usr/bin/openssl dgst -sha256 -r go1.26.7.darwin-arm64.tar.gz`.
+
+## Building the app
+
+```bash
+make apple-core
+```
+
+```bash
+make ios-project
+```
+
+```bash
+open apps/ios/BoundGate.xcodeproj
+```
+
+Then run the `BoundGateiOS` scheme on the iPhone. For a compile check without
+signing:
+
+```bash
+xcodebuild -project apps/ios/BoundGate.xcodeproj -scheme BoundGateiOS -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+```
+
+An unsigned build starts and says that the device key is not reachable: it
+has no keychain group. Everything real needs the signed build.
+
+## What is still open
+
+1. **The core itself:** Go on the Mac, `make apple-core`.
+2. **Profiles:** open the project in Xcode once with the team signed in, and
+   let automatic signing register the App IDs, the app group and the Network
+   Extension capability.
+3. **Memory spike on the iPhone** (the plan's gate before more UI work):
+   connect, run a speed test through the tunnel, and read "Tunnel memory"
+   under Details. The goal is below 35 MiB of the 50. In the lab the embedded
+   engine stayed at 25 MiB RSS for 300 MB (EMBED.md).
+4. **Acceptance:** enroll with the Secure Enclave key, get confirmed and
+   signed, sign in, connect to pVPN, and reach the LAN target. Check a policy
+   with `hardware_bound`, and a Wi-Fi ↔ LTE switch in under 5 s.
+5. Later:
+   * App icon asset. The app has none yet.
+   * On-demand rules.
+   * Distribution: TestFlight internal, and the App Store needs an
+     organization account.
+   * Sharing one dynamic framework between app and extension instead of
+     linking the core into both.

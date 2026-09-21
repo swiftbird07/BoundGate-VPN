@@ -1,15 +1,25 @@
 import Foundation
 
-/// Talks HTTP/1.0 over the daemon's unix socket. URLSession cannot do unix
-/// sockets, and the protocol is tiny: one request per connection, the daemon
-/// closes after the answer. Blocking calls; use from a background task.
+/// Carries one request of the node API (internal/node/ipc) and returns the
+/// HTTP status and the JSON body. The daemon is reached over its unix socket;
+/// the node embedded in the iOS app and its packet tunnel (docs/EMBED.md)
+/// answer the same requests in memory or through provider messages.
+public protocol NodeTransport: Sendable {
+    func request(method: String, path: String, body: Data?, timeout: Int) throws -> (status: Int, body: Data)
+}
+
+/// Talks to a node: the daemon's API, whatever carries it. Blocking calls;
+/// use from a background task.
 public struct DaemonClient: Sendable {
     public static let defaultSocket = "/var/run/boundgate/node.sock"
-    public let socketPath: String
+    public let transport: NodeTransport
 
+    /// The daemon on its unix socket.
     public init(socketPath: String? = nil) {
-        self.socketPath = socketPath ?? ProcessInfo.processInfo.environment["BOUNDGATE_SOCKET"] ?? Self.defaultSocket
+        transport = UnixSocketTransport(socketPath: socketPath ?? ProcessInfo.processInfo.environment["BOUNDGATE_SOCKET"] ?? Self.defaultSocket)
     }
+
+    public init(transport: NodeTransport) { self.transport = transport }
 
     public func status() throws -> NodeStatus { try call("GET", "/v1/status", timeout: 5) }
     public func profiles() throws -> [String] { try call("GET", "/v1/profiles", timeout: 5) }
@@ -43,24 +53,13 @@ public struct DaemonClient: Sendable {
     }
 
     private func call<In: Encodable, Out: Decodable>(_ method: String, _ path: String, body: In?, timeout: Int) throws -> Out {
-        var payload = Data()
+        var payload: Data?
         if let body {
             let enc = JSONEncoder()
             enc.keyEncodingStrategy = .convertToSnakeCase
             payload = try enc.encode(body)
         }
-        var head = "\(method) \(path) HTTP/1.0\r\nHost: node\r\nConnection: close\r\n"
-        if body != nil { head += "Content-Type: application/json\r\n" }
-        head += "Content-Length: \(payload.count)\r\n\r\n"
-        let raw = try roundTrip(Data(head.utf8) + payload, timeout: timeout)
-
-        guard let sep = raw.range(of: Data("\r\n\r\n".utf8)),
-              let statusLine = String(data: raw[..<sep.lowerBound], encoding: .utf8)?.split(separator: "\r\n").first else {
-            throw DaemonError.protocolError("no HTTP header")
-        }
-        let parts = statusLine.split(separator: " ")
-        guard parts.count >= 2, let code = Int(parts[1]) else { throw DaemonError.protocolError(String(statusLine)) }
-        let bodyData = raw[sep.upperBound...]
+        let (code, bodyData) = try transport.request(method: method, path: path, body: payload, timeout: timeout)
         if code != 200 {
             let err = try? JSONDecoder().decode(ErrorBody.self, from: bodyData)
             if let pin = err?.controlPin, !pin.isEmpty { throw DaemonError.pinUnconfirmed(pin) }
@@ -69,6 +68,30 @@ public struct DaemonClient: Sendable {
         do { return try JSONDecoder.daemon.decode(Out.self, from: bodyData) } catch {
             throw DaemonError.protocolError("\(error)")
         }
+    }
+
+}
+
+/// HTTP/1.0 over the daemon's unix socket. URLSession cannot do unix
+/// sockets, and the protocol is tiny: one request per connection, the daemon
+/// closes after the answer.
+public struct UnixSocketTransport: NodeTransport {
+    public let socketPath: String
+    public init(socketPath: String) { self.socketPath = socketPath }
+
+    public func request(method: String, path: String, body: Data?, timeout: Int) throws -> (status: Int, body: Data) {
+        let payload = body ?? Data()
+        var head = "\(method) \(path) HTTP/1.0\r\nHost: node\r\nConnection: close\r\n"
+        if body != nil { head += "Content-Type: application/json\r\n" }
+        head += "Content-Length: \(payload.count)\r\n\r\n"
+        let raw = try roundTrip(Data(head.utf8) + payload, timeout: timeout)
+        guard let sep = raw.range(of: Data("\r\n\r\n".utf8)),
+              let statusLine = String(data: raw[..<sep.lowerBound], encoding: .utf8)?.split(separator: "\r\n").first else {
+            throw DaemonError.protocolError("no HTTP header")
+        }
+        let parts = statusLine.split(separator: " ")
+        guard parts.count >= 2, let code = Int(parts[1]) else { throw DaemonError.protocolError(String(statusLine)) }
+        return (code, Data(raw[sep.upperBound...]))
     }
 
     private func roundTrip(_ request: Data, timeout: Int) throws -> Data {

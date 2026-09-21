@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#endif
 
 /// The mark: two interlocked rounded frames on a 1024 grid (docs/DESIGN.md).
 public struct MarkShape: Shape {
@@ -31,6 +33,7 @@ public struct LogoTile: View {
     }
 }
 
+#if os(macOS)
 public enum MenuBarIcon {
     /// Template image for the menu bar. Connected: the full mark. Otherwise
     /// the second frame is dashed: one end has no connection. `attention`
@@ -56,3 +59,4 @@ public enum MenuBarIcon {
         return img
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import SwiftUI
 import AppKit
@@ -313,3 +314,4 @@ public final class AppModel: ObservableObject {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import ServiceManagement
 import AppKit
@@ -43,3 +44,4 @@ public struct LaunchDaemonService: ServiceControlling {
     public func unregister() throws { try service.unregister() }
     public func openApprovalSettings() { SMAppService.openSystemSettingsLoginItems() }
 }
+#endif

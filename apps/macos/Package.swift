@@ -5,7 +5,12 @@ import PackageDescription
 // No dependencies. `make mac-app` builds this package and assembles the bundle.
 let package = Package(
     name: "BoundGate",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v13), .iOS(.v16)],
+    products: [
+        // for the iOS app and its packet tunnel (apps/ios)
+        .library(name: "BoundGateKit", targets: ["BoundGateKit"]),
+        .library(name: "BoundGateUI", targets: ["BoundGateUI"]),
+    ],
     targets: [
         // daemon socket client and models; no UI
         .target(name: "BoundGateKit"),

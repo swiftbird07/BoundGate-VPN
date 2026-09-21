@@ -1,0 +1,89 @@
+# BoundGate for iOS: the app and its packet tunnel (docs/IOS.md).
+#   make apple-core            # build/apple/BoundGateCore.xcframework (the node, from Go)
+#   make ios-project           # xcodegen: apps/ios/BoundGate.xcodeproj
+# Identifiers follow the Mac app (de.swiftbird.boundgate); change them here only.
+name: BoundGate
+options:
+  bundleIdPrefix: de.swiftbird
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: 35RRDYK76R
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    BG_APP_ID: de.swiftbird.boundgate
+    BG_APP_GROUP: group.de.swiftbird.boundgate
+    # the core is built for arm64 only (devices and Apple silicon simulators)
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+packages:
+  BoundGate:
+    path: ../macos
+targets:
+  # not "BoundGate": that is the Mac app's executable in the local package
+  BoundGateiOS:
+    type: application
+    platform: iOS
+    sources: [App, Shared]
+    settings:
+      base:
+        PRODUCT_NAME: BoundGate
+        PRODUCT_MODULE_NAME: BoundGateApp
+        PRODUCT_BUNDLE_IDENTIFIER: $(BG_APP_ID)
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: BoundGate
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        BGAppGroup: $(BG_APP_GROUP)
+        BGKeychainGroup: $(AppIdentifierPrefix)$(BG_APP_ID).shared
+        BGTunnelBundleID: $(BG_APP_ID).tunnel
+    entitlements:
+      path: App/BoundGate.entitlements
+      properties:
+        com.apple.security.application-groups: [$(BG_APP_GROUP)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(BG_APP_ID).shared]
+        com.apple.developer.networking.networkextension: [packet-tunnel-provider]
+    dependencies:
+      - package: BoundGate
+        product: BoundGateUI
+      - package: BoundGate
+        product: BoundGateKit
+      - framework: ../../build/apple/BoundGateCore.xcframework
+        embed: false
+      - target: BoundGateTunnel
+  BoundGateTunnel:
+    type: app-extension
+    platform: iOS
+    sources: [Tunnel, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BG_APP_ID).tunnel
+    info:
+      path: Tunnel/Info.plist
+      properties:
+        CFBundleDisplayName: BoundGate Tunnel
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+        BGAppGroup: $(BG_APP_GROUP)
+        BGKeychainGroup: $(AppIdentifierPrefix)$(BG_APP_ID).shared
+        BGTunnelBundleID: $(BG_APP_ID).tunnel
+    entitlements:
+      path: Tunnel/BoundGateTunnel.entitlements
+      properties:
+        com.apple.security.application-groups: [$(BG_APP_GROUP)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(BG_APP_ID).shared]
+        com.apple.developer.networking.networkextension: [packet-tunnel-provider]
+    dependencies:
+      - package: BoundGate
+        product: BoundGateKit
+      - framework: ../../build/apple/BoundGateCore.xcframework
+        embed: false
+      - sdk: NetworkExtension.framework
