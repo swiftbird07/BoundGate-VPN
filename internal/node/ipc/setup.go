@@ -151,6 +151,23 @@ func ServeSetup(ctx context.Context, socketPath, group string, status node.Statu
 	defer cancel()
 	var mu sync.Mutex
 	var got Settings
+	mux := SetupHandler(status, upd, save, func(s Settings) {
+		mu.Lock()
+		got = s
+		mu.Unlock()
+		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first, then hand over to the node
+	})
+	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
+		return Settings{}, err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return got, nil
+}
+
+// SetupHandler is the API of a node without a control plane (setup mode).
+// onConfigured runs after the settings were stored and the answer written.
+func SetupHandler(status node.Status, upd *update.Service, save func(Settings) error, onConfigured func(Settings)) *http.ServeMux {
 	status.State = StateUnconfigured
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, status) })
@@ -168,20 +185,31 @@ func ServeSetup(ctx context.Context, socketPath, group string, status node.Statu
 			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
-		mu.Lock()
-		got = s
-		mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]string{"status": "configured"})
-		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first, then hand over to the node
+		onConfigured(s)
 	})
 	updateRoutes(mux, upd)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "this node has no control plane yet; run `boundgatectl configure -control HOST`"})
 	})
-	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
-		return Settings{}, err
+	return mux
+}
+
+// Forget removes what ties a node to its control plane: the settings, the
+// pinned control-plane key and the admin key list; with newIdentity the
+// device key files as well. The next control plane sees a node that enrolls.
+func Forget(stateDir, settingsPath string, newIdentity bool) error {
+	files := []string{settingsPath, "control.pin", "admin_trust.json", "admin_keys"}
+	if newIdentity {
+		files = append(files, "device.key", "device.sekey", "device.tpm", "device.crt")
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	return got, nil
+	for _, f := range files {
+		if !filepath.IsAbs(f) {
+			f = filepath.Join(stateDir, f)
+		}
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }

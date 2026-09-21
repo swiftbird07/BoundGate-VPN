@@ -1,4 +1,4 @@
-package main
+package ipc
 
 import (
 	"os"
@@ -20,7 +20,7 @@ func TestForget(t *testing.T) {
 		for _, f := range all {
 			os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600)
 		}
-		if err := forget(dir, filepath.Join(dir, "settings.json"), c.newIdentity); err != nil {
+		if err := Forget(dir, filepath.Join(dir, "settings.json"), c.newIdentity); err != nil {
 			t.Fatal(err)
 		}
 		var left []string
@@ -32,7 +32,7 @@ func TestForget(t *testing.T) {
 			t.Errorf("new identity %v: left %v, want %v", c.newIdentity, left, c.left)
 		}
 		// a second reset finds nothing and is not an error
-		if err := forget(dir, filepath.Join(dir, "settings.json"), c.newIdentity); err != nil {
+		if err := Forget(dir, filepath.Join(dir, "settings.json"), c.newIdentity); err != nil {
 			t.Fatal(err)
 		}
 	}

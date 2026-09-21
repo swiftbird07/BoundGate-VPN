@@ -82,6 +82,24 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wasReset atomic.Bool
+	mux := Handler(n, opt, func() {
+		wasReset.Store(true)
+		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	})
+	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
+		return err
+	}
+	if wasReset.Load() {
+		return ErrReset
+	}
+	return nil
+}
+
+// Handler is the node API behind the socket. An embedded node (the packet
+// tunnel of an app) serves the same requests without a socket, so the apps
+// speak one protocol to the daemon and to their extension. onReset runs after
+// a successful POST /v1/reset has been answered.
+func Handler(n *node.Node, opt Options, onReset func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/configure", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "this node already has a control plane; `boundgatectl reset` forgets it"})
@@ -106,9 +124,10 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
-		wasReset.Store(true)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
-		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+		if onReset != nil {
+			onReset()
+		}
 	})
 	updateRoutes(mux, opt.Update)
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
@@ -204,13 +223,7 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		}
 		writeJSON(w, http.StatusOK, n.Status())
 	})
-	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
-		return err
-	}
-	if wasReset.Load() {
-		return ErrReset
-	}
-	return nil
+	return mux
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

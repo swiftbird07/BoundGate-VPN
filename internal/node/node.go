@@ -128,6 +128,18 @@ type Config struct {
 	// FlowLog receives one record per flow open/deny/close (the "flow"
 	// stream); nil means the system log.
 	FlowLog *slog.Logger
+
+	// Embedded nodes (internal/embed: an app's packet tunnel on iOS, Android,
+	// a macOS network extension) bring what a daemon finds on the host.
+	//
+	// Key, when set, is the device key; KeyKind and the key files in
+	// StateDir are not used.
+	Key devicekey.DeviceKey
+	// Net, when set, applies the network configuration instead of the host
+	// implementation (netcfg.New with its cleanup journal).
+	Net netcfg.Configurator
+	// Platform is what the node reports at enrollment; default runtime.GOOS.
+	Platform string
 }
 
 // State of the overlay.
@@ -314,9 +326,43 @@ func New(cfg Config) (*Node, error) {
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, err
 	}
+	if cfg.Platform == "" {
+		cfg.Platform = runtime.GOOS
+	}
+	key, enclave, err := openKey(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := devicecert.LoadOrCreate(filepath.Join(cfg.StateDir, "device.crt"), key, cfg.Name)
+	if err != nil {
+		return nil, err
+	}
+	spki, err := devicekey.HashPublicKey(key.Public())
+	if err != nil {
+		return nil, err
+	}
+	nc := cfg.Net
+	if nc == nil {
+		nc = netcfg.NewJournal(netcfg.New(), filepath.Join(cfg.StateDir, "netstate.json"))
+	}
+	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: nc, holder: &registry.Holder{}, flowLog: cfg.FlowLog}
+	if n.flowLog == nil {
+		n.flowLog = cfg.Log
+	}
+	return n.init(enclave)
+}
+
+// openKey opens the configured device key, or returns the one an embedding
+// app brought along. enclave: this Mac has a usable Secure Enclave.
+func openKey(cfg Config) (key devicekey.DeviceKey, enclave bool, err error) {
+	if cfg.Key != nil {
+		if err := devicekey.CheckPublicKey(cfg.Key.Public()); err != nil {
+			return nil, false, err
+		}
+		return cfg.Key, false, nil
+	}
 	var opener devicekey.Opener
 	kind := cfg.KeyKind
-	enclave := false
 	if runtime.GOOS == "darwin" {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		enclave = sekey.Available(ctx, cfg.SEKeyHelper)
@@ -339,24 +385,16 @@ func New(cfg Config) (*Node, error) {
 			cfg.Log.Warn("a software key exists next to the Secure Enclave key: this node now has a new identity and must enroll again; remove device.key once it is no longer needed")
 		}
 	default:
-		return nil, fmt.Errorf("node: unsupported key kind %q", cfg.KeyKind)
+		return nil, false, fmt.Errorf("node: unsupported key kind %q", cfg.KeyKind)
 	}
-	key, err := opener.Open(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	cert, err := devicecert.LoadOrCreate(filepath.Join(cfg.StateDir, "device.crt"), key, cfg.Name)
-	if err != nil {
-		return nil, err
-	}
-	spki, err := devicekey.HashPublicKey(key.Public())
-	if err != nil {
-		return nil, err
-	}
-	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: netcfg.NewJournal(netcfg.New(), filepath.Join(cfg.StateDir, "netstate.json")), holder: &registry.Holder{}, flowLog: cfg.FlowLog}
-	if n.flowLog == nil {
-		n.flowLog = cfg.Log
-	}
+	key, err = opener.Open(context.Background())
+	return key, enclave, err
+}
+
+// init finishes New: pins, trust store, status.
+func (n *Node) init(enclave bool) (*Node, error) {
+	cfg, key, cert, spki := n.cfg, n.key, n.cert, n.spki
+	var err error
 	// control-plane pin: provisioned by config, else learned on first use
 	if cfg.ControlPin != "" {
 		pin, err := devicekey.ParseSPKIHash(cfg.ControlPin)
@@ -778,7 +816,7 @@ func (n *Node) Enroll(ctx context.Context, name, acceptPin string) (api.EnrollSt
 	st, err := n.control.Enroll(ctx, api.EnrollRequest{
 		Name:          name,
 		Hostname:      host,
-		Platform:      runtime.GOOS,
+		Platform:      n.cfg.Platform,
 		KeyKind:       n.key.Kind(),
 		HardwareBound: n.key.HardwareBound(),
 		Roles:         n.cfg.Roles,
@@ -992,6 +1030,21 @@ func (n *Node) Down(reason string) {
 	}
 	s.close(reason)
 	<-s.done
+}
+
+// NetworkChanged is called by an embedding app when the device moved to
+// another network (Wi-Fi to cellular): connections made over the old one
+// may sit there unanswered until their timeouts. The control channel is
+// reconnected at once and hub links that are down try again now; links that
+// are up notice a dead path through their keep-alives.
+func (n *Node) NetworkChanged() {
+	n.control.Reconnect()
+	n.mu.Lock()
+	s := n.sess
+	n.mu.Unlock()
+	if s != nil && s.spoke != nil {
+		s.spoke.retryNow()
+	}
 }
 
 // Close tears down on shutdown.

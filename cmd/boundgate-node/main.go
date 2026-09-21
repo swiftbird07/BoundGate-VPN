@@ -231,11 +231,16 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	if err != nil {
 		return err
 	}
-	defer n.Close()
-
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go n.Run(ctx)
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); n.Run(ctx) }()
+	defer func() {
+		// Run ends before the control client closes: closing it under a
+		// request that is just starting races inside quic-go's transport
+		cancel()
+		<-runDone
+		n.Close()
+	}()
 	running.Store(n)
 	defer running.Store(nil)
 	opt := ipc.Options{Group: cfg.SocketGroup, Update: upd}
@@ -246,28 +251,11 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		// control plane this is simply a node that enrolls - unless a new
 		// identity is asked for (from a software key to the Secure Enclave,
 		// key_kind auto): then the key files go as well.
-		opt.Reset = func(newIdentity bool) error { return forget(cfg.StateDir, settingsPath, newIdentity) }
+		opt.Reset = func(newIdentity bool) error { return ipc.Forget(cfg.StateDir, settingsPath, newIdentity) }
 	}
 	return ipc.Serve(ctx, cfg.Socket, n, opt)
 }
 
-// forget removes what ties this node to its control plane, and with
-// newIdentity the device key files as well.
-func forget(stateDir, settingsPath string, newIdentity bool) error {
-	files := []string{settingsPath, "control.pin", "admin_trust.json", "admin_keys"}
-	if newIdentity {
-		files = append(files, "device.key", "device.sekey", "device.tpm", "device.crt")
-	}
-	for _, f := range files {
-		if !filepath.IsAbs(f) {
-			f = filepath.Join(stateDir, f)
-		}
-		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
-}
 
 // running is the node of the current runNode, for restartWhenReplaced.
 var running atomic.Pointer[node.Node]
