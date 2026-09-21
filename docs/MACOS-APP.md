@@ -181,3 +181,76 @@ been done once, treat it as untested.
 ## Risks
 
 See SECURITY.md R72–R75.
+
+## Stage 2: network extension (M8.6), design, not built yet
+
+Stage 1 is a root daemon (LaunchDaemon) driven by the app. Stage 2 moves the
+node into a Network Extension, like on iOS (IOS.md), and uses the same
+engine (EMBED.md, `BoundGateCore.xcframework` with its `macos` slice).
+Nothing of it is built yet. The iOS code can be shared almost unchanged, but
+two platform facts decide the shape, and neither can be tried without the
+real core and a signed build.
+
+**1. Which kind of extension.** macOS knows two kinds of packet tunnel:
+
+| | App extension (`.appex`) | System extension |
+|---|---|---|
+| Distribution | Mac App Store only | Developer ID (notarized), which is how BoundGate ships today |
+| Runs as | the user | root, one instance for the machine |
+| App group container, keychain | shared with the app, as on iOS | root's own; the app cannot read them |
+| Install | with the app | the app asks (`OSSystemExtensionRequest`), the user allows it in System Settings |
+
+With Developer ID it has to be a **system extension**. The iOS pattern
+cannot be copied as it is: the app running its own engine on the shared state
+directory while the tunnel is off, and the device key in a shared keychain
+group.
+
+**2. Where the device key lives.** A Secure Enclave key belongs to a
+keychain. A system extension runs as root and cannot use the user's
+keychain group. The proposed shape:
+
+* The **extension owns the node completely**: engine, state directory in
+  its own container, and the Secure Enclave key, created by the extension
+  itself in the data protection keychain of its own context.
+  `SecKeyCreateRandomKey` with `kSecAttrTokenIDSecureEnclave` and an access
+  group of the extension's team; whether that works as root is the first
+  thing to try.
+* The **app is only a frontend**. It talks to the extension through
+  `NETunnelProviderSession.sendProviderMessage` (the `ProviderTransport` of
+  the iOS app). While the tunnel is off, it starts the extension with
+  `startVPNTunnel(options: ["setup": true])`. The extension then runs the
+  engine without applying network settings, so that status, enroll and
+  sign-in work. This replaces the app's own engine on iOS. Part of the
+  spike: how the system shows such a tunnel. It may appear as "connected"
+  although nothing is routed, in which case setup needs another way in, such
+  as an XPC service in the extension.
+* **Fallback if the SE key cannot be used as root:** the key stays with
+  `boundgate-sekey` (SECURE-ENCLAVE.md). It is created in the user's
+  context, and the extension reaches it through an XPC service of the app.
+  That brings back a dependency on the logged-in user that stage 1 does not
+  have (the daemon reconnects before login).
+
+**What stays the same:**
+
+* `BoundGateUI`: `MobileModel`/`MobileView` become available on macOS too, in
+  a `MenuBarExtra` window.
+* `DetailsView` and `Traffic`.
+* The `apply` path: `NEPacketTunnelNetworkSettings` and `bg_utun_fd`. The utun
+  descriptor lookup already covers macOS (`utun_darwin.go`).
+
+**The LaunchDaemon stays** for headless Macs and for Macs where a user
+does not allow the system extension. The app offers one mode or the other,
+never both: two nodes with one identity would fight over the routes.
+
+**Order once the core builds:**
+
+1. A spike: the system extension with the SE key as root. Does it create,
+   survive a reboot, and sign before login? And the setup-mode tunnel from
+   point 2.
+2. Then the xcodegen targets: `BoundGateMac` (app, `apps/ios/project.yml`
+   grows a macOS platform) and `BoundGateMacTunnel` (system extension,
+   bundle id `de.swiftbird.boundgate.tunnel-mac`, entitlement
+   `packet-tunnel-provider-systemextension`, embedded in
+   `Contents/Library/SystemExtensions`).
+3. Signing: Developer ID with provisioning profiles for both. Xcode creates
+   them with automatic signing, team 35RRDYK76R.
