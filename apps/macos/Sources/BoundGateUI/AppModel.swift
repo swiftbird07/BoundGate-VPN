@@ -180,7 +180,9 @@ public final class AppModel: ObservableObject {
 
     /// The daemon checks in the background; the app reads its verdict now and then.
     func pollUpdate(force: Bool = false) {
-        guard force || Date().timeIntervalSince(lastUpdatePoll) > 600 else { return }
+        // right after an install the daemon still is the old one: ask again soon
+        let soon = update?.installed?.isEmpty == false
+        guard force || Date().timeIntervalSince(lastUpdatePoll) > (soon ? 5 : 600) else { return }
         lastUpdatePoll = Date()
         let client = self.client
         Task.detached {
@@ -219,7 +221,9 @@ public final class AppModel: ObservableObject {
             await MainActor.run {
                 self.busy = nil
                 switch result {
-                case .failure(let e): self.actionError = e.localizedDescription; self.refresh()
+                case .failure(let e):
+                    // what the card offered may be out of date (the daemon restarted into the new release meanwhile)
+                    self.actionError = e.localizedDescription; self.refresh(); self.pollUpdate(force: true)
                 case .success:
                     // the bundle on disk is the new app now; this process is the old one
                     let p = Process()

@@ -49,6 +49,15 @@ func TestServiceCheckAndApply(t *testing.T) {
 	if _, err := os.Stat(s.WorkDir); err == nil {
 		t.Fatal("the download was left behind")
 	}
+	// until the daemon restarts from the new app it still is the old release:
+	// the status says what happened instead of offering the same update again
+	// (the app showed "Update available" and then "v… is the latest release")
+	if st := s.Status(); st.Available || st.Installed != "v1.1.0" {
+		t.Fatalf("after the install: %+v", st)
+	}
+	if st := s.Check(context.Background()); st.Available || st.Installed != "v1.1.0" {
+		t.Fatalf("a check after the install offers it again: %+v", st)
+	}
 
 	// the same release again is not an update, and an older one never is
 	s.Current = "v1.1.0"

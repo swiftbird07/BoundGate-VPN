@@ -111,6 +111,8 @@ public struct UpdateStatus: Codable, Sendable, Equatable {
     public var canInstall: Bool
     public var installHint: String?
     public var installing: Bool?
+    /// put in place, the daemon has not restarted from it yet
+    public var installed: String?
 }
 
 struct ErrorBody: Codable {

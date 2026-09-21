@@ -36,6 +36,10 @@ type Status struct {
 	CanInstall  bool   `json:"can_install"`
 	InstallHint string `json:"install_hint,omitempty"`
 	Installing  bool   `json:"installing,omitempty"`
+	// Installed: this release was put in place and the daemon still runs the
+	// old one; it restarts from the new app within seconds. Until then there
+	// is nothing to offer: Available is false.
+	Installed string `json:"installed,omitempty"`
 }
 
 // Service checks for releases in the background and installs one on request.
@@ -99,7 +103,7 @@ func (s *Service) check(ctx context.Context) (*Release, Status) {
 		s.status.Error = ""
 		s.status.Latest = r.Manifest.Version
 		s.status.PageURL = r.PageURL
-		s.status.Available = Newer(s.Current, r.Manifest.Version)
+		s.status.Available = Newer(s.Current, r.Manifest.Version) && s.status.Installed != r.Manifest.Version // installed already, only not running yet
 	}
 	s.mu.Unlock()
 	return r, s.Status()
@@ -165,6 +169,9 @@ func (s *Service) Apply(ctx context.Context) error {
 	if err := s.Mac.Install(ctx, zip, s.Bundle); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.status.Available, s.status.Installed = false, r.Manifest.Version
+	s.mu.Unlock()
 	s.Log.Warn("update installed; the daemon restarts from the new app", "from", s.Current, "to", r.Manifest.Version)
 	return nil
 }
