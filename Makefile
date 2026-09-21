@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge boundgate-embedtest
 
-.PHONY: image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: test-lib apple-core image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -52,9 +52,14 @@ build-darwin:
 	  box env GOOS=darwin GOARCH=$(GOARCH) CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/darwin_$(GOARCH)/$$b ./cmd/$$b || exit 1; \
 	done
 
-test: web-test
+test: web-test test-lib
 	box go vet ./...
 	box go test -count=1 ./...
+
+# libboundgate (the apps' core, docs/EMBED.md) as a C archive, driven from C
+test-lib:
+	box sh -c 'set -e; d=$$(mktemp -d); CGO_ENABLED=1 go build -buildmode=c-archive -o $$d/libboundgate.a ./cmd/libboundgate; \
+	  cc -Wall -o $$d/harness cmd/libboundgate/testdata/harness.c -Icmd/libboundgate $$d/libboundgate.a -lpthread -lm; $$d/harness $$d/state; rm -rf $$d'
 
 # TPM-backed device keys against a software TPM (swtpm) on the default
 # bridge, where the box can reach it. Not part of `test`: needs Docker.

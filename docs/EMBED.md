@@ -115,9 +115,39 @@ Measured in the lab (2026-09-21): a 300 MB download through node-m ran at
 about 107 MB/s, with at most 25 MiB RSS for the whole process and a heap limit
 of 40 MiB.
 
+## The C interface: libboundgate
+
+`cmd/libboundgate` exports the engine as C functions for Swift and JNI. The
+header is `cmd/libboundgate/boundgate.h`:
+
+```c
+int64_t bg_start(const char *config_json, const bg_platform *platform, char **err);
+char   *bg_request(int64_t engine, const char *method, const char *path, const uint8_t *body, int32_t len, int32_t *status);
+void    bg_network_changed(int64_t engine);
+void    bg_stop(int64_t engine);
+int32_t bg_utun_fd(void);   // network extension: the utun NetworkExtension opened for us
+char   *bg_version(void);
+void    bg_free(void *p);
+```
+
+`bg_platform` holds the callbacks (`apply`, `release`, `public_key`, `sign`,
+`log`) and a `ctx` pointer. Strings the core returns are freed with `bg_free`.
+Error strings a callback hands back through `char **err` are `malloc`ed by
+the app and freed by the core.
+
+`bg_utun_fd` finds the tunnel descriptor of a network extension the way
+WireGuard's app does: NetworkExtension does not hand it out, but it is open in
+the process, and only a utun control socket answers `UTUN_OPT_IFNAME`. The
+app's `apply` callback calls it after `setTunnelNetworkSettings` completes.
+
+`make test-lib` (part of `make test`) builds the C archive in the box and runs
+`testdata/harness.c` against it: setup status, fingerprint of the platform's
+key, the state lock, configure refused while the key refuses to sign, string
+ownership, stop and restart.
+
 ## Not in M8.5
 
-* Binding the core for the platforms: the C interface and the xcframework for
-  Apple (M8.6/M9a, `make apple-core`), the AAR for Android (M9b).
+* Binding the core for the platforms: the xcframework for Apple (M8.6/M9a,
+  `make apple-core`) and the AAR for Android (M9b).
 * Direct paths from an embedded node: it has no `paths.listen`. Peers reach it
   through relaying hubs, and it dials other nodes' public addresses as usual.

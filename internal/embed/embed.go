@@ -27,6 +27,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/version"
 )
 
 // Config is what the app decides; the control plane's address is not part of
@@ -149,6 +150,7 @@ func Start(cfg Config, p Platform) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{cfg: cfg, p: p, key: key, log: log, flow: flow, lock: lock, net: netcfg.NewDeclarative(p, log)}
+	log.Info("engine starting", "platform", cfg.Platform, "version", version.Version, "key_kind", key.Kind(), "memory_limit_mib", cfg.MemoryLimitMiB)
 	s, err := ipc.LoadSettings(e.settingsPath())
 	if err != nil {
 		lock.Close()
@@ -172,12 +174,18 @@ func (e *Engine) setup() {
 	spki, _ := devicekey.HashPublicKey(e.key.Public())
 	st := node.Status{NodeName: e.cfg.Name, Enrollment: "unknown", KeyKind: e.key.Kind(), HardwareBound: e.key.HardwareBound(),
 		SPKI: spki.String(), Fingerprint: spki.Fingerprint()}
-	h := ipc.SetupHandler(st, nil, func(s ipc.Settings) error { return ipc.SaveSettings(e.settingsPath(), s) }, func(s ipc.Settings) {
-		// the answer is written; the node takes over for the next request
-		if err := e.startNode(s); err != nil {
-			e.log.Error("starting the node with the new settings", "err", err)
+	h := ipc.SetupHandler(st, nil, func(s ipc.Settings) error {
+		// the node takes over for the next request; if it cannot start (the
+		// user refused the key), the answer says so and nothing is stored
+		if err := ipc.SaveSettings(e.settingsPath(), s); err != nil {
+			return err
 		}
-	})
+		if err := e.startNode(s); err != nil {
+			_ = os.Remove(e.settingsPath())
+			return err
+		}
+		return nil
+	}, func(ipc.Settings) {})
 	e.mu.Lock()
 	e.handler = h
 	e.mu.Unlock()
