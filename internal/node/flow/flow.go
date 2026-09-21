@@ -133,6 +133,7 @@ type Table struct {
 	onEvent  func(Event)
 	full     bool
 	overflow uint64
+	strays   uint64
 }
 
 // New creates a table; onEvent may be nil.
@@ -170,6 +171,21 @@ func (t *Table) Len() int {
 }
 
 // Overflow counts flows refused because the table was full.
+// stray: a TCP segment that does not open a connection (no SYN, or the
+// SYN+ACK of a handshake the table never saw). Policies decide about it as
+// about any first packet, so that a connection survives a reconnect when it
+// is permitted; when it is not, there is nothing to report.
+func stray(h netparse.Header) bool {
+	return h.Proto == netparse.ProtoTCP && h.TCPFlags&(netparse.TCPSyn|netparse.TCPAck) != netparse.TCPSyn
+}
+
+// Strays counts denied packets that were not the start of a connection.
+func (t *Table) Strays() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.strays
+}
+
 func (t *Table) Overflow() uint64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -207,6 +223,14 @@ func (t *Table) Handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 		e.decide(decide)
 		if !e.Allowed {
 			e.denyOnly = true
+			if stray(h) {
+				// the tail of a connection this table no longer knows (closed
+				// a moment ago, or from before a reconnect): dropped like any
+				// denied packet, but it is no attempt to connect, and logged
+				// as one it reads as "the hub was refused access to this Mac"
+				t.strays++
+				return Drop, e
+			}
 			t.onEvent(Event{Type: EventDeny, Entry: *e, At: now})
 			return Drop, e
 		}

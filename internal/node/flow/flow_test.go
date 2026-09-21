@@ -260,3 +260,36 @@ func TestReevaluate(t *testing.T) {
 		t.Fatalf("%+v", events)
 	}
 }
+
+// The tail of a connection the table no longer knows (a server's late
+// retransmission through the exit node, 5 s after the client closed) is
+// dropped without a "deny" in the log: reported, it reads as "the hub tried
+// to connect to this node". A real attempt to connect still is reported, and
+// a permitted connection still survives a reconnect.
+func TestStrayTCPSegmentsAreNotReportedAsDenied(t *testing.T) {
+	var denies int
+	tb := New(Timeouts{}, func(e Event) {
+		if e.Type == EventDeny {
+			denies++
+		}
+	})
+	hub := Origin{Principal: "hub"}
+	nothing := func(*Entry) Result { return Result{} }
+	for i, flags := range []uint8{netparse.TCPAck, netparse.TCPAck | netparse.TCPFin, netparse.TCPRst, netparse.TCPSyn | netparse.TCPAck} {
+		p := tcp("140.82.112.26", "10.25.0.1", 443, uint16(65000+i), flags, nil)
+		if out, _ := tb.Handle(parse(t, p), p, hub, nothing); out != Drop {
+			t.Fatalf("flags %#x passed", flags)
+		}
+	}
+	if denies != 0 || tb.Strays() != 4 {
+		t.Fatalf("denies reported %d, strays %d", denies, tb.Strays())
+	}
+	syn := tcp("140.82.112.26", "10.25.0.1", 443, 22, netparse.TCPSyn, nil)
+	if out, _ := tb.Handle(parse(t, syn), syn, hub, nothing); out != Drop || denies != 1 {
+		t.Fatalf("a connection attempt must be reported: %v, %d", out, denies)
+	}
+	mid := tcp("10.25.0.1", "10.20.1.33", 50000, 9201, netparse.TCPAck, []byte("x"))
+	if out, e := tb.Handle(parse(t, mid), mid, Origin{Principal: "mac"}, func(*Entry) Result { return Result{Allow: true} }); out != Pass || !e.Allowed {
+		t.Fatal("a permitted connection from before a reconnect must go on")
+	}
+}
