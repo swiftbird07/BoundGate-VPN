@@ -19,12 +19,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     // MARK: lifecycle
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        if let f = AppConfig.tunnelErrorFile { try? FileManager.default.removeItem(at: f) }
         do {
             let key = try DeviceKey.load(create: false)
             // 50 MiB is the limit for the whole process; the Go heap gets 30 of it
             engine = try CoreEngine(config: try AppConfig.engineConfig(autoUp: true, memoryLimitMiB: 30), platform: self, key: key)
         } catch {
             logger.error("start: \(error.localizedDescription, privacy: .public)")
+            Self.record(error.localizedDescription)
             completionHandler(error)
             return
         }
@@ -64,8 +66,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         lock.lock()
         let done = pendingStart
         pendingStart = nil
+        let s = stopping
         lock.unlock()
+        if let error, done != nil, !s {
+            logger.error("start: \(error.localizedDescription, privacy: .public)")
+            Self.record(error.localizedDescription)
+        }
         done?(error)
+    }
+
+    /// Leaves the reason for the app (AppConfig.tunnelErrorFile).
+    static func record(_ reason: String) {
+        guard let f = AppConfig.tunnelErrorFile else { return }
+        try? Data(reason.utf8).write(to: f, options: .atomic)
     }
 
     /// Why the overlay did not come up, in the node's words.
@@ -110,7 +123,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     /// The overlay went down inside the node (disconnect, revoked): the VPN ends with it.
     func releaseTunnel() {
         lock.lock(); let s = stopping; lock.unlock()
-        if !s { cancelTunnelWithError(nil) }
+        if !s {
+            Self.record(startProblem())
+            cancelTunnelWithError(nil)
+        }
     }
 
     func log(level: Int32, line: String) {

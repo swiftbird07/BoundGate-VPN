@@ -19,6 +19,8 @@ public protocol TunnelControl: AnyObject {
     /// nil while no engine answers (engineError says why)
     var client: DaemonClient? { get }
     var engineError: String? { get }
+    /// why the tunnel ended on its own the last time, once (then it is cleared)
+    func takeTunnelError() -> String?
     /// memory of the packet tunnel process in MiB (footprint, what iOS limits to 50), while it runs
     func tunnelMemory() async -> Double?
     func connect() async throws
@@ -79,6 +81,7 @@ public final class MobileModel: ObservableObject {
     public func refresh() {
         vpn = tunnel.vpn
         engineError = tunnel.engineError
+        if let e = tunnel.takeTunnelError() { actionError = "The tunnel stopped: \(e)" }
         guard let client = tunnel.client else { status = nil; return }
         let on = vpn == .on
         Task.detached {

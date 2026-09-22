@@ -19,6 +19,13 @@ enum AppConfig {
         return c.appendingPathComponent("boundgate", isDirectory: true)
     }
 
+    /// Why the packet tunnel last ended on its own: the extension writes it,
+    /// the app shows it (iOS passes the provider's error on only as a generic
+    /// "the VPN session failed").
+    static var tunnelErrorFile: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?.appendingPathComponent("tunnel-error.txt")
+    }
+
     /// embed.Config (docs/EMBED.md)
     static func engineConfig(autoUp: Bool, memoryLimitMiB: Int) throws -> [String: Any] {
         var c: [String: Any] = ["state_dir": try stateDir().path, "platform": "ios", "name": deviceName, "auto_up": autoUp, "log_level": "info"]

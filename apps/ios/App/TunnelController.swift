@@ -18,6 +18,7 @@ final class TunnelController: ObservableObject, TunnelControl {
     private let platform = AppPlatform()
     private var observer: NSObjectProtocol?
     private let logger = Logger(subsystem: AppConfig.subsystem, category: "app")
+    private var tunnelError: String?
 
     var client: DaemonClient? {
         switch vpn {
@@ -46,6 +47,30 @@ final class TunnelController: ObservableObject, TunnelControl {
         update()
     }
 
+    func takeTunnelError() -> String? {
+        defer { tunnelError = nil }
+        return tunnelError
+    }
+
+    /// The tunnel ended without the user: find out why (the extension's own
+    /// words first, else what iOS reports).
+    private func collectTunnelError() {
+        if let f = AppConfig.tunnelErrorFile, let d = try? Data(contentsOf: f), let s = String(data: d, encoding: .utf8), !s.isEmpty {
+            try? FileManager.default.removeItem(at: f)
+            tunnelError = s
+            logger.error("tunnel ended: \(s, privacy: .public)")
+            return
+        }
+        manager?.connection.fetchLastDisconnectError { [weak self] err in
+            guard let err = err as NSError? else { return }
+            let under = (err.userInfo[NSUnderlyingErrorKey] as? NSError)?.localizedDescription
+            Task { @MainActor in
+                self?.tunnelError = under ?? err.localizedDescription
+                self?.logger.error("tunnel ended: \(self?.tunnelError ?? "", privacy: .public)")
+            }
+        }
+    }
+
     private func update() {
         let before = vpn
         switch manager?.connection.status {
@@ -55,6 +80,10 @@ final class TunnelController: ObservableObject, TunnelControl {
         case .invalid, .disconnected, .none: if case .unavailable = vpn {} else { vpn = .off }
         @unknown default: vpn = .off
         }
+        if vpn == .off, before == .connecting || before == .on, !userStopped {
+            collectTunnelError()
+        }
+        if vpn == .off { userStopped = false }
         if vpn == .off || { if case .unavailable = vpn { return true }; return false }() {
             if local == nil { startLocal(retries: before == .off ? 0 : 20) }
         }
@@ -98,7 +127,10 @@ final class TunnelController: ObservableObject, TunnelControl {
         update()
     }
 
+    private var userStopped = false
+
     func disconnect() {
+        userStopped = true
         manager?.connection.stopVPNTunnel()
     }
 
