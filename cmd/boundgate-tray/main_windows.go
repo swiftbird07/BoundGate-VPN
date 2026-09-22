@@ -6,6 +6,8 @@
 // signs in through the browser, requests access and shows the details. It
 // holds no key and no secret; everything it can do, the socket's DACL lets it
 // (docs/WINDOWS.md).
+//go:generate go run gen_rsrc.go
+
 package main
 
 import (
@@ -19,6 +21,7 @@ import (
 
 	"fyne.io/systray"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
@@ -62,6 +65,7 @@ type app struct {
 	// draw serializes refresh: the poll and the end of an action both redraw
 	draw      sync.Mutex
 	lastColor tray.Color
+	lastLight bool
 	iconSet   bool
 }
 
@@ -143,9 +147,13 @@ func (a *app) refresh() {
 	a.mu.Unlock()
 
 	v := tray.Describe(st, err)
-	if !a.iconSet || v.Color != a.lastColor {
-		systray.SetIcon(tray.Icon(v.Color))
-		a.iconSet, a.lastColor = true, v.Color
+	light := taskbarLight()
+	if !a.iconSet || v.Color != a.lastColor || light != a.lastLight {
+		// loaded at the large icon size, shown at the small one (tray.Icon)
+		big, _, _ := procGetSystemMetrics.Call(smCXIcon)
+		small, _, _ := procGetSystemMetrics.Call(smCXSmIcon)
+		systray.SetIcon(tray.Icon(v.Color, light, int(big), int(small)))
+		a.iconSet, a.lastColor, a.lastLight = true, v.Color, light
 	}
 	systray.SetTooltip(v.Tooltip())
 	title := v.Title
@@ -379,4 +387,21 @@ func openBrowser(u string) error {
 	verb, _ := windows.UTF16PtrFromString("open")
 	file, _ := windows.UTF16PtrFromString(u)
 	return windows.ShellExecute(0, verb, file, nil, nil, windows.SW_SHOWNORMAL)
+}
+
+const (
+	smCXIcon   = 11
+	smCXSmIcon = 49
+)
+
+// taskbarLight: the taskbar uses the light theme (Settings, Personalization,
+// Colors, "Windows mode"), so the icon's glyph is dark.
+func taskbarLight() bool {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+	v, _, err := k.GetIntegerValue("SystemUsesLightTheme")
+	return err == nil && v == 1
 }

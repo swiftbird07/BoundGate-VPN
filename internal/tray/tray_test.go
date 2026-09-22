@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"image/png"
 	"strings"
 	"testing"
@@ -90,20 +92,47 @@ func TestRate(t *testing.T) {
 }
 
 func TestIcon(t *testing.T) {
-	for c := Gray; c <= Red; c++ {
-		b := Icon(c)
-		if b[2] != 1 || b[4] != 1 || b[6] != 32 {
+	decode := func(b []byte) image.Image {
+		t.Helper()
+		if b[2] != 1 || b[4] != 1 {
 			t.Fatalf("ico header % x", b[:8])
 		}
 		img, err := png.Decode(bytes.NewReader(b[22:]))
-		if err != nil || img.Bounds().Dx() != 32 {
+		if err != nil {
 			t.Fatalf("png: %v", err)
 		}
-		if _, _, _, a := img.At(0, 0).RGBA(); a != 0 {
-			t.Fatal("corner not transparent")
-		}
-		if r, g, bb, _ := img.At(16, 9).RGBA(); r>>8 < 0xf0 || g>>8 < 0xf0 || bb>>8 < 0xf0 {
-			t.Fatalf("arch top not white: %d %d %d", r>>8, g>>8, bb>>8)
+		return img
+	}
+	for c := Gray; c <= Red; c++ {
+		for _, light := range []bool{false, true} {
+			for _, n := range []int{32, 48, 64} {
+				img := decode(Icon(c, light, n, n/2))
+				if img.Bounds().Dx() != n || b0(img) {
+					t.Fatalf("%d px: size %d or corner not transparent", n, img.Bounds().Dx())
+				}
+			}
 		}
 	}
+	// 32 px: frame A's top edge sits at y = 4 units = 6.4 px, x = 7 units
+	at := func(c Color, light bool, x, y int) color.NRGBA {
+		return color.NRGBAModel.Convert(decode(Icon(c, light, 32, 16)).At(x, y)).(color.NRGBA)
+	}
+	if p := at(Green, false, 11, 6); p.A < 0xc0 || p.R < 0xf0 {
+		t.Fatalf("dark taskbar: frame not white: %+v", p)
+	}
+	if p := at(Green, true, 11, 6); p.A < 0xc0 || p.R > 0x40 {
+		t.Fatalf("light taskbar: frame not dark: %+v", p)
+	}
+	if p := at(Amber, true, 26, 7); p.R < 0xf0 || p.G < 0xc0 || p.B > 0x20 {
+		t.Fatalf("attention dot not yellow: %+v", p)
+	}
+	if p := at(Green, true, 26, 7); p.A != 0 {
+		t.Fatalf("connected has no dot: %+v", p)
+	}
+}
+
+// b0: the bottom left corner is not transparent
+func b0(img image.Image) bool {
+	_, _, _, a := img.At(0, img.Bounds().Dy()-1).RGBA()
+	return a != 0
 }

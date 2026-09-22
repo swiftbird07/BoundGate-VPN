@@ -32,7 +32,9 @@ var (
 	procSetFocus         = user32.NewProc("SetFocus")
 	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 	procLoadCursorW      = user32.NewProc("LoadCursorW")
-	procGetStockObject   = gdi32.NewProc("GetStockObject")
+	procGetDpiForSystem  = user32.NewProc("GetDpiForSystem")
+	procCreateFontW      = gdi32.NewProc("CreateFontW")
+	procDeleteObject     = gdi32.NewProc("DeleteObject")
 )
 
 const (
@@ -55,7 +57,6 @@ const (
 	idOK            = 1
 	idCancel        = 2
 	colorBtnFace    = 15
-	defaultGUIFont  = 17
 	idcArrow        = 32512
 )
 
@@ -132,7 +133,14 @@ func prompt(title, label, value string, lowercase bool) (text string, ok bool) {
 	})
 	promptState.edit, promptState.text, promptState.ok, promptState.closed = 0, "", false, false
 
-	const w, h = 460, 170
+	// the tray is DPI aware (its manifest, gen_rsrc.go): sizes are pixels,
+	// laid out at 96 dpi and scaled here
+	dpi, _, _ := procGetDpiForSystem.Call()
+	if dpi == 0 {
+		dpi = 96
+	}
+	px := func(v int32) int32 { return v * int32(dpi) / 96 }
+	w, h := px(480), px(178)
 	sx, _, _ := procGetSystemMetrics.Call(0)
 	sy, _, _ := procGetSystemMetrics.Call(1)
 	hwnd := create(wsExTopmost|wsExDlgModal, promptClass, title, wsCaption|wsSysMenu|wsVisible,
@@ -140,7 +148,10 @@ func prompt(title, label, value string, lowercase bool) (text string, ok bool) {
 	if hwnd == 0 {
 		return "", false
 	}
-	font, _, _ := procGetStockObject.Call(defaultGUIFont)
+	// Segoe UI 9 pt, the face of Windows' own dialogs
+	face, _ := windows.UTF16PtrFromString("Segoe UI")
+	font, _, _ := procCreateFontW.Call(uintptr(-px(12)), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, uintptr(unsafe.Pointer(face)))
+	defer procDeleteObject.Call(font)
 	static, _ := windows.UTF16PtrFromString("STATIC")
 	edit, _ := windows.UTF16PtrFromString("EDIT")
 	button, _ := windows.UTF16PtrFromString("BUTTON")
@@ -149,10 +160,10 @@ func prompt(title, label, value string, lowercase bool) (text string, ok bool) {
 		style |= esLowercase
 	}
 	ctrls := []uintptr{
-		create(0, static, label, wsChild|wsVisible, 16, 14, 420, 36, hwnd, 0),
-		create(wsExClientEdge, edit, value, style, 16, 54, 420, 24, hwnd, 0),
-		create(0, button, "OK", wsChild|wsVisible|wsTabStop|bsDefPushButton, 256, 92, 86, 28, hwnd, idOK),
-		create(0, button, "Cancel", wsChild|wsVisible|wsTabStop, 350, 92, 86, 28, hwnd, idCancel),
+		create(0, static, label, wsChild|wsVisible, px(20), px(16), px(430), px(40), hwnd, 0),
+		create(wsExClientEdge, edit, value, style, px(20), px(62), px(430), px(26), hwnd, 0),
+		create(0, button, "OK", wsChild|wsVisible|wsTabStop|bsDefPushButton, px(268), px(102), px(88), px(28), hwnd, idOK),
+		create(0, button, "Cancel", wsChild|wsVisible|wsTabStop, px(362), px(102), px(88), px(28), hwnd, idCancel),
 	}
 	for _, c := range ctrls {
 		procSendMessageW.Call(c, wmSetFont, font, 1)
