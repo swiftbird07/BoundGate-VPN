@@ -66,8 +66,9 @@ The hub option `login_passthrough` solves it (off by default; SECURITY
 R109):
 
 ```yaml
-# hub: only for Android's lockdown mode
-login_passthrough: [136.243.123.200/32, 10.20.0.1/32]   # the IdP, the phones' DNS resolver
+# hub
+dns: [10.20.0.1]                        # resolvers for the apps (see "DNS" below)
+login_passthrough: [136.243.123.200/32] # only for Android's lockdown mode: the IdP
 ```
 
 With it, the hub admits a device without a session. Its tunnel carries only
@@ -77,8 +78,22 @@ the tunnel (`isLockdownEnabled`), so the IdP and DNS go through the tunnel to
 the passthrough. Without lockdown the app excludes them, and the option is
 not needed.
 
-Limit: on a cellular network that only hands out IPv6 DNS servers, DNS in
-lockdown does not work. The tunnel carries IPv4 only.
+DNS needs the hub's `dns` option in lockdown: nothing else is reachable
+before the sign-in.
+
+## DNS
+
+A hub can offer resolvers (hub option `dns`, empty by default). It sends
+them with the answer that opens the tunnel (`Boundgate-Dns` header, over the
+hub's authenticated connection). The node takes those of its primary hub
+and hands them to the app as `dns` in the network settings, together with a
+route through the tunnel for each. The app then uses only these servers.
+The hub lets DNS to them (port 53, UDP and TCP) through for every device,
+also before the sign-in and whatever the policies say.
+
+Without `dns` the app copies the resolvers of the network below and keeps
+them outside the tunnel. In lockdown that fails (blocked outside the tunnel),
+and so does a cellular network that hands out IPv6 resolvers only.
 
 ## Device key
 

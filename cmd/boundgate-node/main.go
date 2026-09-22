@@ -64,6 +64,12 @@ type config struct {
 	// IdP must go through the tunnel, which the hub otherwise refuses until
 	// the sign-in (docs/ANDROID.md). Empty: no tunnel without a session.
 	LoginPassthrough []netip.Prefix `yaml:"login_passthrough"`
+	// DNS (hub, default empty): resolvers this hub offers its spokes when the
+	// tunnel opens. The apps (Android, iOS) then resolve through them only,
+	// through the tunnel; the hub lets DNS to them through (port 53) for every
+	// peer, also before the sign-in and whatever the policies allow. Daemons
+	// keep the system's resolver.
+	DNS []netip.Addr `yaml:"dns"`
 	Paths       struct {
 		Disabled bool          `yaml:"disabled"` // spoke: everything stays on the hub path
 		Listen   string        `yaml:"listen"`   // spoke: UDP address peers can dial (announce it with public_addr)
@@ -238,6 +244,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		QUICRetry:         cfg.QUICRetry,
 		NoRelay:           cfg.Relay != nil && !*cfg.Relay,
 		LoginPassthrough:  cfg.LoginPassthrough,
+		DNS:               cfg.DNS,
 		NoPaths:           cfg.Paths.Disabled,
 		PathsListen:       cfg.Paths.Listen,
 		PathIdle:          cfg.Paths.Idle,

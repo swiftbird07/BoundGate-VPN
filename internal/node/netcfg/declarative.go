@@ -29,6 +29,16 @@ type NetworkSettings struct {
 	// macOS network extensions, Android with the app disallowed) they need
 	// nothing, but a route for them does no harm.
 	Excluded []netip.Addr `json:"excluded,omitempty"`
+	// DNS are the resolvers the primary hub offers. When set, the platform
+	// resolves through them only; they are among Routes (through the
+	// tunnel). Empty: the platform keeps its own.
+	DNS []netip.Addr `json:"dns,omitempty"`
+}
+
+// DNSConfigurator is a Configurator that also takes resolvers (Declarative:
+// the apps). Daemons do not implement it and keep the system's resolver.
+type DNSConfigurator interface {
+	SetDNS(servers []netip.Addr)
 }
 
 // Platform applies network settings for an embedded node.
@@ -150,6 +160,17 @@ func (d *Declarative) DelBypass(_ context.Context, host netip.Addr) error {
 func (d *Declarative) Refresh() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.scheduleLocked()
+}
+
+// SetDNS implements DNSConfigurator.
+func (d *Declarative) SetDNS(servers []netip.Addr) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if slices.Equal(d.settings.DNS, servers) {
+		return
+	}
+	d.settings.DNS = slices.Clone(servers)
 	d.scheduleLocked()
 }
 

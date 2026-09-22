@@ -190,6 +190,18 @@ func TestDeclarativeKeepsTheDeviceWhenTheDescriptorStays(t *testing.T) {
 	if c := p.calls(); len(c[2].Routes) != 1 || c[2].Address != c[1].Address {
 		t.Fatalf("refresh applied %+v", c[2])
 	}
+	// the primary hub's resolvers reach the platform; the same list again changes nothing
+	dns := []netip.Addr{netip.MustParseAddr("10.20.0.1")}
+	d.SetDNS(dns)
+	waitFor(t, "dns", func() bool { return len(p.calls()) == 4 })
+	if c := p.calls(); len(c[3].DNS) != 1 || c[3].DNS[0] != dns[0] {
+		t.Fatalf("dns applied %+v", c[3])
+	}
+	d.SetDNS(dns)
+	time.Sleep(3 * d.delay)
+	if len(p.calls()) != 4 {
+		t.Fatal("an unchanged DNS list applied again")
+	}
 	if opened != 1 {
 		t.Fatalf("opened %d devices for one descriptor", opened)
 	}

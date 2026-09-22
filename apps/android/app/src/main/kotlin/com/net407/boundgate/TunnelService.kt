@@ -25,10 +25,11 @@ import java.util.concurrent.Executors
  * tunnel (addDisallowedApplication), so the control channel and the hub
  * links never go through themselves.
  *
- * DNS: the node has no resolver of its own, and apps inside a VPN without
- * DNS servers resolve nothing. The VPN therefore carries the DNS servers of
- * the network below, and their addresses stay outside the tunnel, as they do
- * on the other platforms where the system resolver is used as it is. The
+ * DNS: apps inside a VPN without DNS servers resolve nothing. When the
+ * primary hub offers resolvers (hub option `dns`), the VPN uses those only,
+ * through the tunnel. Otherwise it carries the DNS servers of the network
+ * below, and their addresses stay outside the tunnel, as on the other
+ * platforms where the system resolver is used as it is. The
  * same goes for the `excluded` hosts (control plane, hubs, IdP): the browser
  * must reach the IdP to sign in before the hub lets anything through.
  * In lockdown nothing but the tunnel is open to other apps; there the hub's
@@ -104,11 +105,18 @@ class TunnelService : VpnService() {
         }
         val outside = mutableSetOf<InetAddress>()
         s.optJSONArray("excluded")?.let { e -> for (i in 0 until e.length()) outside += InetAddress.getByName(e.getString(i)) }
-        below?.dnsServers?.forEach {
-            b.addDnsServer(it)
-            outside += it
+        val offered = s.optJSONArray("dns")?.let { d -> (0 until d.length()).map { InetAddress.getByName(d.getString(it)) } }.orEmpty()
+        if (offered.isNotEmpty()) {
+            // the hub's resolvers, and only those: the core routes them
+            // through the tunnel and the hub lets DNS to them through
+            offered.forEach { b.addDnsServer(it) }
+        } else {
+            below?.dnsServers?.forEach {
+                b.addDnsServer(it)
+                outside += it
+            }
+            below?.domains?.split(' ')?.filter { it.isNotBlank() }?.forEach { b.addSearchDomain(it) }
         }
-        below?.domains?.split(' ')?.filter { it.isNotBlank() }?.forEach { b.addSearchDomain(it) }
         // Always-on with "Block connections without VPN" blocks every other
         // app's traffic outside the tunnel, excluded or not: then the IdP and
         // DNS go through it, to a hub with login_passthrough (docs/ANDROID.md)

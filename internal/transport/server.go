@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,32 @@ type TunnelConfig struct {
 	// Routes are advertised to the peer (ROUTE_ADVERTISEMENT). The peer may
 	// route less, never more.
 	Routes []connectip.IPRoute
+	// DNS are resolvers the hub offers its spokes, sent with the answer that
+	// opens the tunnel (DNSHeader). CONNECT-IP has no field for them.
+	DNS []netip.Addr
+}
+
+// DNSHeader carries TunnelConfig.DNS on the response that opens a tunnel,
+// comma-separated. It comes from the hub over its authenticated connection.
+const DNSHeader = "Boundgate-Dns"
+
+func dnsHeader(dns []netip.Addr) string {
+	s := make([]string, len(dns))
+	for i, a := range dns {
+		s[i] = a.String()
+	}
+	return strings.Join(s, ",")
+}
+
+// parseDNSHeader reads DNSHeader; what does not parse is left out.
+func parseDNSHeader(v string) []netip.Addr {
+	var out []netip.Addr
+	for _, f := range strings.Split(v, ",") {
+		if a, err := netip.ParseAddr(strings.TrimSpace(f)); err == nil {
+			out = append(out, a.Unmap())
+		}
+	}
+	return out
 }
 
 // Handler is implemented by the gateway service. Both methods run with an
@@ -365,6 +392,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.h.Release(peer, cfg)
+	if len(cfg.DNS) > 0 {
+		w.Header().Set(DNSHeader, dnsHeader(cfg.DNS))
+	}
 	p := &connectip.Proxy{}
 	conn, err := p.Proxy(w, req)
 	if err != nil {

@@ -95,7 +95,11 @@ func (s *Server) handleTCP(w http.ResponseWriter, r *http.Request, path string) 
 		return
 	}
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + upgradeProto + "\r\nCapsule-Protocol: ?1\r\n\r\n"); err != nil || rw.Flush() != nil {
+	head := "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + upgradeProto + "\r\nCapsule-Protocol: ?1\r\n"
+	if len(cfg.DNS) > 0 {
+		head += DNSHeader + ": " + dnsHeader(cfg.DNS) + "\r\n"
+	}
+	if _, err := rw.WriteString(head + "\r\n"); err != nil || rw.Flush() != nil {
 		_ = conn.Close()
 		return
 	}
@@ -175,7 +179,7 @@ func DialTCP(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 		return nil, &DialError{Status: rsp.StatusCode, Err: errors.New("101 without the connect-ip upgrade")}
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &ClientTunnel{link: newCapsuleLink(conn, r, cfg.IdleTimeout, cfg.KeepAlive), transport: "tcp"}, nil
+	return &ClientTunnel{link: newCapsuleLink(conn, r, cfg.IdleTimeout, cfg.KeepAlive), transport: "tcp", dns: parseDNSHeader(rsp.Header.Get(DNSHeader))}, nil
 }
 
 // templatePath is the request target for a CONNECT-IP template without

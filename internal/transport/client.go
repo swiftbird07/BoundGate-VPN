@@ -107,6 +107,7 @@ func (l *quicClientLink) Close(code quic.ApplicationErrorCode, reason string) er
 type ClientTunnel struct {
 	link      clientLink
 	transport string // "quic" or "tcp"
+	dns       []netip.Addr
 
 	bytesIn, bytesOut, packetsIn, packetsOut atomic.Uint64
 }
@@ -184,7 +185,11 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 			}
 		}()
 	}
-	return &ClientTunnel{link: &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr, qt: qt, pc: cfg.PacketConn}, transport: name}, nil
+	var dns []netip.Addr
+	if rsp != nil {
+		dns = parseDNSHeader(rsp.Header.Get(DNSHeader))
+	}
+	return &ClientTunnel{link: &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr, qt: qt, pc: cfg.PacketConn}, transport: name, dns: dns}, nil
 }
 
 // DialError reports a CONNECT-IP refusal. Status is the HTTP status if the
@@ -205,6 +210,9 @@ func (e *DialError) Unwrap() error { return e.Err }
 
 // Transport is "quic" or "tcp".
 func (t *ClientTunnel) Transport() string { return t.transport }
+
+// DNS returns the resolvers the hub offered with this tunnel (DNSHeader).
+func (t *ClientTunnel) DNS() []netip.Addr { return t.dns }
 
 // ReadPacket reads one IP packet from the gateway.
 func (t *ClientTunnel) ReadPacket(b []byte) (int, error) {

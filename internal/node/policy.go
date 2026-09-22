@@ -50,11 +50,27 @@ func (s *session) decide(e *flow.Entry) flow.Result {
 	if eng == nil || e.Origin.Principal == "" || s.n.holder.Stale(time.Now()) {
 		return flow.Result{}
 	}
+	if s.offeredDNS(e) {
+		return flow.Result{Allow: true, Policies: []string{"hub_dns"}, Reasons: []string{"DNS to a resolver this hub offers"}}
+	}
 	if r, ok := s.loginPassthrough(e); ok {
 		return r
 	}
 	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: e.DNSName})
 	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI}
+}
+
+// offeredDNS: a flow to port 53 of a resolver this hub offers (Config.DNS).
+func (s *session) offeredDNS(e *flow.Entry) bool {
+	if e.Target.Port() != 53 || (e.Proto != netparse.ProtoUDP && e.Proto != netparse.ProtoTCP) {
+		return false
+	}
+	for _, a := range s.n.cfg.DNS {
+		if a == e.Target.Addr() {
+			return true
+		}
+	}
+	return false
 }
 
 // loginPassthrough decides the flows of an interactive peer that has no user

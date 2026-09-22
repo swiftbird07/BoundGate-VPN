@@ -34,7 +34,8 @@ What `PacketTunnelProvider` does:
 * It starts the engine with `auto_up` and a 30 MiB Go heap limit.
 * It answers `apply` with `setTunnelNetworkSettings`: the overlay address,
   the included routes, the excluded host routes for control plane, hubs and
-  IdP, and the MTU. It then hands the core the utun (`bg_utun_fd`).
+  IdP, and the MTU, and the hub's resolvers when it offers some (`dns`,
+  for every name). It then hands the core the utun (`bg_utun_fd`).
 * It ends the VPN when the node's overlay goes down.
 * It forwards app messages to the node and reports its memory.
 

@@ -29,7 +29,7 @@ The app implements `embed.Platform`:
 
 | Method | What the app does |
 |---|---|
-| `Apply(settings) (fd, error)` | Installs the whole configuration: overlay `address` (a /32), `mtu`, `routes` (sorted; `0.0.0.0/0` comes as its two halves) and `excluded` hosts (control plane, hubs, IdP). Returns the tunnel's file descriptor. The same descriptor as last time keeps the device (iOS: the utun stays). A new one replaces it under the running reader (Android establishes a new interface on every change), and the core closes the old one. The core owns every descriptor it was given. |
+| `Apply(settings) (fd, error)` | Installs the whole configuration: overlay `address` (a /32), `mtu`, `routes` (sorted; `0.0.0.0/0` comes as its two halves) and `excluded` hosts (control plane, hubs, IdP), and `dns`: the resolvers the primary hub offers (hub option `dns`; empty keeps the platform's own). With `dns` the platform resolves through them only; each is also among `routes`. On a change of network the core calls `Apply` again with the same settings (`Refresh`), for platforms that copy the resolvers of the network below. Returns the tunnel's file descriptor. The same descriptor as last time keeps the device (iOS: the utun stays). A new one replaces it under the running reader (Android establishes a new interface on every change), and the core closes the old one. The core owns every descriptor it was given. |
 | `Release()` | The overlay went down and the core closed the device. |
 | `PublicKey()` | DER SubjectPublicKeyInfo of an ECDSA P-256 key. |
 | `Sign(digest)` | Signs a SHA-256 digest, ASN.1 DER signature (`SecKeyCreateSignature` with `.ecdsaSignatureDigestX962SHA256`, Android `NONEwithECDSA`). The core asks for nothing else. |

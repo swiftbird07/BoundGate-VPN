@@ -36,6 +36,7 @@ func TestTCPFallbackEcho(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	checkDNS(t, tun.DNS())
 	prefixes, err := tun.LocalPrefixes(ctx)
 	if err != nil || len(prefixes) != 1 || prefixes[0] != netip.MustParsePrefix("100.96.0.2/32") {
 		t.Fatalf("prefixes %v, %v", prefixes, err)

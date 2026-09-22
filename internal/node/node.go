@@ -105,6 +105,11 @@ type Config struct {
 	// (Always-on VPN with "Block connections without VPN"), where the
 	// browser cannot reach the IdP outside the tunnel. Empty: 403 as usual.
 	LoginPassthrough []netip.Prefix
+	// DNS (hub): resolvers offered to spokes with every tunnel
+	// (transport.DNSHeader). DNS to them (port 53) is let through for every
+	// peer: offering a resolver the policies then deny would break name
+	// resolution for everyone who is only allowed the internet.
+	DNS []netip.Addr
 	// NoPaths: a spoke neither dials nor accepts tunnels with other spokes;
 	// everything stays on the hub path (paths.go).
 	NoPaths bool

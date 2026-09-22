@@ -46,6 +46,16 @@ func (l *staticLookup) remove(h devicekey.SPKIHash) {
 	delete(l.m, h)
 }
 
+// testDNS is what echoHandler offers; both transports must hand it to the client.
+var testDNS = []netip.Addr{netip.MustParseAddr("10.0.0.53"), netip.MustParseAddr("2001:db8::53")}
+
+func checkDNS(t *testing.T, got []netip.Addr) {
+	t.Helper()
+	if len(got) != len(testDNS) || got[0] != testDNS[0] || got[1] != testDNS[1] {
+		t.Fatalf("dns %v, want %v", got, testDNS)
+	}
+}
+
 // echoHandler assigns an address and echoes packets with src/dst swapped.
 type echoHandler struct {
 	accepted chan transport.AuthenticatedPeer
@@ -63,6 +73,7 @@ func (h *echoHandler) Accept(_ context.Context, peer transport.AuthenticatedPeer
 			StartIP: netip.MustParseAddr("10.0.0.0"),
 			EndIP:   netip.MustParseAddr("10.255.255.255"),
 		}},
+		DNS: testDNS,
 	}, http.StatusOK, nil
 }
 
@@ -232,6 +243,7 @@ func TestApprovedDeviceGetsTunnelAndEcho(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	checkDNS(t, tun.DNS())
 	prefixes, err := tun.LocalPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)

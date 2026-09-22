@@ -15,6 +15,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/netparse"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/forward"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
@@ -55,6 +56,8 @@ type HubStatus struct {
 	Transport  string    `json:"transport,omitempty"` // quic or tcp (the fallback)
 	Primary    bool      `json:"primary"`
 	Advertised []string  `json:"advertised,omitempty"`
+	// DNS: resolvers the hub offered with this tunnel.
+	DNS []string `json:"dns,omitempty"`
 	// What this tunnel carried since Since: IP packets from and to the hub.
 	transport.TunnelStats
 }
@@ -491,6 +494,18 @@ func (m *spokeManager) applyRoutesLocked() {
 	m.skipped = skipped
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// The resolvers of the primary hub, where the platform takes them (the
+	// apps): all names resolve there, through the tunnel.
+	if d, ok := s.n.net.(netcfg.DNSConfigurator); ok {
+		var dns []netip.Addr
+		if m.primary != nil && m.primary.tunnel != nil {
+			dns = m.primary.tunnel.DNS()
+		}
+		for _, a := range dns {
+			want[netip.PrefixFrom(a, a.BitLen())] = true
+		}
+		d.SetDNS(dns)
+	}
 	for p := range m.installed {
 		if !want[p] {
 			if err := s.n.net.DelRoute(ctx, p, s.ifname); err != nil {
@@ -561,6 +576,9 @@ func (m *spokeManager) hubs() []HubStatus {
 		if l.tunnel != nil {
 			hs.Transport = l.tunnel.Transport()
 			hs.TunnelStats = l.tunnel.Stats()
+			for _, a := range l.tunnel.DNS() {
+				hs.DNS = append(hs.DNS, a.String())
+			}
 		}
 		for _, a := range l.advertised {
 			hs.Advertised = append(hs.Advertised, a.String())

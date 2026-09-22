@@ -61,6 +61,7 @@ func (h *hubService) Accept(_ context.Context, peer transport.AuthenticatedPeer)
 	return transport.TunnelConfig{
 		Assigned: assigned,
 		Routes:   advertisedRoutes(snap, p.ID),
+		DNS:      n.cfg.DNS,
 	}, http.StatusOK, nil
 }
 
