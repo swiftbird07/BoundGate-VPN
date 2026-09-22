@@ -38,7 +38,11 @@ prefixes:
 auto_up: true                      # up as soon as approved and at every start
 profile: full                      # routes everything hubs advertise. A server should not take an exit node's
                                    # 0.0.0.0/0 as its default route: put an `include` profile (docs/PROFILES.md, the
-                                   # lab's deploy/compose/config/profiles/lab.yaml) into ./profiles and name it here
+                                   # lab's deploy/compose/config/profiles/lab.yaml) into ./profiles and name it here,
+                                   # or keep `full` together with reply_via_arrival below
+# reply_via_arrival: true          # Linux: a server behind a port forward that sends its own traffic through the
+                                   # exit node (the hub's policies decide what it may reach) and still answers
+                                   # forwarded connections the way they came (docs/ARRIVAL.md)
 # profiles_dir: /etc/boundgate/profiles    # mount ./profiles:/etc/boundgate/profiles:ro in docker-compose.yml
 socket: /run/boundgate/node.sock
 tun_name: bg0

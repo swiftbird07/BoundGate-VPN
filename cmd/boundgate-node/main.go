@@ -84,6 +84,11 @@ type config struct {
 	TUNName      string            `yaml:"tun_name"`
 	HubAddrs     map[string]string `yaml:"hub_addrs"`     // dial override per hub name or public_addr
 	AllowOverlap bool              `yaml:"allow_overlap"` // route networks this machine already lives in (overlap guard off)
+	// ReplyViaArrival (Linux, not on hubs): connections that come in from
+	// outside (a port forward on the router) are answered the way they came,
+	// while everything this host and its containers start goes through the
+	// tunnel, e.g. to an exit node whose policies decide (docs/ARRIVAL.md).
+	ReplyViaArrival bool `yaml:"reply_via_arrival"`
 	MTU          int               `yaml:"mtu"`
 	LogDir       string            `yaml:"log_dir"`
 	LogStdout    bool              `yaml:"log_stdout"`
@@ -254,6 +259,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		TUNName:           cfg.TUNName,
 		HubAddrs:          cfg.HubAddrs,
 		AllowOverlap:      cfg.AllowOverlap,
+		ReplyViaArrival:   cfg.ReplyViaArrival,
 		MTU:               cfg.MTU,
 		Log:               logs.System,
 		FlowLog:           logs.Flow,

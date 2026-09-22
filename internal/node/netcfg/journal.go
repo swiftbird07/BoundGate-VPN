@@ -3,6 +3,7 @@ package netcfg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -34,6 +35,8 @@ type journalState struct {
 	Routes []journalRoute `json:"routes,omitempty"`
 	Bypass []netip.Addr   `json:"bypass,omitempty"`
 	NAT    string         `json:"nat_iface,omitempty"`
+	// Arrival: ReplyViaArrival is on for this device
+	Arrival string `json:"arrival_iface,omitempty"`
 }
 
 // Watch passes on to the wrapped configurator when it can watch the network.
@@ -65,6 +68,10 @@ func (j *Journal) Recover(ctx context.Context) int {
 		return 0
 	}
 	n := 0
+	if a, ok := j.Configurator.(ArrivalRouter); ok && old.Arrival != "" {
+		_ = a.ReplyViaArrival(ctx, old.Arrival, false) // also flushes the tunnel's table
+		n++
+	}
 	for _, r := range old.Routes {
 		_ = j.Configurator.DelRoute(ctx, r.Dst, r.Iface)
 		n++
@@ -84,7 +91,7 @@ func (j *Journal) Recover(ctx context.Context) int {
 
 // save writes the state; called with mu held.
 func (j *Journal) save() {
-	if len(j.st.Routes) == 0 && len(j.st.Bypass) == 0 && j.st.NAT == "" {
+	if len(j.st.Routes) == 0 && len(j.st.Bypass) == 0 && j.st.NAT == "" && j.st.Arrival == "" {
 		_ = os.Remove(j.path)
 		return
 	}
@@ -175,4 +182,23 @@ func (j *Journal) SetNAT(ctx context.Context, pool netip.Prefix, dsts []netip.Pr
 	}
 	j.save()
 	return nil
+}
+
+// ReplyViaArrival passes on to the wrapped configurator (ArrivalRouter) and
+// records it, so that a crashed daemon's rules are removed on the next start.
+func (j *Journal) ReplyViaArrival(ctx context.Context, ifname string, on bool) error {
+	a, ok := j.Configurator.(ArrivalRouter)
+	if !ok {
+		return errors.New("netcfg: reply_via_arrival is only available on Linux")
+	}
+	err := a.ReplyViaArrival(ctx, ifname, on)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if on && err == nil {
+		j.st.Arrival = ifname
+	} else if !on {
+		j.st.Arrival = ""
+	}
+	j.save()
+	return err
 }

@@ -99,6 +99,10 @@ type Config struct {
 	QUICRetry time.Duration
 	// NoRelay: a hub does not relay between spokes (transport/relay.go).
 	NoRelay bool
+	// ReplyViaArrival (Linux spokes): replies to connections that came in
+	// from outside leave the way they came; the tunnel's routes apply to
+	// what this host starts itself (netcfg.ArrivalRouter).
+	ReplyViaArrival bool
 	// LoginPassthrough (hub): with it, an interactive node without a user
 	// session is admitted anyway, and reaches these destinations only (the
 	// IdP, DNS) until the session arrives. Only for Android's lockdown mode
@@ -1151,6 +1155,7 @@ type session struct {
 	peerRoute      map[netip.Prefix]int // hub: kernel routes for peer prefixes
 	poolRoute      bool
 	nat            bool
+	arrival        bool // reply_via_arrival is on
 
 	since  time.Time
 	done   chan struct{}
@@ -1191,6 +1196,18 @@ func (s *session) apply(ctx context.Context) error {
 	}
 	if err := n.net.SetAddress(ctx, ifname, netip.PrefixFrom(s.self.OverlayIP, bits), n.cfg.MTU); err != nil {
 		return err
+	}
+	if n.cfg.ReplyViaArrival {
+		a, ok := n.net.(netcfg.ArrivalRouter)
+		if !ok || s.isHub {
+			return errors.New("reply_via_arrival: only for Linux nodes that are not hubs")
+		}
+		// before the first route through the device: they go to its table
+		if err := a.ReplyViaArrival(ctx, ifname, true); err != nil {
+			return fmt.Errorf("reply_via_arrival: %w", err)
+		}
+		s.arrival = true
+		n.log.Info("replies to connections from outside leave the way they came in; what this host starts goes through the tunnel", "device", ifname)
 	}
 	if !s.isHub {
 		if err := n.net.AddRoute(ctx, s.pool, ifname); err != nil {
@@ -1596,6 +1613,12 @@ func (s *session) teardown() {
 	if s.poolRoute {
 		_ = n.net.DelRoute(ctx, s.pool, s.ifname)
 		s.poolRoute = false
+	}
+	if s.arrival {
+		if a, ok := n.net.(netcfg.ArrivalRouter); ok {
+			_ = a.ReplyViaArrival(ctx, s.ifname, false)
+		}
+		s.arrival = false
 	}
 	if s.dev != nil {
 		_ = s.dev.Close()

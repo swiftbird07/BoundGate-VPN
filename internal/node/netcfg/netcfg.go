@@ -43,6 +43,17 @@ type Configurator interface {
 	SetNAT(ctx context.Context, pool netip.Prefix, dsts []netip.Prefix, ifname string) error
 }
 
+// ArrivalRouter is a configurator that can send replies back the way their
+// connection came in (Linux, node option reply_via_arrival). A server that
+// hosts services behind a port forward and sends its own traffic through
+// the tunnel (profile full over an exit node) otherwise answers the
+// forwarded connections through the tunnel, where they die.
+type ArrivalRouter interface {
+	// ReplyViaArrival turns it on for the tunnel device ifname, before any
+	// route through it is added, or off again after the last one is gone.
+	ReplyViaArrival(ctx context.Context, ifname string, on bool) error
+}
+
 // Watcher is a configurator that notices when the machine's own networks
 // change (another Wi-Fi, a cable, a VPN of someone else). Host routes to the
 // control plane and hubs point to the gateway of the network they were set

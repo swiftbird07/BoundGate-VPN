@@ -13,15 +13,21 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-type linuxCfg struct{ own *ownIfaces }
+type linuxCfg struct {
+	own *ownIfaces
+	// arrival: routes through the tunnel go into arrivalTable
+	// (ReplyViaArrival) instead of the main table
+	arrival *atomic.Bool
+}
 
 // New returns the Linux configurator. It shells out to iproute2 and
 // nftables; that keeps the prototype small and the commands auditable.
-func New() Configurator { return linuxCfg{own: &ownIfaces{}} }
+func New() Configurator { return linuxCfg{own: &ownIfaces{}, arrival: &atomic.Bool{}} }
 
 const nftTable = "boundgate"
 
@@ -46,12 +52,96 @@ func (linuxCfg) SetAddress(ctx context.Context, ifname string, addr netip.Prefix
 	return run(ctx, "ip", "link", "set", "dev", ifname, "up", "mtu", strconv.Itoa(mtu))
 }
 
-func (linuxCfg) AddRoute(ctx context.Context, dst netip.Prefix, ifname string) error {
-	return run(ctx, "ip", "route", "replace", dst.String(), "dev", ifname)
+func (c linuxCfg) AddRoute(ctx context.Context, dst netip.Prefix, ifname string) error {
+	return run(ctx, append([]string{"ip", "route", "replace", dst.String(), "dev", ifname}, c.table()...)...)
 }
 
-func (linuxCfg) DelRoute(ctx context.Context, dst netip.Prefix, ifname string) error {
-	return run(ctx, "ip", "route", "del", dst.String(), "dev", ifname)
+func (c linuxCfg) DelRoute(ctx context.Context, dst netip.Prefix, ifname string) error {
+	return run(ctx, append([]string{"ip", "route", "del", dst.String(), "dev", ifname}, c.table()...)...)
+}
+
+func (c linuxCfg) table() []string {
+	if c.arrival != nil && c.arrival.Load() {
+		return []string{"table", strconv.Itoa(arrivalTable)}
+	}
+	return nil
+}
+
+// Reply via arrival (ArrivalRouter). The tunnel's routes live in their own
+// table, consulted after the main table without its default route:
+//
+//	5180  fwmark 0x4000/0x4000 lookup main           replies of connections from outside
+//	5181  lookup main suppress_prefixlength 0        the LAN, host routes to hubs and control plane
+//	5182  lookup 5184                                the tunnel: 0/1, 128/1, the overlay, ...
+//
+// A connection that comes in from outside to this host (not through the
+// tunnel, to one of its own addresses; ports Docker publishes too, the mark
+// comes before Docker's DNAT) gets the connection mark, and every packet of
+// it carries it as its packet mark, forwarded ones from containers too. So
+// its replies take the main table and leave through the gateway they came
+// from. What this host and its containers start themselves has no mark and
+// goes through the tunnel, where the hub's policies decide.
+const (
+	arrivalTable = 5184
+	arrivalMark  = "0x4000"
+	arrivalNft   = "boundgate_arrival"
+)
+
+// ArrivalRules renders the nftables script ReplyViaArrival installs.
+func ArrivalRules(ifname string) string {
+	return fmt.Sprintf(`table inet %[1]s {
+  chain prerouting {
+    type filter hook prerouting priority mangle; policy accept;
+    ct state new iifname != %[2]q fib daddr type local ct mark set ct mark | %[3]s
+    ct mark & %[3]s == %[3]s meta mark set meta mark | %[3]s
+  }
+  chain output {
+    type route hook output priority mangle; policy accept;
+    ct mark & %[3]s == %[3]s meta mark set meta mark | %[3]s
+  }
+}
+`, arrivalNft, ifname, arrivalMark)
+}
+
+// arrivalRuleArgs are the `ip rule add` arguments, per family (-4, -6).
+func arrivalRuleArgs() [][]string {
+	return [][]string{
+		{"pref", "5180", "fwmark", arrivalMark + "/" + arrivalMark, "lookup", "main"},
+		{"pref", "5181", "lookup", "main", "suppress_prefixlength", "0"},
+		{"pref", "5182", "lookup", strconv.Itoa(arrivalTable)},
+	}
+}
+
+func (c linuxCfg) ReplyViaArrival(ctx context.Context, ifname string, on bool) error {
+	// always from a clean state: an earlier process may have left some of it
+	for _, fam := range []string{"-4", "-6"} {
+		for _, r := range arrivalRuleArgs() {
+			for run(ctx, "ip", fam, "rule", "del", r[0], r[1]) == nil {
+			}
+		}
+		_ = run(ctx, "ip", fam, "route", "flush", "table", strconv.Itoa(arrivalTable))
+	}
+	_ = run(ctx, "nft", "delete", "table", "inet", arrivalNft)
+	c.arrival.Store(false)
+	if !on {
+		return nil
+	}
+	if err := runStdin(ctx, ArrivalRules(ifname), "nft", "-f", "-"); err != nil {
+		return err
+	}
+	for _, fam := range []string{"-4", "-6"} {
+		for _, r := range arrivalRuleArgs() {
+			if err := run(ctx, append([]string{"ip", fam, "rule", "add"}, r...)...); err != nil {
+				if fam == "-6" {
+					break // a host without IPv6: the tunnel carries IPv4 only anyway
+				}
+				_ = c.ReplyViaArrival(ctx, ifname, false)
+				return err
+			}
+		}
+	}
+	c.arrival.Store(true)
+	return nil
 }
 
 type routeGet struct {
