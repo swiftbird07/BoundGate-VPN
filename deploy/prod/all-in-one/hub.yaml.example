@@ -18,6 +18,8 @@ behind_mux:
 # DNS resolvers this hub offers its spokes (default: none). The apps (Android, iOS) then resolve every
 # name through them, through the tunnel, and the hub lets DNS to them (port 53) through for every
 # device, whatever the policies allow. Daemons (Linux, macOS, Windows) keep the system's resolver.
+# Needed when this hub is an exit node for iPhones: with the default route in the tunnel iOS takes
+# its resolvers from the tunnel only and resolves nothing without them (docs/IOS.md).
 # dns: [10.20.0.1]
 # Only for Android's Always-on VPN with "Block connections without VPN" (docs/ANDROID.md): a device
 # without a user session gets a tunnel that reaches these destinations only, so that its browser

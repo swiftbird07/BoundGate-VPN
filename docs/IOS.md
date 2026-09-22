@@ -105,6 +105,18 @@ creates the profiles with automatic signing:
   and whenever the machine's own addresses change (checked every 2 s), so
   the route leaves the tunnel within about a second of the address; leaving
   the network brings it back.
+* **Exit node: default route and resolvers.** An exit node reaches the node
+  as the halves 0.0.0.0/1 and 128.0.0.0/1 (on a computer they shadow its own
+  default route). iOS gets `NEIPv4Route.default()` instead. With the halves,
+  a joined Wi-Fi stayed "unsatisfied (No network route)" for as long as they
+  were in place, and the phone stayed on mobile data (tunnel.log,
+  2026-09-22). With the default route the tunnel is the primary interface,
+  and iOS takes its resolvers from the tunnel's settings only
+  ([Apple DTS](https://developer.apple.com/forums/thread/756501): DNS
+  settings of a tunnel apply only when it claims the default route). The
+  hub therefore needs its `dns` option. Without it no DNS query leaves the
+  phone and apps report "not connected to the internet"; the tunnel logs
+  "the exit node's hub offers no DNS resolvers".
 * **Enrollment across starts.** The node keeps the last enrollment state
   the control plane reported (`enrollment.json`) and shows it at once after
   a start, marked `enrollment_stale` until the control plane answers. It

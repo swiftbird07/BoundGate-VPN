@@ -172,6 +172,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
             let d = NEDNSSettings(servers: dns)
             d.matchDomains = [""]
             ns.dnsSettings = d
+        } else if routes.contains("0.0.0.0/0") {
+            // With the default route the tunnel is the primary interface and
+            // the system takes its resolvers from the tunnel only: without
+            // any it resolves no name at all, and apps report "not connected
+            // to the internet" (2026-09-22: no DNS left the phone while the
+            // hub offered none). The hub's `dns` option is missing.
+            let why = "the exit node's hub offers no DNS resolvers (hub option dns): iOS resolves no names through a default route without them"
+            logger.error("\(why, privacy: .public)")
+            TunnelLog.shared.write("apply: \(why)")
         }
         ns.mtu = NSNumber(value: s.mtu)
         let done = DispatchSemaphore(value: 0)
