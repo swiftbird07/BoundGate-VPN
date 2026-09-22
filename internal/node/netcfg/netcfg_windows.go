@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
-	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/tun"
@@ -227,57 +226,39 @@ func (c *winCfg) ours(l winipcfg.LUID) bool {
 	return false
 }
 
-// Watch reports changes of the machine's own networks: an address that
-// comes or goes, or a default route that changes, on any adapter but ours.
-// Windows sends several notifications per change; they are coalesced over
-// two seconds.
+// Watch gets every route change from the IP Helper API and compares the
+// default routes outside the tunnel when one comes (watch.go).
 func (c *winCfg) Watch(ctx context.Context, changed func()) bool {
-	var (
-		mu    sync.Mutex
-		timer *time.Timer
-	)
-	kick := func(l winipcfg.LUID) {
-		if c.ours(l) {
-			return
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if ctx.Err() != nil {
-			return
-		}
-		if timer != nil {
-			timer.Stop()
-		}
-		timer = time.AfterFunc(2*time.Second, changed)
-	}
-	addr, err := winipcfg.RegisterUnicastAddressChangeCallback(func(_ winipcfg.MibNotificationType, a *winipcfg.MibUnicastIPAddressRow) {
-		if a != nil {
-			kick(a.InterfaceLUID)
-		}
+	events := make(chan struct{}, 1)
+	cb, err := winipcfg.RegisterRouteChangeCallback(func(winipcfg.MibNotificationType, *winipcfg.MibIPforwardRow2) {
+		notify(events)
 	})
 	if err != nil {
-		return false
-	}
-	route, err := winipcfg.RegisterRouteChangeCallback(func(_ winipcfg.MibNotificationType, r *winipcfg.MibIPforwardRow2) {
-		if r != nil && r.DestinationPrefix.PrefixLength == 0 {
-			kick(r.InterfaceLUID)
-		}
-	})
-	if err != nil {
-		addr.Unregister()
 		return false
 	}
 	go func() {
 		<-ctx.Done()
-		addr.Unregister()
-		route.Unregister()
-		mu.Lock()
-		if timer != nil {
-			timer.Stop()
-		}
-		mu.Unlock()
+		cb.Unregister()
 	}()
+	go watchDefaults(ctx, events, c.defaults, changed)
 	return true
+}
+
+// defaults describes the default routes on adapters other than ours.
+func (c *winCfg) defaults() (string, error) {
+	rows, err := winipcfg.GetIPForwardTable2(windows.AF_UNSPEC)
+	if err != nil {
+		return "", err
+	}
+	var out []string
+	for i := range rows {
+		r := &rows[i]
+		if r.DestinationPrefix.PrefixLength != 0 || c.ours(r.InterfaceLUID) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%d %s %d", r.InterfaceIndex, r.NextHop.Addr(), r.Metric))
+	}
+	return sortedLines(out), nil
 }
 
 var errWindowsEndpoint = errors.New("netcfg: Windows nodes are endpoints only (no forwarding or NAT)")

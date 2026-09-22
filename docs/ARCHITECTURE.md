@@ -283,7 +283,7 @@ internal/control        control plane: db/ (SQLite + migrations), snapshot/ (per
 web/                    admin UI: Svelte 5 + Vite + TypeScript (policy builder, sanity check, nodes, mesh view (MESH.md), sessions, logs, admins)
 internal/node           daemon: control loop, session (up/down), dataplane (TUN + table + uplink), hub service, spoke manager
 internal/node/forward   packet buffer conventions, destination table (hosts + longest prefix)
-internal/node/netcfg    TUN, addresses, routes, bypass routes, forwarding, nftables NAT (Linux); utun, ifconfig/route (macOS, endpoint only); Wintun, winipcfg (Windows, endpoint only, watches for network changes); crash-recovery journal
+internal/node/netcfg    TUN, addresses, routes, bypass routes, forwarding, nftables NAT (Linux); utun, ifconfig/route (macOS, endpoint only); Wintun, winipcfg (Windows, endpoint only); a watcher for changed default routes on all three; crash-recovery journal
 cmd/boundgate-tray      Windows tray app over the service socket (internal/tray: phases, icon)
 cmd/boundgate-udpbridge lab only: UDP-over-TCP shim and QUIC reachability probe for a Mac node against the compose hubs
 deploy/macos            Mac lab runner (dev.sh, e2e.sh), LaunchDaemon plist and installer

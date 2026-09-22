@@ -17,7 +17,7 @@ Status 2026-09-21:
 | Where | What |
 |---|---|
 | `cmd/boundgate-node` (`platform_windows.go`) | The service. `boundgate-node install [-config FILE]`, `uninstall`, `start`, `stop`. Under the service manager it runs until Stop or Shutdown. Started from a console it runs until Ctrl+C. |
-| `internal/node/netcfg/netcfg_windows.go` | Wintun adapter through `wireguard/tun`. Address, MTU, routes and host routes through `winipcfg` (the IP Helper API, as in WireGuard for Windows). It watches the machine's other adapters: after a change of network (another Wi-Fi, a cable) the host routes to control plane and hubs are set again on the new path and the node reconnects (R108). Endpoint only: forwarding and NAT are refused. |
+| `internal/node/netcfg/netcfg_windows.go` | Wintun adapter through `wireguard/tun`. Address, MTU, routes and host routes through `winipcfg` (the IP Helper API, as in WireGuard for Windows). When the default routes outside the tunnel change (another Wi-Fi, a cable), the host routes to control plane and hubs are set again on the new path and the node reconnects (R108, the same on Linux and macOS). Endpoint only: forwarding and NAT are refused. |
 | `internal/devicekey/tpm2key` (`device_windows.go`) | The existing TPM key over TPM Base Services (`go-tpm/…/windowstpm`). |
 | `internal/node/ipc` (`protect_windows.go`) | The socket `%ProgramData%\BoundGate\node.sock` (AF_UNIX, Windows 10 1803 and later) with its own DACL. |
 | `cmd/boundgate-tray`, `internal/tray` | The tray app. |

@@ -13,14 +13,14 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-type darwinCfg struct{}
+type darwinCfg struct{ own *ownIfaces }
 
 // New returns the macOS configurator: utun through the wireguard tun
 // package, ifconfig(8) and route(8) for the rest. macOS nodes are endpoints;
 // forwarding and NAT (subnet router, hub) are not implemented.
-func New() Configurator { return darwinCfg{} }
+func New() Configurator { return darwinCfg{own: &ownIfaces{}} }
 
-func (darwinCfg) CreateTUN(name string, mtu int) (tun.Device, string, error) {
+func (c darwinCfg) CreateTUN(name string, mtu int) (tun.Device, string, error) {
 	dev, err := tun.CreateTUN(darwinTUNName(name), mtu)
 	if err != nil {
 		return nil, "", fmt.Errorf("netcfg: create utun (needs root): %w", err)
@@ -30,6 +30,7 @@ func (darwinCfg) CreateTUN(name string, mtu int) (tun.Device, string, error) {
 		dev.Close()
 		return nil, "", err
 	}
+	c.own.add(n)
 	return dev, n, nil
 }
 

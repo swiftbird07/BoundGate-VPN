@@ -35,6 +35,16 @@ Routes through the tunnel device vanish with the device anyway; **bypass
 host routes do not**, and a stale one would pin a hub to the gateway of a
 network the Mac has left. The journal exists on Linux as well.
 
+## Changing networks
+
+The same can happen while the daemon runs: the Mac moves to another Wi-Fi
+or to a hotspot, or another VPN takes the default route. The daemon reads
+the routing socket. When the default routes outside its own utun differ from
+the last look (`netstat -rn`, at most every 2 s), it sets every host route
+to control plane and hubs again on the new path and reconnects. The log says
+"network changed: host routes renewed, reconnecting". Linux (netlink) and
+Windows do the same (SECURITY.md R108).
+
 ## Overlap guard: a second VPN, an overlapping LAN
 
 Before the daemon touches anything it compares what it is about to route

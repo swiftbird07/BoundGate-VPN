@@ -16,15 +16,15 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-type linuxCfg struct{}
+type linuxCfg struct{ own *ownIfaces }
 
 // New returns the Linux configurator. It shells out to iproute2 and
 // nftables; that keeps the prototype small and the commands auditable.
-func New() Configurator { return linuxCfg{} }
+func New() Configurator { return linuxCfg{own: &ownIfaces{}} }
 
 const nftTable = "boundgate"
 
-func (linuxCfg) CreateTUN(name string, mtu int) (tun.Device, string, error) {
+func (c linuxCfg) CreateTUN(name string, mtu int) (tun.Device, string, error) {
 	dev, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, "", fmt.Errorf("netcfg: create tun %s: %w", name, err)
@@ -34,6 +34,7 @@ func (linuxCfg) CreateTUN(name string, mtu int) (tun.Device, string, error) {
 		dev.Close()
 		return nil, "", err
 	}
+	c.own.add(n)
 	return dev, n, nil
 }
 
