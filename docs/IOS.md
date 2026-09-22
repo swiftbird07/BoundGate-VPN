@@ -177,14 +177,14 @@ has no keychain group. Everything real needs the signed build.
 
 ## The tunnel's log
 
-The packet tunnel also writes its log to `tunnel.log` in the app group
+The packet tunnel also writes its log to `Documents/tunnel.log` in its own container
 (`tunnel.log.1` is the one before, 1 MiB each). The file holds the core's
 lines, every path the system reports (`path:`, the full description with
 interfaces and gateways) and every set of settings handed to the system
 (`apply:`). From a development build, with the phone connected:
 
 ```bash
-xcrun devicectl device copy from --device <id> --domain-type appGroupDataContainer --domain-identifier group.de.swiftbird.boundgate --source tunnel.log --destination tunnel.log
+xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier de.swiftbird.boundgate.tunnel --source Documents/tunnel.log --destination tunnel.log
 ```
 
 `xcrun devicectl list devices` shows the id.

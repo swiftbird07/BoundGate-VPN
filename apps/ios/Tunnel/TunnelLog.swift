@@ -1,12 +1,15 @@
 import Foundation
 
-/// A copy of the tunnel's log in the app group (tunnel.log, the one before as
+/// A copy of the tunnel's log in the extension's own Documents (tunnel.log, the one before as
 /// tunnel.log.1, at most 1 MiB each). The system log of a phone needs a
 /// sysdiagnose; this file can be taken from a development build with
 ///
 ///   xcrun devicectl device copy from --device <id> \
-///     --domain-type appGroupDataContainer --domain-identifier <app group> \
-///     --source tunnel.log --destination tunnel.log
+///     --domain-type appDataContainer --domain-identifier <app id>.tunnel \
+///     --source Documents/tunnel.log --destination tunnel.log
+///
+/// Not the app group: devicectl does not see into it (it shows an empty
+/// container of its own).
 ///
 /// It holds what the system log holds: the core's lines, what the path
 /// monitor saw and the settings handed to the system (docs/IOS.md).
@@ -25,7 +28,7 @@ final class TunnelLog {
     }()
 
     private init() {
-        url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: AppConfig.appGroup)?.appendingPathComponent("tunnel.log")
+        url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("tunnel.log")
     }
 
     func write(_ line: String) {
