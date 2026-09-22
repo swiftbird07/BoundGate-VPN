@@ -63,7 +63,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         let m = NWPathMonitor()
         var last: String?
         m.pathUpdateHandler = { [weak self] path in
-            TunnelLog.shared.write("path: \(path.debugDescription)")
+            TunnelLog.shared.write("path: \(path.debugDescription), gateways \(path.gateways), interfaces \(path.availableInterfaces.map { "\($0.name)/\($0.type)" })")
             let now = Self.underlying(path)
             defer { last = now }
             guard let before = last, before != now else { return }
@@ -146,20 +146,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         TunnelLog.shared.write("apply: \(settingsJSON)")
         let s = try JSONDecoder().decode(NetSettings.self, from: Data(settingsJSON.utf8))
         guard let (addr, _) = s.address.splitPrefix() else { throw CoreError("bad overlay address \(s.address)") }
-        // The remote address is the hub as the node dials it, also an IPv6
-        // (or NAT64) address on an IPv6-only network: with 127.0.0.1 there
-        // the phone stayed on LTE when a Wi-Fi came (excluded is sorted, IPv4
-        // first, so a dual-stack network gets the IPv4 address).
-        // An exit node stays the halves 0/1 and 128/1: with
-        // NEIPv4Route.default() the phone reported "not connected to the
-        // internet" on Wi-Fi and LTE, while its flows through the hub got
-        // answers.
+        // The remote address is the hub as the node dials it (excluded is
+        // sorted, IPv4 first), an IPv6 or NAT64 address on an IPv6-only
+        // network.
         let ns = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: s.excluded?.first ?? "127.0.0.1")
         let v4 = NEIPv4Settings(addresses: [addr], subnetMasks: ["255.255.255.255"])
-        let routes = s.routes
+        var routes = s.routes
+        // An exit node reaches the node as the halves 0/1 and 128/1 (on a
+        // computer they shadow its own default route). The system gets the
+        // default route itself: with the halves a joined Wi-Fi stays
+        // "unsatisfied (No network route)" for as long as they are in place
+        // (tunnel.log, 2026-09-22), and the phone stays on mobile data.
+        if routes.contains("0.0.0.0/1"), routes.contains("128.0.0.0/1") {
+            routes.removeAll { $0 == "0.0.0.0/1" || $0 == "128.0.0.0/1" }
+            routes.insert("0.0.0.0/0", at: 0)
+        }
         v4.includedRoutes = routes.compactMap { r in
             guard let (net, bits) = r.splitPrefix(), !net.contains(":") else { return nil }
-            return NEIPv4Route(destinationAddress: net, subnetMask: mask(bits))
+            return bits == 0 ? NEIPv4Route.default() : NEIPv4Route(destinationAddress: net, subnetMask: mask(bits))
         }
         v4.excludedRoutes = (s.excluded ?? []).filter { !$0.contains(":") }.map { NEIPv4Route(destinationAddress: $0, subnetMask: "255.255.255.255") }
         ns.ipv4Settings = v4
