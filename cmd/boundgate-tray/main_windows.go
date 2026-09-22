@@ -36,7 +36,14 @@ const (
 
 func main() {
 	socket := flag.String("socket", ipc.DefaultSocket(), "the service's socket")
+	render := flag.String("render-panel", "", "write the panel in every phase as PNG files into this directory, and exit")
 	flag.Parse()
+	if *render != "" {
+		if err := renderPanels(*render); err != nil {
+			message("BoundGate", err.Error(), windows.MB_ICONERROR)
+		}
+		return
+	}
 	// one tray per session: a second start (autostart plus a click) ends here
 	name, _ := windows.UTF16PtrFromString(`Local\BoundGateTray`)
 	if _, err := windows.CreateMutex(nil, false, name); errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
@@ -48,6 +55,7 @@ func main() {
 
 type app struct {
 	client *ipc.Client
+	panel  *panelWin
 
 	title, detail                        *systray.MenuItem
 	connect, disconnect, signIn, signOut *systray.MenuItem
@@ -56,11 +64,12 @@ type app struct {
 	profiles                             [maxProfiles]*systray.MenuItem
 	detailLines                          [maxDetails]*systray.MenuItem
 
-	mu     sync.Mutex
-	busy   string // the action in flight
-	status *node.Status
-	names  []string
-	last   tray.Reading
+	mu        sync.Mutex
+	busy      string // the action in flight
+	actionErr string // the last action's failure, shown in the panel
+	status    *node.Status
+	names     []string
+	last      tray.Reading
 
 	// draw serializes refresh: the poll and the end of an action both redraw
 	draw      sync.Mutex
@@ -71,6 +80,9 @@ type app struct {
 
 func (a *app) ready() {
 	systray.SetTitle("BoundGate")
+	// a click on the icon opens the panel; the right button keeps the menu
+	a.panel = newPanel(a.dispatch)
+	systray.SetOnTapped(a.panel.toggle)
 	a.title = systray.AddMenuItem("BoundGate", "")
 	a.title.Disable()
 	a.detail = systray.AddMenuItem("", "")
@@ -143,8 +155,9 @@ func (a *app) refresh() {
 	a.mu.Lock()
 	rate := tray.RateOf(a.last, now)
 	a.last, a.status, a.names = now, st, names
-	busy := a.busy
+	busy, actionErr := a.busy, a.actionErr
 	a.mu.Unlock()
+	a.panel.update(tray.PanelInput{Status: st, Err: err, Busy: busy, Profiles: names, Rate: rate, ActionError: actionErr})
 
 	v := tray.Describe(st, err)
 	light := taskbarLight()
@@ -239,13 +252,48 @@ func (a *app) run(label string, f func() error) {
 	go func() {
 		err := f()
 		a.mu.Lock()
-		a.busy = ""
+		a.busy, a.actionErr = "", ""
+		if err != nil {
+			a.actionErr = label + ": " + err.Error()
+		}
 		a.mu.Unlock()
 		a.refresh()
-		if err != nil {
+		// the open panel shows the failure; otherwise a message box does
+		if err != nil && !a.panel.isOpen() {
 			message(label, err.Error(), windows.MB_ICONERROR)
 		}
 	}()
+}
+
+// dispatch runs what the panel's buttons name.
+func (a *app) dispatch(act string) {
+	switch {
+	case act == tray.ActConnect:
+		a.up("")
+	case act == tray.ActDisconnect:
+		a.run("Disconnecting", func() error { _, err := a.client.Down(); return err })
+	case act == tray.ActSignIn:
+		a.login()
+	case act == tray.ActSignOut:
+		a.run("Signing out", func() error { _, err := a.client.Logout(); return err })
+	case act == tray.ActSetUp:
+		a.setUp()
+	case act == tray.ActEnroll:
+		a.requestAccess()
+	case act == tray.ActCopyFP:
+		a.copyFingerprint()
+	case act == tray.ActQuit:
+		systray.Quit()
+	case strings.HasPrefix(act, tray.ActProfile):
+		a.mu.Lock()
+		names := a.names
+		a.mu.Unlock()
+		for i, n := range names {
+			if n == strings.TrimPrefix(act, tray.ActProfile) {
+				a.pickProfile(i)
+			}
+		}
+	}
 }
 
 func (a *app) up(profile string) {

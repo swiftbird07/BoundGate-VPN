@@ -92,7 +92,23 @@ useless on any other machine.
 
 ## Tray
 
-The menu shows:
+A click on the icon opens the panel, a flyout above the taskbar like the
+Mac app's window (`internal/tray/panel.go` lays it out and paints it,
+`cmd/boundgate-tray/panel_windows.go` is the window, text in Segoe UI with
+ClearType). It follows DESIGN.md: the mark on its tile, a state pill, one
+card for the phase (set up, request access, waiting with the fingerprint,
+connected with address, hub and user, details on demand), the action that
+matters as a button, and a footer with the device, "Sign out" and "Quit".
+It follows the Windows light or dark app mode and closes when it loses the
+focus. `boundgate-tray -render-panel DIR` writes every phase as PNG files
+without a window, for whoever works on it.
+
+The icon is the mark, in the taskbar's color (white on dark, near black on
+light): both frames at full strength when connected, the second dimmed
+otherwise, a yellow dot when something wants the user, a red one when
+something is broken.
+
+The right button opens the menu, which shows:
 
 * The phase, as on the Mac: service not running, no access (sign out and
   in once), not set up, not enrolled, waiting for approval, disconnected,
@@ -100,7 +116,6 @@ The menu shows:
 * Set up…, when no control plane is configured: a small window for its
   address. The field lowercases what is typed (the control plane compares
   its name exactly), then the tray requests access.
-* The icon's color: gray, amber, green or red.
 * Connect and Disconnect. A profile submenu when there is more than one
   profile.
 * Sign in (browser) and Sign out.
@@ -159,6 +174,5 @@ host route to the hub via the hotspot's gateway.
    * An MSI with Authenticode signatures, when there is a certificate. Until
      then SmartScreen warns (R106).
    * Self-installing updates.
-   * An application manifest for the tray (DPI, common controls).
 4. **Hub and subnet router on Windows:** not planned. Forwarding and NAT are
    refused.
