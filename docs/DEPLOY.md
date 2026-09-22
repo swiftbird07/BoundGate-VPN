@@ -340,6 +340,16 @@ Before, or with iptables-legacy, which nft cannot see, by hand:
 `iptables -I DOCKER-USER -i bg0 -j ACCEPT; iptables -I DOCKER-USER -o bg0 -j ACCEPT`.)
 What leaves the tunnel device has passed the node's ACL.
 
+**Containers on that same host are a case of their own.** Docker 28 and
+later drop every packet addressed to a container's own address that arrives
+on another interface, in the `raw` chain before `DOCKER-USER`, so an
+overlay peer cannot reach `172.x.y.z` there even though the node's rules
+allow the forwarding. Reach such a service through a published port on the
+host's address instead, or create its network with
+`com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected` (or
+`routed`), which is what the rehearsal's step 8 does. Traffic that only
+passes the host, to a LAN or the internet, is not affected.
+
 **An exit node for iPhones needs `dns` on the hub.** Set it in `hub.yaml`,
 for example `dns: [10.20.0.1]`, a resolver reachable behind the hub. With
 the exit node's default route in the tunnel, iOS asks only the resolvers
@@ -394,6 +404,15 @@ the client's real address and that a mux restart does not interrupt the
 tunnel. Then it blocks UDP/443 in the client's namespace: the tunnel comes
 back over TCP through the mux, the hub still sees the client's address,
 and once UDP is allowed again the client moves back to QUIC.
+
+Step 8 is the one with the traffic in it: the hub is an exit node
+(`0.0.0.0/0`, snat), and the client downloads 20 MB from a target in
+another Docker network, once over QUIC and once over the TCP fallback,
+and compares the SHA-256 both times. That is the path a phone takes
+through a hub on a Docker host, and it covers what broke in production:
+a packet size the path cannot carry (nothing arrives, or large transfers
+stall), and Docker's `FORWARD` policy, which the node opens in
+`DOCKER-USER`.
 
 ## Operating it
 

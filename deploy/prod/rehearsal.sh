@@ -26,7 +26,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 wait_for() { n=$1; shift; while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && return 0; n=$((n-1)); sleep 1; done; return 1; }
 
 if [ "${1:-}" = down ]; then
-  docker rm -f $P-client $P-nginx >/dev/null 2>&1 || true
+  docker rm -f $P-client $P-nginx $P-target >/dev/null 2>&1 || true
+  docker network rm $P-lan >/dev/null 2>&1 || true
   [ -f "$W/docker-compose.yml" ] && $C down --remove-orphans >/dev/null 2>&1 || true
   echo "rehearsal stopped"; exit 0
 fi
@@ -113,7 +114,8 @@ approve() {  # approve ENROLL_JSON GRANT
 
 echo "== 3. the hub enrolls over HTTP/3 on UDP/443 (through the mux) and is approved"
 wait_for 30 hub boundgatectl -json enroll -accept-new-pin || fail "hub cannot enroll: $($C logs hub | tail -3)"
-approve "$(hub boundgatectl -json enroll -accept-new-pin)" '"kind":"workload","roles":["hub"],"public_addr":"bg.test:443"'
+# the hub is the exit node too (step 8)
+approve "$(hub boundgatectl -json enroll -accept-new-pin)" '"kind":"workload","roles":["hub","exit-node"],"prefixes":[{"prefix":"0.0.0.0/0","mode":"snat"}],"public_addr":"bg.test:443"'
 wait_for 40 sh -c "$C exec -T hub boundgatectl -json status | jq -e '.state == \"up\"'" || fail "hub did not come up"
 if $C logs hub 2>&1 | grep -q 'falling back to TCP'; then fail "the hub fell back to TCP: HTTP/3 through the mux does not work"; fi
 HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
@@ -157,5 +159,32 @@ wait_for 60 sh -c "docker exec $P-client boundgatectl -json status | jq -e '[.hu
 wait_for 10 cl ping -c 1 -W 2 "$HUBIP" || fail "hub unreachable after the move back to QUIC"
 echo "   back on QUIC, hub reachable"
 
+
+echo "== 8. exit node on a Docker host: 20 MB through the tunnel, the mux and the host's forwarding (MTU, DOCKER-USER), over QUIC and over TCP"
+# The target sits in a Docker network of its own: the client's container
+# cannot reach it directly (Docker isolates its bridges), only through the
+# hub, which forwards from bg0 into that bridge past Docker's FORWARD policy
+# and masquerades, as it does towards the internet. nat-unprotected: Docker
+# 28 and later otherwise drop packets for a container address that arrive on
+# another interface (raw PREROUTING, before DOCKER-USER; docs/DEPLOY.md).
+docker network create -o com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected $P-lan >/dev/null || fail "network $P-lan"
+docker run -d --name $P-target --network $P-lan nginx:stable-alpine \
+  sh -c 'head -c 20000000 /dev/urandom > /usr/share/nginx/html/big && exec nginx -g "daemon off;"' >/dev/null || fail "target"
+TARGET=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $P-target)
+wait_for 30 sh -c "docker exec $P-target sh -c 'test \$(wc -c < /usr/share/nginx/html/big) -eq 20000000'" || fail "target file"
+WANT=$(docker exec $P-target sha256sum /usr/share/nginx/html/big | cut -d' ' -f1)
+cl ip route get "$TARGET" | grep -q 'dev bg0' || fail "the client does not route $TARGET into the tunnel: $(cl ip route get "$TARGET")"
+download() {  # download WHAT
+  got=$(cl sh -c "curl -sS --max-time 90 -w '%{stderr}%{speed_download}' http://$TARGET/big 2>/tmp/speed | sha256sum" | cut -d' ' -f1)
+  [ "$got" = "$WANT" ] || fail "20 MB $1 did not arrive intact (sha256 $got, want $WANT): $(cl boundgatectl status | tail -4)"
+  echo "   20 MB $1, intact, $(cl cat /tmp/speed | awk '{printf "%.1f MB/s", $1/1000000}')"
+}
+download "over QUIC"
+cl nft add table ip blk && cl nft add chain ip blk out '{ type filter hook output priority 0; }' && cl nft add rule ip blk out udp dport 443 drop || fail "nft"
+cl boundgatectl down >/dev/null && wait_for 30 cl boundgatectl up || fail "client up with UDP blocked"
+wait_for 60 sh -c "docker exec $P-client boundgatectl -json status | jq -e '[.hubs[] | select(.state == \"connected\" and .transport == \"tcp\")] | length == 1'" || fail "no TCP fallback tunnel for step 8"
+download "over the TCP fallback"
+cl nft delete table ip blk
+
 "$0" down >/dev/null
-echo "PASS: control plane and hub share one address and port 443 (TCP and UDP) behind boundgate-mux; UDP-blocked clients tunnel over TCP"
+echo "PASS: control plane and hub share one address and port 443 (TCP and UDP) behind boundgate-mux; UDP-blocked clients tunnel over TCP; 20 MB through the exit node over both"
