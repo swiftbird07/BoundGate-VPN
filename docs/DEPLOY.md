@@ -314,7 +314,7 @@ docker compose up -d hub
 docker compose exec hub boundgatectl enroll      # shows the hub's fingerprint; compare the control pin with the fingerprint from the log
 ```
 
-In the UI: *Nodes › pending › Confirm…*, kind `workload`, role `hub`,
+In the UI: *Nodes › pending › Confirm…*, kind `workload` (preset when the node asks for the hub role), role `hub`,
 public address `bg.example.com:443` (as in `hub.yaml`), then run the sign command it shows on
 the machine with your signing key (`boundgatectl admin sign …`, touch the
 key). `auto_up: true` brings the hub up by itself once it is approved:

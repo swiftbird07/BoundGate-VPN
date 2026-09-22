@@ -63,12 +63,18 @@
   function openConfirm(n: Node, edit: boolean) {
     const roles = n.roles.length ? n.roles : n.requested_roles;
     const prefixes = n.prefixes.length ? n.prefixes : n.requested_prefixes;
-    g = { name: n.name, kind: n.kind || 'interactive', roles: [...roles], prefixes: prefixes.map((p) => ({ ...p })), overlay_ip: n.overlay_ip || '', public_addr: n.public_addr || '', tags: [...(n.tags ?? [])], checked: edit, hardware: n.status === 'pending' ? !!n.hardware_claimed : n.hardware_bound };
+    // a hub serves others and has no user: a new one starts as a workload
+    const kind = n.status === 'pending' && roles.includes('hub') ? 'workload' : n.kind || 'interactive';
+    g = { name: n.name, kind, roles: [...roles], prefixes: prefixes.map((p) => ({ ...p })), overlay_ip: n.overlay_ip || '', public_addr: n.public_addr || '', tags: [...(n.tags ?? [])], checked: edit, hardware: n.status === 'pending' ? !!n.hardware_claimed : n.hardware_bound };
     tagInput = '';
     admin.tags().then((o) => (offer = o)).catch(() => {});
     confirm = { node: n, edit };
   }
-  function toggleRole(r: Role) { g.roles = g.roles.includes(r) ? g.roles.filter((x) => x !== r) : [...g.roles, r]; }
+  function toggleRole(r: Role) {
+    const on = !g.roles.includes(r);
+    g.roles = on ? [...g.roles, r] : g.roles.filter((x) => x !== r);
+    if (on && r === 'hub') g.kind = 'workload';
+  }
   async function submitConfirm() {
     if (!confirm) return;
     if (tagInput.trim()) { addTag(tagInput); if (tagInput) return; }
@@ -205,6 +211,9 @@
         <label class="field">Name <input bind:value={g.name} /></label>
         <label class="field">Kind <select bind:value={g.kind}><option value="interactive">interactive (a user logs in)</option><option value="workload">workload (no user session)</option></select></label>
       </div>
+      {#if g.kind === 'interactive' && g.roles.includes('hub')}
+        <p class="callout small"><b>A hub with a user?</b> An interactive node needs a signed-in user before other nodes and its own tunnels let it through. A hub has none: confirm it as a <i>workload</i>.</p>
+      {/if}
       {#if confirm.node.hardware_claimed}
         <label class="check"><input type="checkbox" bind:checked={g.hardware} /> Hardware-bound: this machine keeps its key in hardware, a TPM or a Mac's Secure Enclave ({confirm.node.key_kind})</label>
         <p class="hint">The node says so; nothing proves it remotely. Tick it if you know the machine. It becomes part of the signed binding, and policies can require it (<code>principal.hardware_bound</code>).</p>
