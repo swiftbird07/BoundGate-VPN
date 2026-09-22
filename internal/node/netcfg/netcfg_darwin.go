@@ -50,14 +50,19 @@ func (darwinCfg) DelRoute(ctx context.Context, dst netip.Prefix, ifname string) 
 	return run(ctx, darwinRouteArgs("delete", dst, ifname)...)
 }
 
-func (darwinCfg) AddBypass(ctx context.Context, host netip.Addr) error {
-	out, err := exec.CommandContext(ctx, "route", "-n", "get", darwinFamily(host), host.String()).Output()
-	if err != nil {
-		return fmt.Errorf("netcfg: route lookup for %s: %w", host, err)
-	}
-	r, err := parseDarwinRouteGet(string(out))
+func (c darwinCfg) AddBypass(ctx context.Context, host netip.Addr) error {
+	r, err := darwinRouteGet(ctx, host, host.String())
 	if err != nil {
 		return err
+	}
+	// Under a full-tunnel profile the node's own utun answers for every
+	// address, also for a hub whose host route is being renewed after a
+	// network change: the way out is then the default route, which the
+	// profile's /1 halves leave in place.
+	if c.own.has(r.Iface) {
+		if r, err = darwinRouteGet(ctx, host, "default"); err != nil {
+			return err
+		}
 	}
 	if strings.HasPrefix(r.Iface, "utun") {
 		return fmt.Errorf("netcfg: %s is currently routed through %s (another VPN?); not pinning it there", host, r.Iface)
@@ -67,6 +72,16 @@ func (darwinCfg) AddBypass(ctx context.Context, host netip.Addr) error {
 		return run(ctx, darwinBypassArgs("change", host, r)...)
 	}
 	return err
+}
+
+// darwinRouteGet asks route(8) how dst ("default" or an address) in host's
+// family is reached.
+func darwinRouteGet(ctx context.Context, host netip.Addr, dst string) (darwinRoute, error) {
+	out, err := exec.CommandContext(ctx, "route", "-n", "get", darwinFamily(host), dst).Output()
+	if err != nil {
+		return darwinRoute{}, fmt.Errorf("netcfg: route lookup for %s: %w", dst, err)
+	}
+	return parseDarwinRouteGet(string(out))
 }
 
 func (darwinCfg) DelBypass(ctx context.Context, host netip.Addr) error {

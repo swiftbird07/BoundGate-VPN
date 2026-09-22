@@ -38,10 +38,13 @@ network the Mac has left. The journal exists on Linux as well.
 ## Changing networks
 
 The same can happen while the daemon runs: the Mac moves to another Wi-Fi
-or to a hotspot, or another VPN takes the default route. The daemon reads
-the routing socket. When the default routes outside its own utun differ from
-the last look (`netstat -rn`, at most every 2 s), it sets every host route
-to control plane and hubs again on the new path and reconnects. The log says
+or to a hotspot. The daemon reads the routing socket. When the default
+routes outside any utun differ from the last look (`netstat -rn`, at most
+every 2 s), it sets every host route to control plane and hubs again on the
+new path and reconnects. Defaults over a utun are left out: host routes are
+never pinned into a tunnel, and macOS keeps utuns of its own whose IPv6
+defaults come and go. The new path is the default route even while a full
+profile's /1 halves point into the node's own utun. The log says
 "network changed: host routes renewed, reconnecting". Linux (netlink) and
 Windows do the same (SECURITY.md R108).
 

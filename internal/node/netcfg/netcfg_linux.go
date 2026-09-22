@@ -5,6 +5,7 @@ package netcfg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -56,9 +57,10 @@ func (linuxCfg) DelRoute(ctx context.Context, dst netip.Prefix, ifname string) e
 type routeGet struct {
 	Gateway string `json:"gateway"`
 	Dev     string `json:"dev"`
+	Metric  int    `json:"metric"`
 }
 
-func (linuxCfg) AddBypass(ctx context.Context, host netip.Addr) error {
+func (c linuxCfg) AddBypass(ctx context.Context, host netip.Addr) error {
 	out, err := exec.CommandContext(ctx, "ip", "-j", "route", "get", host.String()).Output()
 	if err != nil {
 		return fmt.Errorf("netcfg: route lookup for %s: %w", host, err)
@@ -68,11 +70,48 @@ func (linuxCfg) AddBypass(ctx context.Context, host netip.Addr) error {
 		return fmt.Errorf("netcfg: parse route for %s: %v", host, err)
 	}
 	r := rs[0]
+	// Under a full-tunnel profile the node's own device answers for every
+	// address, also for a hub whose host route is being renewed after a
+	// network change: the way out is then the default route, which the
+	// profile's /1 halves leave in place.
+	if c.own.has(r.Dev) {
+		fam := "-4"
+		if host.Is6() {
+			fam = "-6"
+		}
+		out, err := exec.CommandContext(ctx, "ip", "-j", fam, "route", "show", "default").Output()
+		if err != nil {
+			return fmt.Errorf("netcfg: default route lookup for %s: %w", host, err)
+		}
+		if r, err = linuxDefaultRoute(out, c.own.has); err != nil {
+			return fmt.Errorf("netcfg: %s: %w", host, err)
+		}
+	}
 	args := []string{"ip", "route", "replace", host.String() + "/" + strconv.Itoa(host.BitLen()), "dev", r.Dev}
 	if r.Gateway != "" {
 		args = append(args, "via", r.Gateway)
 	}
 	return run(ctx, args...)
+}
+
+// linuxDefaultRoute picks the default route with the lowest metric from
+// `ip -j route show default`, leaving out the node's own devices.
+func linuxDefaultRoute(out []byte, own func(string) bool) (routeGet, error) {
+	var rs []routeGet
+	if err := json.Unmarshal(out, &rs); err != nil {
+		return routeGet{}, fmt.Errorf("parse default routes: %w", err)
+	}
+	best, found := routeGet{}, false
+	for _, r := range rs {
+		if r.Dev == "" || own(r.Dev) || (found && r.Metric >= best.Metric) {
+			continue
+		}
+		best, found = r, true
+	}
+	if !found {
+		return routeGet{}, errors.New("no default route outside the tunnel")
+	}
+	return best, nil
 }
 
 func (linuxCfg) DelBypass(ctx context.Context, host netip.Addr) error {

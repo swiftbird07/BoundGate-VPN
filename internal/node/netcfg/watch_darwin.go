@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"os"
 	"os/exec"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -66,5 +67,11 @@ func (c darwinCfg) defaults() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return darwinDefaults(string(out), c.own.has), nil
+	return darwinDefaults(string(out), darwinTunnel), nil
 }
+
+// darwinTunnel: a default route over any utun is never a path for the host
+// routes (AddBypass refuses to pin there), and macOS keeps several of them
+// that come and go by themselves (link-local IPv6 defaults of its own utuns,
+// other VPNs).
+func darwinTunnel(ifname string) bool { return strings.HasPrefix(ifname, "utun") }
