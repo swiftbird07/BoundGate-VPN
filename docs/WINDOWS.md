@@ -61,7 +61,8 @@ address, then "Request access" shows its key for comparison. With
   should work now.
 * Registers and starts the service: automatic start, restart after 2, 5 and
   30 s on failure.
-* Adds the tray to `HKLM\…\Run` and the program folder to `PATH`.
+* Adds the tray to `HKLM\…\Run`, a "BoundGate" entry to the Start menu
+  (to bring the tray back after "Quit") and the program folder to `PATH`.
 * Starts the tray in the user's session without administrator rights,
   through a one-time scheduled task (also when the script runs over ssh).
 

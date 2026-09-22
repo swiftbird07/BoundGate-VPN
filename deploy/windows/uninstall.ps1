@@ -35,6 +35,7 @@ if (Get-Service -Name BoundGate -ErrorAction SilentlyContinue) {
     if ($LASTEXITCODE -ne 0) { throw 'removing the service failed' }
 }
 Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'BoundGate' -ErrorAction SilentlyContinue
+Remove-Item -Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\BoundGate.lnk') -ErrorAction SilentlyContinue
 $path = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 $kept = ($path -split ';') | Where-Object { $_ -and $_ -ne $InstallDir }
 [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'Machine')

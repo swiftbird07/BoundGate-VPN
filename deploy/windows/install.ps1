@@ -121,6 +121,12 @@ if (($path -split ';') -notcontains $InstallDir) {
     Write-Host "added $InstallDir to PATH (new shells)"
 }
 Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'BoundGate' -Value "`"$InstallDir\boundgate-tray.exe`""
+# a Start menu entry for every account: to bring the tray back after "Quit"
+$lnk = New-Object -ComObject WScript.Shell
+$sc = $lnk.CreateShortcut((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\BoundGate.lnk'))
+$sc.TargetPath = Join-Path $InstallDir 'boundgate-tray.exe'
+$sc.Description = 'BoundGate: status, connect, sign in'
+$sc.Save()
 
 # --- control plane
 $ctl = Join-Path $InstallDir 'boundgatectl.exe'
