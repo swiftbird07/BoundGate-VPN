@@ -15,6 +15,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     private let lock = NSLock()
     private var pendingStart: ((Error?) -> Void)?
     private var stopping = false
+    /// what was last handed to the system, and the utun it gave for it
+    private var applied: (json: String, fd: Int32)?
 
     // MARK: lifecycle
 
@@ -127,13 +129,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     // MARK: CorePlatform
 
     func apply(settingsJSON: String) throws -> Int32 {
+        // The node hands its settings over again after every network change
+        // (Android takes the new network's resolvers that way). Here the same
+        // settings would make the system set the VPN up anew in the middle of
+        // joining a Wi-Fi, and it then stays on mobile data: unchanged
+        // settings are not applied again (WireGuard does not either).
+        lock.lock(); let last = applied; lock.unlock()
+        if let last, last.json == settingsJSON, bg_utun_fd() == last.fd {
+            return last.fd
+        }
         let s = try JSONDecoder().decode(NetSettings.self, from: Data(settingsJSON.utf8))
         guard let (addr, _) = s.address.splitPrefix() else { throw CoreError("bad overlay address \(s.address)") }
-        let ns = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: s.excluded?.first(where: { !$0.contains(":") }) ?? "127.0.0.1")
+        // the hub, as the node dials it: on an IPv6-only network an IPv6 address
+        let ns = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: s.excluded?.first ?? "127.0.0.1")
         let v4 = NEIPv4Settings(addresses: [addr], subnetMasks: ["255.255.255.255"])
-        v4.includedRoutes = s.routes.compactMap { r in
+        var routes = s.routes
+        // an exit node reaches the node as the halves 0/1 and 128/1 (on a
+        // computer they shadow its own default route); the system gets the
+        // default route itself, which it treats as a full tunnel
+        if routes.contains("0.0.0.0/1"), routes.contains("128.0.0.0/1") {
+            routes.removeAll { $0 == "0.0.0.0/1" || $0 == "128.0.0.0/1" }
+            routes.insert("0.0.0.0/0", at: 0)
+        }
+        v4.includedRoutes = routes.compactMap { r in
             guard let (net, bits) = r.splitPrefix(), !net.contains(":") else { return nil }
-            return NEIPv4Route(destinationAddress: net, subnetMask: mask(bits))
+            return bits == 0 ? NEIPv4Route.default() : NEIPv4Route(destinationAddress: net, subnetMask: mask(bits))
         }
         v4.excludedRoutes = (s.excluded ?? []).filter { !$0.contains(":") }.map { NEIPv4Route(destinationAddress: $0, subnetMask: "255.255.255.255") }
         ns.ipv4Settings = v4
@@ -151,14 +171,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         if let failure { throw failure }
         let fd = bg_utun_fd()
         guard fd >= 0 else { throw CoreError("the system did not open a tunnel device") }
-        logger.info("applied \(s.address, privacy: .public), \(s.routes.count) routes, mtu \(s.mtu)")
+        lock.lock(); applied = (settingsJSON, fd); lock.unlock()
+        logger.info("applied \(s.address, privacy: .public), \(routes.count) routes, mtu \(s.mtu)")
         finishStart(nil)
         return fd
     }
 
     /// The overlay went down inside the node (disconnect, revoked): the VPN ends with it.
     func releaseTunnel() {
-        lock.lock(); let s = stopping; lock.unlock()
+        lock.lock(); let s = stopping; applied = nil; lock.unlock()
         if !s {
             Self.record(startProblem())
             cancelTunnelWithError(nil)
