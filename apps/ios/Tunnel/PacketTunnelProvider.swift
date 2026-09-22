@@ -52,14 +52,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
             self.lock.lock(); let waiting = self.pendingStart != nil; self.lock.unlock()
             if waiting { self.finishStart(CoreError(self.startProblem())) }
         }
+        // The monitor also reports our own doing: every setTunnelNetworkSettings
+        // changes the path (the utun and its routes), and the node applies its
+        // settings again on every network change. Only the network underneath
+        // counts: the physical interfaces the path may use, and whether it is
+        // usable at all. What stays the same is not a change.
         let m = NWPathMonitor()
-        var first = true
-        m.pathUpdateHandler = { [weak self] _ in
-            if first { first = false; return }
+        var last: String?
+        m.pathUpdateHandler = { [weak self] path in
+            let now = Self.underlying(path)
+            defer { last = now }
+            guard let before = last, before != now else { return }
+            self?.logger.info("network changed: \(before, privacy: .public) -> \(now, privacy: .public)")
             self?.engine?.networkChanged()
         }
         m.start(queue: DispatchQueue(label: "boundgate.path"))
         monitor = m
+    }
+
+    /// The part of a path that is not the tunnel itself: status, and the
+    /// physical interfaces by name and type, sorted.
+    private static func underlying(_ path: Network.NWPath) -> String {
+        let ifs = path.availableInterfaces
+            .filter { $0.type != .other }   // .other is the utun (and loopback)
+            .map { "\($0.name)/\($0.type)" }
+            .sorted()
+        return "\(path.status) \(ifs.joined(separator: ","))"
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
@@ -119,6 +137,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         }
         v4.excludedRoutes = (s.excluded ?? []).filter { !$0.contains(":") }.map { NEIPv4Route(destinationAddress: $0, subnetMask: "255.255.255.255") }
         ns.ipv4Settings = v4
+        if let dns = s.dns, !dns.isEmpty {
+            // the hub's resolvers (hub option `dns`) for every name, through the tunnel
+            let d = NEDNSSettings(servers: dns)
+            d.matchDomains = [""]
+            ns.dnsSettings = d
+        }
         ns.mtu = NSNumber(value: s.mtu)
         let done = DispatchSemaphore(value: 0)
         var failure: Error?
@@ -185,6 +209,8 @@ struct NetSettings: Decodable {
     var mtu: Int
     var routes: [String]
     var excluded: [String]?
+    /// resolvers the primary hub offers; empty: the system keeps its own
+    var dns: [String]?
 }
 
 private extension String {
