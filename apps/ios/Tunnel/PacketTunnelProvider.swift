@@ -45,6 +45,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
             return
         }
         logger.info("core \(CoreEngine.version, privacy: .public) started")
+        TunnelLog.shared.write("tunnel: core \(CoreEngine.version) started")
         lock.lock(); pendingStart = completionHandler; lock.unlock()
         // the node brings the overlay up once it has its snapshot; if it
         // cannot (not approved, control plane unreachable) the tunnel ends
@@ -62,10 +63,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         let m = NWPathMonitor()
         var last: String?
         m.pathUpdateHandler = { [weak self] path in
+            TunnelLog.shared.write("path: \(path.debugDescription)")
             let now = Self.underlying(path)
             defer { last = now }
             guard let before = last, before != now else { return }
             self?.logger.info("network changed: \(before, privacy: .public) -> \(now, privacy: .public)")
+            TunnelLog.shared.write("tunnel: network changed: \(before) -> \(now)")
             self?.engine?.networkChanged()
         }
         m.start(queue: DispatchQueue(label: "boundgate.path"))
@@ -83,6 +86,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        TunnelLog.shared.write("tunnel: stop, reason \(reason.rawValue)")
         lock.lock(); stopping = true; lock.unlock()
         monitor?.cancel()
         engine?.stop()
@@ -91,8 +95,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         completionHandler()
     }
 
-    override func sleep(completionHandler: @escaping () -> Void) { completionHandler() }
-    override func wake() { engine?.networkChanged() }
+    override func sleep(completionHandler: @escaping () -> Void) { TunnelLog.shared.write("tunnel: sleep"); completionHandler() }
+    override func wake() { TunnelLog.shared.write("tunnel: wake"); engine?.networkChanged() }
 
     private func finishStart(_ error: Error?) {
         lock.lock()
@@ -136,8 +140,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         // settings are not applied again (WireGuard does not either).
         lock.lock(); let last = applied; lock.unlock()
         if let last, last.json == settingsJSON, bg_utun_fd() == last.fd {
+            TunnelLog.shared.write("apply: unchanged, utun \(last.fd) kept")
             return last.fd
         }
+        TunnelLog.shared.write("apply: \(settingsJSON)")
         let s = try JSONDecoder().decode(NetSettings.self, from: Data(settingsJSON.utf8))
         guard let (addr, _) = s.address.splitPrefix() else { throw CoreError("bad overlay address \(s.address)") }
         // The remote address is the hub as the node dials it, also an IPv6
@@ -168,7 +174,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         var failure: Error?
         setTunnelNetworkSettings(ns) { e in failure = e; done.signal() }
         done.wait()
-        if let failure { throw failure }
+        if let failure { TunnelLog.shared.write("apply: failed: \(failure.localizedDescription)"); throw failure }
         let fd = bg_utun_fd()
         guard fd >= 0 else { throw CoreError("the system did not open a tunnel device") }
         lock.lock(); applied = (settingsJSON, fd); lock.unlock()
@@ -187,6 +193,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     }
 
     func log(level: Int32, line: String) {
+        if level >= 0 { TunnelLog.shared.write("core: \(line)") }
         switch level {
         case ..<0: logger.debug("\(line, privacy: .public)")
         case 0..<4: logger.info("\(line, privacy: .public)")

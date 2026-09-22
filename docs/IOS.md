@@ -175,6 +175,20 @@ xcodebuild -project apps/ios/BoundGate.xcodeproj -scheme BoundGateiOS -destinati
 An unsigned build starts and says that the device key is not reachable: it
 has no keychain group. Everything real needs the signed build.
 
+## The tunnel's log
+
+The packet tunnel also writes its log to `tunnel.log` in the app group
+(`tunnel.log.1` is the one before, 1 MiB each). The file holds the core's
+lines, every path the system reports (`path:`, the full description with
+interfaces and gateways) and every set of settings handed to the system
+(`apply:`). From a development build, with the phone connected:
+
+```bash
+xcrun devicectl device copy from --device <id> --domain-type appGroupDataContainer --domain-identifier group.de.swiftbird.boundgate --source tunnel.log --destination tunnel.log
+```
+
+`xcrun devicectl list devices` shows the id.
+
 ## What is still open
 
 1. **Profiles:** open the project in Xcode once with the team signed in, and
