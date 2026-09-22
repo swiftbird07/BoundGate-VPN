@@ -6,7 +6,7 @@ the same process and only builds the tunnel interface when the core asks for
 one. The device key is a P-256 key in the Android Keystore, in StrongBox where
 the phone has one.
 
-Status 2026-09-22: built in the container, not yet run on a phone.
+Status 2026-09-22: `make android` builds the APK (arm64 and x86-64, 16 KB aligned, Gradle checksums enforced); not yet run on a phone.
 
 ## Pieces
 
@@ -14,8 +14,9 @@ Status 2026-09-22: built in the container, not yet run on a phone.
 |---|---|
 | `cmd/libboundgate/jni_android.c` | JNI glue in the core's own library: the functions of `boundgate.h` as the native methods of `com.net407.boundgate.Core`, and the platform callbacks as calls on the app's `Core.Platform`. The app loads one library, `libboundgate.so`. |
 | `apps/android/app/src/main/kotlin/…` | `Core` (native methods), `Node` (the engine, requests, platform side), `DeviceKey` (Keystore), `TunnelService` (the `VpnService`), `MainActivity` and `Ui` (the screen). |
-| `apps/android/Dockerfile` | Build image: JDK 21, SDK platform 36, build tools 36.1.0, NDK r29, Gradle 9.7.1, Go 1.26.7, all pinned. |
-| `apps/android/build.sh` | `make android`: vendors the Go modules in the box, builds the core for arm64 and x86-64 (emulator) and then the APK, both in the image. |
+| `apps/android/Dockerfile` | SDK image (linux/amd64): JDK 21, SDK platform 36, build tools 36.1.0, NDK r29, Gradle 9.7.1, all pinned. Gradle builds the APK here. |
+| `apps/android/Dockerfile.core` | Core image (native): Debian's clang and lld, Go 1.26.7, and from the SDK image the NDK's sysroot and compiler-rt. Builds `libboundgate.so`. |
+| `apps/android/build.sh` | `make android`: vendors the Go modules in the box, builds the core for arm64 and x86-64 (emulator) in the core image, then the APK in the SDK image. |
 | `apps/android/gradle/verification-metadata.xml` | SHA-256 of every plugin and library Gradle may load. |
 
 The app uses only the platform's APIs (no AndroidX, no Compose), so Gradle
@@ -80,6 +81,14 @@ the app's data or reinstalling the app.
 ```bash
 make android
 ```
+
+Why two images: Google ships the NDK and the build tools for x86-64 Linux
+only, which on Apple silicon runs emulated. Gradle and aapt2 are fine that
+way; the go command is not (it panicked under qemu, "import reader looping").
+So Go runs natively and links with a native clang against the NDK's sysroot
+and compiler-rt (`-rtlib=compiler-rt -unwindlib=libunwind`), with 16 KB page
+alignment for Android 15 devices. The library needs only `libc`, `libdl` and
+`liblog`.
 
 This builds `dist/BoundGate-dev-debug.apk`. It is signed with the image's
 debug key and can be installed with `adb install`. The first run builds the

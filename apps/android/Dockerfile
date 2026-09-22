@@ -1,11 +1,11 @@
-# Build image for the Android app (docs/ANDROID.md): JDK, Android SDK and NDK,
-# Gradle and Go, all pinned. linux/amd64 because Google publishes the NDK and
-# the build tools for x86-64 Linux only; on this Mac it runs emulated.
+# SDK image for the Android app (docs/ANDROID.md): JDK, Android SDK and NDK,
+# and Gradle, all pinned. linux/amd64 because Google publishes the NDK and the
+# build tools for x86-64 Linux only; on this Mac it runs emulated. Gradle
+# builds the APK here. The core (Go) is built by Dockerfile.core, natively,
+# with the NDK's sysroot from this image.
 #
-# The Go modules do not come from here: build.sh vendors them in the box (with
-# its cooldown) and the build runs with GOPROXY=off. Gradle fetches the
-# plugins and libraries from Google's Maven and Maven Central and checks each
-# file against gradle/verification-metadata.xml.
+# Gradle fetches the plugins and libraries from Google's Maven and Maven
+# Central and checks each file against gradle/verification-metadata.xml.
 FROM --platform=linux/amd64 eclipse-temurin:21-jdk-noble@sha256:4d271cd5e0624598cf563342f47281b09cb364bc13acbbd7251f49f83470018d
 
 RUN apt-get update && apt-get install -y --no-install-recommends unzip ca-certificates curl \
@@ -27,9 +27,4 @@ RUN curl -fsSLo /tmp/gradle.zip https://services.gradle.org/distributions/gradle
 	&& echo "acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a  /tmp/gradle.zip" | sha256sum -c - \
 	&& unzip -q /tmp/gradle.zip -d /opt && ln -s /opt/gradle-9.7.1/bin/gradle /usr/local/bin/gradle && rm /tmp/gradle.zip
 
-# the same Go as the box (go.mod)
-RUN curl -fsSLo /tmp/go.tgz https://go.dev/dl/go1.26.7.linux-amd64.tar.gz \
-	&& echo "ffb5f8de10c62550dfddab66b36b57030721e0a44a3218e9e1181d7b59f121ca  /tmp/go.tgz" | sha256sum -c - \
-	&& tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
-ENV PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=vendor \
-	GRADLE_USER_HOME=/cache/gradle GOCACHE=/cache/go
+ENV GRADLE_USER_HOME=/cache/gradle
