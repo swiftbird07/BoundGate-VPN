@@ -36,3 +36,14 @@ func TestConflictWith(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalNetsKeyIgnoresOrder(t *testing.T) {
+	a := []localNet{{Iface: "en0", Prefix: netip.MustParsePrefix("192.168.178.20/24")}, {Iface: "pdp_ip0", Prefix: netip.MustParsePrefix("10.1.2.3/32")}}
+	b := []localNet{a[1], a[0]}
+	if localNetsKey(a) != localNetsKey(b) {
+		t.Fatal("the same networks in another order are no change")
+	}
+	if localNetsKey(a) == localNetsKey(a[:1]) {
+		t.Fatal("a network less is a change")
+	}
+}

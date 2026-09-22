@@ -1,6 +1,7 @@
 package node
 
 import (
+	"strings"
 	"context"
 	"errors"
 	"fmt"
@@ -459,6 +460,48 @@ func (m *spokeManager) electLocked() {
 	}
 	m.s.dp.setUplink(best.tunnel)
 	m.s.n.log.Info("primary hub", "hub", best.hub.Name)
+}
+
+// recheckRoutes applies the routes again against the machine's networks as
+// they are now (the overlap guard).
+func (m *spokeManager) recheckRoutes() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applyRoutesLocked()
+}
+
+// watchLocalNets applies the routes again whenever the machine's own
+// networks change. Joining a Wi-Fi whose network a peer announces (a home
+// LAN behind a subnet router) must take that route out of the tunnel at
+// once: routed into the tunnel, the Wi-Fi's router, DHCP and DNS are out of
+// reach and the phone refuses to switch to it. Platforms that report
+// network changes (NetworkChanged) do not rely on this; it is the net for
+// those that do not, or not before the new network works.
+func (m *spokeManager) watchLocalNets(ctx context.Context) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	last := localNetsKey(localNets(m.s.ifname))
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if now := localNetsKey(localNets(m.s.ifname)); now != last {
+			last = now
+			m.s.n.log.Info("the machine's networks changed: routes checked again", "networks", now)
+			m.recheckRoutes()
+		}
+	}
+}
+
+func localNetsKey(ls []localNet) string {
+	keys := make([]string, 0, len(ls))
+	for _, l := range ls {
+		keys = append(keys, l.Iface+"="+l.Prefix.String())
+	}
+	slices.Sort(keys)
+	return strings.Join(keys, ",")
 }
 
 // applyRoutesLocked makes the kernel routes equal to the effective set.

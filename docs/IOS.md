@@ -97,6 +97,14 @@ creates the profiles with automatic signing:
   (RFC 7050, /96 prefixes). The prefix is asked for again after every
   network change. IPv6 is not routed into the tunnel, so those dials need
   no excluded route.
+* **Joining a network a peer announces.** On mobile data the tunnel routes
+  every network the hubs advertise, also a home LAN behind a subnet router.
+  Joining that LAN's Wi-Fi then put the Wi-Fi's router, DHCP and DNS into
+  the tunnel, and iOS refused to switch to it. The overlap guard (a network
+  the machine is in is not routed) now runs again on every network change
+  and whenever the machine's own addresses change (checked every 2 s), so
+  the route leaves the tunnel within about a second of the address; leaving
+  the network brings it back.
 * **Enrollment across starts.** The node keeps the last enrollment state
   the control plane reported (`enrollment.json`) and shows it at once after
   a start, marked `enrollment_stale` until the control plane answers. It

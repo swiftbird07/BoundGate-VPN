@@ -1073,11 +1073,16 @@ func (n *Node) Down(reason string) {
 // reconnected at once and hub links that are down try again now; links that
 // are up notice a dead path through their keep-alives.
 func (n *Node) NetworkChanged() {
-	n.hosts.networkChanged()
-	n.control.Reconnect()
 	n.mu.Lock()
 	s := n.sess
 	n.mu.Unlock()
+	if s != nil && s.spoke != nil {
+		// first the routes: a network the machine just joined may be one a
+		// peer announces, and routed into the tunnel it would not come up
+		s.spoke.recheckRoutes()
+	}
+	n.hosts.networkChanged()
+	n.control.Reconnect()
 	if s != nil && s.spoke != nil {
 		s.spoke.retryNow()
 	}
@@ -1298,6 +1303,9 @@ func (s *session) apply(ctx context.Context) error {
 	hubs := n.holder.Load().Hubs()
 	if !s.isHub {
 		s.spoke = newSpokeManager(s)
+		if !n.cfg.AllowOverlap {
+			go s.spoke.watchLocalNets(s.ctx)
+		}
 		if !n.cfg.NoPaths {
 			s.paths = newPathManager(s)
 			go s.paths.run(s.ctx)
