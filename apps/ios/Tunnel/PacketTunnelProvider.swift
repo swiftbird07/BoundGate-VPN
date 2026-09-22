@@ -140,20 +140,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         }
         let s = try JSONDecoder().decode(NetSettings.self, from: Data(settingsJSON.utf8))
         guard let (addr, _) = s.address.splitPrefix() else { throw CoreError("bad overlay address \(s.address)") }
-        // the hub, as the node dials it: on an IPv6-only network an IPv6 address
-        let ns = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: s.excluded?.first ?? "127.0.0.1")
+        // An exit node stays the halves 0/1 and 128/1 and the remote address
+        // an IPv4 one: with NEIPv4Route.default() and the hub's IPv6 address
+        // (b2f6c0a) the phone reported "not connected to the internet" on
+        // Wi-Fi and LTE alike, while its flows through the hub got answers.
+        let ns = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: s.excluded?.first(where: { !$0.contains(":") }) ?? "127.0.0.1")
         let v4 = NEIPv4Settings(addresses: [addr], subnetMasks: ["255.255.255.255"])
-        var routes = s.routes
-        // an exit node reaches the node as the halves 0/1 and 128/1 (on a
-        // computer they shadow its own default route); the system gets the
-        // default route itself, which it treats as a full tunnel
-        if routes.contains("0.0.0.0/1"), routes.contains("128.0.0.0/1") {
-            routes.removeAll { $0 == "0.0.0.0/1" || $0 == "128.0.0.0/1" }
-            routes.insert("0.0.0.0/0", at: 0)
-        }
+        let routes = s.routes
         v4.includedRoutes = routes.compactMap { r in
             guard let (net, bits) = r.splitPrefix(), !net.contains(":") else { return nil }
-            return bits == 0 ? NEIPv4Route.default() : NEIPv4Route(destinationAddress: net, subnetMask: mask(bits))
+            return NEIPv4Route(destinationAddress: net, subnetMask: mask(bits))
         }
         v4.excludedRoutes = (s.excluded ?? []).filter { !$0.contains(":") }.map { NEIPv4Route(destinationAddress: $0, subnetMask: "255.255.255.255") }
         ns.ipv4Settings = v4
