@@ -17,6 +17,10 @@ loses its own internet, its other VPNs and everything not in the overlay.
 That is why `deploy/prod/node/node.yaml.example` says a server needs an
 `include` profile.
 
+An iPhone with `full` takes the exit node's default route and then resolves
+names only through the resolvers the hub offers (hub option `dns`). Without
+them it resolves nothing (docs/DEPLOY.md, "The hub"; docs/IOS.md).
+
 ## Writing one
 
 `profiles/<name>.yaml`, mounted read-only at `profiles_dir` (the node

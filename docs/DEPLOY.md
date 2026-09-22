@@ -340,6 +340,16 @@ Before, or with iptables-legacy, which nft cannot see, by hand:
 `iptables -I DOCKER-USER -i bg0 -j ACCEPT; iptables -I DOCKER-USER -o bg0 -j ACCEPT`.)
 What leaves the tunnel device has passed the node's ACL.
 
+**An exit node for iPhones needs `dns` on the hub.** Set it in `hub.yaml`,
+for example `dns: [10.20.0.1]`, a resolver reachable behind the hub. With
+the exit node's default route in the tunnel, iOS asks only the resolvers
+the tunnel brings along and ignores those of the Wi-Fi or the mobile
+network. Without `dns` the tunnel brings none: the iPhone resolves no name
+and reports "not connected to the internet", while its connections by
+address still work. The tunnel's log then says "the exit node's hub offers
+no DNS resolvers" (docs/IOS.md). Android, Linux, macOS and Windows do not
+need it.
+
 ## Further nodes
 
 Every other Linux machine gets `deploy/prod/node`: copy the directory, fill
