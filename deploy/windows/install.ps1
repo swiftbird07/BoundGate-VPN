@@ -83,7 +83,7 @@ if ($tmp) { Remove-Item -Recurse -Force $tmp }
 
 # --- group for the tray
 if (-not (Get-LocalGroup -Name $group -ErrorAction SilentlyContinue)) {
-    New-LocalGroup -Name $group -Description 'May use BoundGate (tray, boundgatectl) without administrator rights' | Out-Null
+    New-LocalGroup -Name $group -Description 'May use BoundGate without administrator rights' | Out-Null
     Write-Host "created group $group"
 }
 if (-not (Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $User })) {
