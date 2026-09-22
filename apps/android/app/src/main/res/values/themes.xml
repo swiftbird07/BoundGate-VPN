@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- light and dark follow the system; the screen draws its own surfaces (Ui.kt) -->
+    <style name="BoundGate" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:colorAccent">#FFCC00</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+</resources>

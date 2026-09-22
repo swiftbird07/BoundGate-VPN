@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -317,7 +316,7 @@ func (m *spokeManager) dialWith(ctx context.Context, hub registry.Node, transpor
 	} else if o, ok := s.n.cfg.HubAddrs[hub.PublicAddr]; ok {
 		target = o
 	}
-	addr, err := resolveAddrPort(ctx, target)
+	addr, err := s.n.hosts.resolveAddrPort(ctx, target)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -554,32 +553,3 @@ func (m *spokeManager) hubs() []HubStatus {
 	return out
 }
 
-func resolveAddrPort(ctx context.Context, hostport string) (netip.AddrPort, error) {
-	if ap, err := netip.ParseAddrPort(hostport); err == nil {
-		return ap, nil
-	}
-	host, port, err := net.SplitHostPort(hostport)
-	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("address %q: %w", hostport, err)
-	}
-	ip, err := resolveHost(ctx, host)
-	if err != nil {
-		return netip.AddrPort{}, err
-	}
-	p, err := net.LookupPort("udp", port)
-	if err != nil {
-		return netip.AddrPort{}, err
-	}
-	return netip.AddrPortFrom(ip, uint16(p)), nil
-}
-
-func resolveHost(ctx context.Context, host string) (netip.Addr, error) {
-	if ip, err := netip.ParseAddr(host); err == nil {
-		return ip.Unmap(), nil
-	}
-	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
-	if err != nil || len(addrs) == 0 {
-		return netip.Addr{}, fmt.Errorf("resolve %s: %v", host, errors.Join(err))
-	}
-	return addrs[0].Unmap(), nil
-}

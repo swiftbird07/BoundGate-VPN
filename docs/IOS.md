@@ -76,6 +76,16 @@ creates the profiles with automatic signing:
   engine back and retries while the lock is still held.
 * **Wi-Fi ↔ cellular.** `NWPathMonitor` and `wake()` call
   `bg_network_changed`.
+* **Names.** Once the tunnel's DNS settings are in effect, the system
+  resolver answers the extension's own lookups with "no such host" (seen on
+  iOS 26 with the control plane's name, two hours into a tunnel: the tunnel
+  kept running, the control channel did not, and the node showed as offline
+  in the admin UI). The node therefore keeps an address book
+  (`internal/node/resolve.go`): every name of the control plane, the hubs,
+  peers and the identity provider is dialed by the address it resolved to,
+  which is also the address excluded from the tunnel. A lookup that fails
+  keeps the address the name had, with one warning in the log, and the next
+  lookup that works replaces it. The same code runs on every platform.
 
 The device key is created by the app on first start and only loaded by the
 extension. Its access control is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`

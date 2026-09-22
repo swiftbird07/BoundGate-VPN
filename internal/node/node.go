@@ -256,6 +256,7 @@ type Node struct {
 	control *controlclient.Client
 	holder  *registry.Holder
 	pins    transport.PinStore
+	hosts   *hosts
 
 	trust *trustStore
 
@@ -409,10 +410,11 @@ func (n *Node) init(enclave bool) (*Node, error) {
 	}
 	// filePin never learns by itself (Enroll asks), so nothing to report here
 	var onLearn func(devicekey.SPKIHash)
+	n.hosts = newHosts(cfg.Log)
 	n.control = controlclient.New(controlclient.Config{
 		Addr: cfg.ControlAddr,
 		TLS:  transport.ClientTLSConfigControl(cert, cfg.ControlServerName, n.pins, onLearn),
-		Log:  cfg.Log, Verify: n.verifySnapshot, OnError: n.controlError,
+		Log:  cfg.Log, Verify: n.verifySnapshot, OnError: n.controlError, Resolve: n.hosts.resolve,
 	})
 	n.ship = newShipper(n.control, cfg.Log)
 	n.status = Status{
@@ -1421,7 +1423,7 @@ func (s *session) addBypassHost(ctx context.Context, hostport string) error {
 	if err != nil {
 		host = hostport
 	}
-	ip, err := resolveHost(ctx, host)
+	ip, err := s.n.hosts.resolve(ctx, host)
 	if err != nil {
 		return err
 	}

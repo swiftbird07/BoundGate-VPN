@@ -148,6 +148,7 @@ ownership, stop and restart.
 ## Not in M8.5
 
 * Binding the core for the platforms: the xcframework for Apple (M8.6/M9a,
-  `make apple-core`) and the AAR for Android (M9b).
+  `make apple-core`). Android loads the core as `libboundgate.so` with its
+  JNI glue (ANDROID.md).
 * Direct paths from an embedded node: it has no `paths.listen`. Peers reach it
   through relaying hubs, and it dials other nodes' public addresses as usual.

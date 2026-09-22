@@ -9,6 +9,8 @@
 package controlclient
 
 import (
+	"net/netip"
+	"net"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -60,6 +62,9 @@ type Config struct {
 	// OnError, if set, reports the state of the control channel from the
 	// snapshot loop: the error of a failed fetch, nil after a successful one.
 	OnError func(error)
+	// Resolve, if set, turns the control plane's host name into the address
+	// to dial (the node's address book: what it excluded from its tunnel).
+	Resolve func(ctx context.Context, host string) (netip.Addr, error)
 }
 
 // New creates a client presenting the device certificate.
@@ -67,7 +72,7 @@ func New(cfg Config) *Client {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	rt := &dualTransport{tls: cfg.TLS, log: cfg.Log}
+	rt := &dualTransport{tls: cfg.TLS, log: cfg.Log, resolve: cfg.Resolve}
 	rt.h3, rt.tcp = rt.transports()
 	c := &Client{URL: "https://" + cfg.Addr, http: &http.Client{Transport: rt}, log: cfg.Log, verify: cfg.Verify, onError: cfg.OnError}
 	c.gen, c.genCancel = context.WithCancel(context.Background())
@@ -85,7 +90,41 @@ func (d *dualTransport) transports() (*http3.Transport, *http.Transport) {
 	}
 	tcp := &http.Transport{TLSClientConfig: d.tls.Clone(), ForceAttemptHTTP2: true,
 		HTTP2: &http.HTTP2Config{SendPingTimeout: 10 * time.Second, PingTimeout: 15 * time.Second}}
+	if d.resolve != nil {
+		// the TLS configs carry the server name; the dial goes to the address
+		h3.Dial = func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+			ap, err := d.addr(ctx, addr)
+			if err != nil {
+				return nil, err
+			}
+			return quic.DialAddr(ctx, ap.String(), tlsCfg, cfg)
+		}
+		tcp.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			ap, err := d.addr(ctx, addr)
+			if err != nil {
+				return nil, err
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, ap.String())
+		}
+	}
 	return h3, tcp
+}
+
+// addr resolves host:port through the node's address book.
+func (d *dualTransport) addr(ctx context.Context, hostport string) (netip.AddrPort, error) {
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	ip, err := d.resolve(ctx, host)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	p, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	return netip.AddrPortFrom(ip, uint16(p)), nil
 }
 
 // errReconnected ends the requests that were in flight at Reconnect.
@@ -124,8 +163,9 @@ func (c *Client) Transport() string {
 // request fails before a response arrived. It retries HTTP/3 periodically
 // so a temporary UDP problem does not stick.
 type dualTransport struct {
-	tls *tls.Config
-	log *slog.Logger
+	tls     *tls.Config
+	log     *slog.Logger
+	resolve func(ctx context.Context, host string) (netip.Addr, error)
 
 	mu           sync.Mutex
 	h3           *http3.Transport

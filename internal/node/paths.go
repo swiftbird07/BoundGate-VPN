@@ -272,7 +272,7 @@ func (pm *pathManager) dial(ctx context.Context, peer registry.Node) (*path, err
 	}
 	var errs []error
 	if peer.PublicAddr != "" {
-		if addr, err := resolveAddrPort(ctx, peer.PublicAddr); err != nil {
+		if addr, err := s.n.hosts.resolveAddrPort(ctx, peer.PublicAddr); err != nil {
 			errs = append(errs, err)
 		} else if err := s.addBypass(addr.Addr()); err != nil {
 			errs = append(errs, err)
