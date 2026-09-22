@@ -66,6 +66,7 @@ type config struct {
 	ProfilesDir  string            `yaml:"profiles_dir"`
 	Socket       string            `yaml:"socket"`
 	SocketGroup  string            `yaml:"socket_group"` // group that may use the socket next to root (macOS app: admin)
+	SocketUsers  []string          `yaml:"socket_users"` // Windows: accounts that may use it too (install.ps1: the installing account)
 	TUNName      string            `yaml:"tun_name"`
 	HubAddrs     map[string]string `yaml:"hub_addrs"`     // dial override per hub name or public_addr
 	AllowOverlap bool              `yaml:"allow_overlap"` // route networks this machine already lives in (overlap guard off)
@@ -174,7 +175,7 @@ func run(ctx context.Context, cfgPath string) error {
 			if s.ControlAddr == "" {
 				logs.System.Info("no control plane configured; waiting for `boundgatectl configure`", "socket", cfg.Socket)
 				host, _ := os.Hostname()
-				if _, err := ipc.ServeSetup(ctx, cfg.Socket, cfg.SocketGroup, node.Status{NodeName: host, Enrollment: "unknown"}, upd,
+				if _, err := ipc.ServeSetup(ctx, cfg.Socket, ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers}, node.Status{NodeName: host, Enrollment: "unknown"}, upd,
 					func(s ipc.Settings) error { return ipc.SaveSettings(settingsPath, s) }); err != nil {
 					return err
 				}
@@ -256,7 +257,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	}()
 	running.Store(n)
 	defer running.Store(nil)
-	opt := ipc.Options{Group: cfg.SocketGroup, Update: upd}
+	opt := ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers, Update: upd}
 	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", cfg.AutoUp)
 	if !fromFile {
 		// Forget the control plane: its address, its pinned key and the admin

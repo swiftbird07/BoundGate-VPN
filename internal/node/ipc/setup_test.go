@@ -50,7 +50,7 @@ func TestServeSetup(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		s, err := ServeSetup(context.Background(), sock, "", node.Status{NodeName: "mac"}, &update.Service{Current: "v1.0.0"}, func(s Settings) error { return SaveSettings(settingsPath, s) })
+		s, err := ServeSetup(context.Background(), sock, Options{}, node.Status{NodeName: "mac"}, &update.Service{Current: "v1.0.0"}, func(s Settings) error { return SaveSettings(settingsPath, s) })
 		done <- result{s, err}
 	}()
 	c := NewClient(sock)

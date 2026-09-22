@@ -1,7 +1,8 @@
 # Configuration of the BoundGate service on Windows. install.ps1 copies it to
 # %ProgramData%\BoundGate\node.yaml once and never overwrites it. It names no
-# control plane: `boundgatectl configure -control HOST` stores that in
-# state\settings.json (see docs/WINDOWS.md).
+# control plane: the tray's "Set up…" (or `boundgatectl configure -control
+# HOST`) stores that in state\settings.json (see docs/WINDOWS.md).
+# install.ps1 appends socket_users with the installing account.
 #
 # Defaults on Windows: state_dir %ProgramData%\BoundGate\state, log_dir ...\logs,
 # profiles_dir ...\profiles, socket ...\node.sock.

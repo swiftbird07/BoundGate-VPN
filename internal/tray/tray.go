@@ -5,12 +5,17 @@
 package tray
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 )
+
+// ErrNoAccess is what the tray reports when the service answers but its
+// socket refuses this account (the group comes with the next sign-in).
+var ErrNoAccess = errors.New("no access to the BoundGate service")
 
 // Phase is where the node stands, from the user's point of view.
 type Phase int
@@ -83,6 +88,7 @@ type View struct {
 	CanLogin  bool
 	CanLogout bool
 	CanEnroll bool
+	CanSetup  bool // no control plane yet: ask for its address
 }
 
 // Describe builds the view; err is the error of the last try to reach the
@@ -94,12 +100,15 @@ func Describe(s *node.Status, err error) View {
 	case ServiceDown:
 		v.Color, v.Title = Red, "BoundGate service not running"
 		v.Detail = "Start it as administrator: boundgate-node start"
-		if err != nil && !strings.Contains(err.Error(), "not reachable") {
+		if errors.Is(err, ErrNoAccess) {
+			v.Title = "No access to the BoundGate service"
+			v.Detail = "Sign out of Windows and in again (group BoundGate Users)"
+		} else if err != nil && !strings.Contains(err.Error(), "not reachable") {
 			v.Detail = err.Error()
 		}
 	case Unconfigured:
-		v.Color, v.Title = Amber, "Not set up"
-		v.Detail = "As administrator: boundgatectl configure -control HOST"
+		v.Color, v.Title, v.CanSetup = Amber, "Not set up", true
+		v.Detail = "Set up: enter your organization's control plane"
 	case NeedsEnroll:
 		v.Color, v.Title, v.CanEnroll = Amber, "Not enrolled", true
 		v.Detail = "Request access from " + s.Control

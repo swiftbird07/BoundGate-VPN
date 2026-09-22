@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,7 +48,8 @@ type app struct {
 
 	title, detail                        *systray.MenuItem
 	connect, disconnect, signIn, signOut *systray.MenuItem
-	enroll, profileMenu, details, copyFP *systray.MenuItem
+	enroll, setup, profileMenu           *systray.MenuItem
+	details, copyFP                      *systray.MenuItem
 	profiles                             [maxProfiles]*systray.MenuItem
 	detailLines                          [maxDetails]*systray.MenuItem
 
@@ -74,6 +76,7 @@ func (a *app) ready() {
 	a.disconnect = systray.AddMenuItem("Disconnect", "Take the tunnel down")
 	a.signIn = systray.AddMenuItem("Sign in…", "Sign in with your organization's account in the browser")
 	a.signOut = systray.AddMenuItem("Sign out", "End the user session on this device")
+	a.setup = systray.AddMenuItem("Set up…", "Enter your organization's control plane")
 	a.enroll = systray.AddMenuItem("Request access…", "Enroll this device with the control plane")
 	a.profileMenu = systray.AddMenuItem("Profile", "Which networks go through BoundGate")
 	for i := range a.profiles {
@@ -98,6 +101,7 @@ func (a *app) ready() {
 	go a.onClick(a.signIn.ClickedCh, a.login)
 	go a.onClick(a.signOut.ClickedCh, func() { a.run("Signing out", func() error { _, err := a.client.Logout(); return err }) })
 	go a.onClick(a.enroll.ClickedCh, a.requestAccess)
+	go a.onClick(a.setup.ClickedCh, a.setUp)
 	go a.onClick(a.copyFP.ClickedCh, a.copyFingerprint)
 	go a.onClick(quit.ClickedCh, systray.Quit)
 
@@ -123,6 +127,8 @@ func (a *app) refresh() {
 	var st *node.Status
 	if err == nil {
 		st = &s
+	} else if errors.Is(err, windows.WSAEACCES) {
+		err = tray.ErrNoAccess
 	}
 	var names []string
 	if st != nil && st.Enrollment == "approved" {
@@ -159,6 +165,7 @@ func (a *app) refresh() {
 	show(a.signIn, v.CanLogin, idle)
 	show(a.signOut, v.CanLogout, idle)
 	show(a.enroll, v.CanEnroll, idle)
+	show(a.setup, v.CanSetup, idle)
 
 	current := ""
 	if st != nil {
@@ -298,25 +305,52 @@ func (a *app) login() {
 	})
 }
 
+// setUp asks for the control plane's address, stores it (the service
+// leaves its setup mode) and requests access right away, as the Mac app does.
+// The field lowercases what is typed: the control plane compares its name
+// exactly, and keyboards capitalize.
+func (a *app) setUp() {
+	addr, ok := prompt("BoundGate: set up",
+		"Address of your organization's control plane, as your administrator gave it\n(for example vpn.example.org, or vpn.example.org:443):", "", true)
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	if !ok || addr == "" {
+		return
+	}
+	a.run("Setting up", func() error {
+		if err := a.client.Configure(ipc.Settings{ControlAddr: addr}); err != nil {
+			return err
+		}
+		for i := 0; i < 30; i++ { // the service starts the node with it
+			if s, err := a.client.Status(); err == nil && s.State != "unconfigured" {
+				return a.enrollAsking()
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		return errors.New("the service did not take the address; see its log")
+	})
+}
+
 // requestAccess enrolls; the first time, the user compares the control
 // plane's key with what the administrator gave them, as in boundgatectl.
 func (a *app) requestAccess() {
-	a.run("Requesting access", func() error {
-		_, err := a.client.Enroll("", "")
-		var unconfirmed *ipc.PinUnconfirmedError
-		if !errors.As(err, &unconfirmed) {
-			return err
-		}
-		text := "This device has not talked to this control plane before. It presents the key\n\n" +
-			unconfirmed.Fingerprint + "\n\n" +
-			"Compare it with the fingerprint your administrator gave you (admin UI, Nodes page). " +
-			"If it differs, somebody else is answering at that address.\n\nPin this key and request access?"
-		if message("BoundGate: new control plane", text, windows.MB_YESNO|windows.MB_ICONWARNING|windows.MB_DEFBUTTON2) != idYes {
-			return nil
-		}
-		_, err = a.client.Enroll("", unconfirmed.Fingerprint)
+	a.run("Requesting access", a.enrollAsking)
+}
+
+func (a *app) enrollAsking() error {
+	_, err := a.client.Enroll("", "")
+	var unconfirmed *ipc.PinUnconfirmedError
+	if !errors.As(err, &unconfirmed) {
 		return err
-	})
+	}
+	text := "This device has not talked to this control plane before. It presents the key\n\n" +
+		unconfirmed.Fingerprint + "\n\n" +
+		"Compare it with the fingerprint your administrator gave you (admin UI, Nodes page). " +
+		"If it differs, somebody else is answering at that address.\n\nPin this key and request access?"
+	if message("BoundGate: new control plane", text, windows.MB_YESNO|windows.MB_ICONWARNING|windows.MB_DEFBUTTON2) != idYes {
+		return nil
+	}
+	_, err = a.client.Enroll("", unconfirmed.Fingerprint)
+	return err
 }
 
 func (a *app) copyFingerprint() {

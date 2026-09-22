@@ -3,6 +3,7 @@ package tray
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image/png"
 	"strings"
 	"testing"
@@ -53,6 +54,14 @@ func TestDescribe(t *testing.T) {
 	v = Describe(nil, errors.New("node daemon not reachable at x: refused"))
 	if v.Color != Red || !strings.Contains(v.Detail, "boundgate-node start") {
 		t.Fatalf("down: %+v", v)
+	}
+	v = Describe(nil, fmt.Errorf("node daemon not reachable at x: %w", ErrNoAccess))
+	if v.Color != Red || !strings.Contains(v.Detail, "Sign out") || v.CanSetup {
+		t.Fatalf("no access: %+v", v)
+	}
+	v = Describe(&node.Status{State: "unconfigured"}, nil)
+	if !v.CanSetup || v.CanEnroll || v.Color != Amber {
+		t.Fatalf("unconfigured: %+v", v)
 	}
 	long := View{Title: strings.Repeat("ä", 200)}
 	if n := len([]rune(long.Tooltip())); n != 127 {

@@ -93,7 +93,7 @@ func SaveSettings(path string, s Settings) error {
 // listen creates the socket: 0660, owned by root and, when group is set,
 // that group (name or gid), so its members can drive the daemon without
 // sudo. On a Mac that is "admin" for the app.
-func listen(socketPath, group string) (net.Listener, error) {
+func listen(socketPath, group string, users []string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func listen(socketPath, group string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ipc: listen %s: %w", socketPath, err)
 	}
-	if err := protect(socketPath, group); err != nil {
+	if err := protect(socketPath, group, users); err != nil {
 		ln.Close()
 		return nil, err
 	}
@@ -129,8 +129,8 @@ func serveMux(ctx context.Context, ln net.Listener, socketPath string, mux *http
 // says "unconfigured", configure stores the settings, and updates work as
 // they do on a node's socket (upd may be nil). It returns the settings once
 // they are stored, or an error / ctx end.
-func ServeSetup(ctx context.Context, socketPath, group string, status node.Status, upd *update.Service, save func(Settings) error) (Settings, error) {
-	ln, err := listen(socketPath, group)
+func ServeSetup(ctx context.Context, socketPath string, access Options, status node.Status, upd *update.Service, save func(Settings) error) (Settings, error) {
+	ln, err := listen(socketPath, access.Group, access.Users)
 	if err != nil {
 		return Settings{}, err
 	}

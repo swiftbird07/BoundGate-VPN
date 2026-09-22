@@ -54,6 +54,9 @@ func (e *PinUnconfirmedError) Error() string {
 type Options struct {
 	// Group owns the socket next to root ("" = root's group).
 	Group string
+	// Users (Windows only) may use the socket as well: the account that
+	// installed the service, before a new sign-in gives it the group.
+	Users []string
 	// Reset, when set, makes the node forget its control plane (settings,
 	// pin, admin key list), and with newIdentity its device key as well.
 	// The node must be down. Serve returns ErrReset after answering.
@@ -75,7 +78,7 @@ var ErrReset = errors.New("ipc: node was reset")
 // Serve runs the IPC server until ctx ends. The socket is created with mode
 // 0660 so only root and the socket's group can talk to the daemon.
 func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) error {
-	ln, err := listen(socketPath, opt.Group)
+	ln, err := listen(socketPath, opt.Group, opt.Users)
 	if err != nil {
 		return err
 	}

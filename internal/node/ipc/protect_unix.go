@@ -20,7 +20,10 @@ func DefaultSocket() string {
 
 // protect makes the socket usable by root and, when group is set, that
 // group (name or gid): mode 0660.
-func protect(socketPath, group string) error {
+func protect(socketPath, group string, users []string) error {
+	if len(users) > 0 {
+		return fmt.Errorf("ipc: socket_users is for Windows; use socket_group")
+	}
 	if err := os.Chmod(socketPath, 0o660); err != nil {
 		return err
 	}

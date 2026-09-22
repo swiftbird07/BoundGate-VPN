@@ -100,6 +100,12 @@ if (-not (Test-Path $cfg)) {
 } else {
     Write-Host "kept $cfg"
 }
+# the group reaches this account at its next sign-in only: until then it may
+# use the socket by name, so the tray works right away
+if (-not (Select-String -Path $cfg -Pattern '^socket_users:' -Quiet)) {
+    Add-Content -Path $cfg -Value "socket_users: ['$($User -replace "'", "''")']   # may use the tray before signing in again (install.ps1)"
+    Write-Host "allowed $User to use the service now"
+}
 $node = Join-Path $InstallDir 'boundgate-node.exe'
 if (-not $svc) {
     & $node install -config $cfg
@@ -126,11 +132,35 @@ for ($i = 0; $i -lt 30; $i++) {
 if ($Control) {
     & $ctl configure -control $Control
     if ($LASTEXITCODE -ne 0) { throw 'configure failed' }
+    # the service leaves its setup mode and starts the node: wait for that,
+    # or the status below would still say "unconfigured"
+    for ($i = 0; $i -lt 15; $i++) {
+        $st = & $ctl -json status 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($st -and $st.state -ne 'unconfigured') { break }
+        Start-Sleep -Seconds 1
+    }
 }
 & $ctl status
 
+# --- the tray, now: in the user's session and without administrator rights
+# (this script runs elevated, maybe over ssh); a one-time task does that
+$task = 'BoundGate tray start'
+try {
+    $action = New-ScheduledTaskAction -Execute (Join-Path $InstallDir 'boundgate-tray.exe')
+    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
+    Start-ScheduledTask -TaskName $task
+    Start-Sleep -Seconds 2
+    # the task may already be gone once it ran: nothing to report then
+    Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host "started the tray for ${User}: the BoundGate icon is in the notification area (maybe behind ^)"
+} catch {
+    Write-Warning "could not start the tray now ($($_.Exception.Message)); it starts at the next sign-in"
+}
+
 Write-Host ''
 Write-Host 'Next:'
-if (-not $Control) { Write-Host "  boundgatectl configure -control HOST" }
-Write-Host '  boundgatectl enroll          (compare the control pin with your administrator''s)'
-Write-Host '  then, once approved: the tray icon (sign out and in once for the group), or boundgatectl up'
+$st = & $ctl -json status 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
+if ($st -and $st.state -eq 'unconfigured') { Write-Host '  the tray icon: Set up... (the control plane address), then Request access' }
+else { Write-Host '  the tray icon: Request access (compare the control pin with your administrator''s), or boundgatectl enroll' }
+Write-Host '  then, once approved: Connect in the tray, or boundgatectl up'

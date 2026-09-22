@@ -43,19 +43,27 @@ administrator:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1 -WintunZip $HOME\Downloads\wintun-0.14.1.zip -Control vpn.example.org
-boundgatectl enroll
+.\install.ps1 -WintunZip $HOME\Downloads\wintun-0.14.1.zip
 ```
+
+The tray icon appears right away. "Set up…" asks for the control plane's
+address, then "Request access" shows its key for comparison. With
+`-Control vpn.example.org` the address is set by the script, and
+`boundgatectl enroll` works as well.
 
 `install.ps1` does the following:
 
 * Checks `wintun.dll`: Authenticode valid, signer WireGuard LLC.
 * Copies the programs to Program Files.
 * Creates the group `BoundGate Users` and adds the installing account.
-* Writes `node.yaml` if none exists.
+* Writes `node.yaml` if none exists, and lists the installing account in
+  `socket_users`: the group only reaches it at the next sign-in, the tray
+  should work now.
 * Registers and starts the service: automatic start, restart after 2, 5 and
   30 s on failure.
 * Adds the tray to `HKLM\…\Run` and the program folder to `PATH`.
+* Starts the tray in the user's session without administrator rights,
+  through a one-time scheduled task (also when the script runs over ssh).
 
 Running it again updates the programs. It keeps state, key and `node.yaml`.
 
@@ -85,9 +93,12 @@ useless on any other machine.
 
 The menu shows:
 
-* The phase, as on the Mac: service not running, not set up, not enrolled,
-  waiting for approval, disconnected, connecting, sign in required,
-  connected.
+* The phase, as on the Mac: service not running, no access (sign out and
+  in once), not set up, not enrolled, waiting for approval, disconnected,
+  connecting, sign in required, connected.
+* Set up…, when no control plane is configured: a small window for its
+  address. The field lowercases what is typed (the control plane compares
+  its name exactly), then the tray requests access.
 * The icon's color: gray, amber, green or red.
 * Connect and Disconnect. A profile submenu when there is more than one
   profile.
@@ -100,10 +111,9 @@ The menu shows:
 
 The tray holds no key and no secret. It talks to the socket as the signed-in
 user, which works for members of `BoundGate Users` (`socket_group` in
-`node.yaml`). The group only applies after signing in again.
-
-Not in the tray (stage 1): entering the control plane. As administrator run
-`boundgatectl configure -control HOST`, or use `install.ps1 -Control`.
+`node.yaml`) and for the accounts in `socket_users`. The group only applies
+after signing in again. Whoever may use the socket may also set the control
+plane while none is set, like the Mac app's users.
 
 ## Updates
 
@@ -148,7 +158,6 @@ host route to the hub via the hotspot's gateway.
    * An MSI with Authenticode signatures, when there is a certificate. Until
      then SmartScreen warns (R106).
    * Self-installing updates.
-   * A tray dialog for the control plane address.
    * An application manifest for the tray (DPI, common controls).
 4. **Hub and subnet router on Windows:** not planned. Forwarding and NAT are
    refused.
