@@ -13,8 +13,9 @@ android {
 
     defaultConfig {
         applicationId = "com.net407.boundgate"
-        // KeyInfo.securityLevel (StrongBox or TEE) needs Android 12
-        minSdk = 31
+        // VpnService.Builder.excludeRoute (DNS servers, control plane, hubs
+        // and IdP outside the tunnel) needs Android 13
+        minSdk = 33
         targetSdk = 36
         versionCode = bgVersionCode
         versionName = bgVersion

@@ -183,6 +183,13 @@ func TestDeclarativeKeepsTheDeviceWhenTheDescriptorStays(t *testing.T) {
 	waitFor(t, "apply", func() bool { return len(p.calls()) == 1 })
 	_ = d.AddRoute(ctx, netip.MustParsePrefix("10.20.0.0/16"), "")
 	waitFor(t, "apply", func() bool { return len(p.calls()) == 2 })
+	// a network change hands the same settings over again (Android copies
+	// the DNS of the network below); the same descriptor keeps the device
+	d.Refresh()
+	waitFor(t, "refresh", func() bool { return len(p.calls()) == 3 })
+	if c := p.calls(); len(c[2].Routes) != 1 || c[2].Address != c[1].Address {
+		t.Fatalf("refresh applied %+v", c[2])
+	}
 	if opened != 1 {
 		t.Fatalf("opened %d devices for one descriptor", opened)
 	}

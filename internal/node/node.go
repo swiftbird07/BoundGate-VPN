@@ -99,6 +99,12 @@ type Config struct {
 	QUICRetry time.Duration
 	// NoRelay: a hub does not relay between spokes (transport/relay.go).
 	NoRelay bool
+	// LoginPassthrough (hub): with it, an interactive node without a user
+	// session is admitted anyway, and reaches these destinations only (the
+	// IdP, DNS) until the session arrives. Only for Android's lockdown mode
+	// (Always-on VPN with "Block connections without VPN"), where the
+	// browser cannot reach the IdP outside the tunnel. Empty: 403 as usual.
+	LoginPassthrough []netip.Prefix
 	// NoPaths: a spoke neither dials nor accepts tunnels with other spokes;
 	// everything stays on the hub path (paths.go).
 	NoPaths bool
@@ -1118,6 +1124,9 @@ type session struct {
 
 	tmu     sync.Mutex
 	tunnels map[string]*tunnelStats // hub: accepted tunnels, for reports
+	// hub with login_passthrough: peers whose tunnels carry only the way to
+	// the sign-in, because their session is missing or ended
+	signInOnly map[transport.DeviceID]bool
 
 	mu     sync.Mutex
 	bypass map[netip.Addr]bool
@@ -1367,15 +1376,39 @@ func (s *session) enforceSessions(snap *registry.Snapshot) {
 		return
 	}
 	now := time.Now()
+	pass := len(s.n.cfg.LoginPassthrough) > 0
+	only := map[transport.DeviceID]bool{}
 	for _, id := range s.srv.ActiveDevices() {
 		p, ok := snap.Peer(id)
 		if !ok || !p.NeedsSession() {
 			continue
 		}
 		if _, ok := snap.SessionFor(id, now); !ok {
+			if pass {
+				// the tunnel stays for the sign-in; its other flows end below
+				only[id] = true
+				continue
+			}
 			if c := s.srv.CloseDevice(id, transport.ErrCodeSessionExpired, "user session ended"); c > 0 {
 				s.n.log.Info("peer tunnels closed: no user session", "peer", p.Name, "node", id, "closed", c)
 			}
+		}
+	}
+	if !pass {
+		return
+	}
+	s.tmu.Lock()
+	lost := false
+	for id := range only {
+		lost = lost || !s.signInOnly[id]
+	}
+	s.signInOnly = only
+	s.tmu.Unlock()
+	// a session ended by time: flows it allowed are decided again (the
+	// snapshot did not change, so applyDiff did not)
+	if lost {
+		if c := s.flows.Reevaluate(s.decide); c > 0 {
+			s.n.log.Info("flows closed: user session ended, login passthrough only", "closed", c)
 		}
 	}
 }

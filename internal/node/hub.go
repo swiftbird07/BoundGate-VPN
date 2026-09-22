@@ -36,11 +36,16 @@ func (h *hubService) Accept(_ context.Context, peer transport.AuthenticatedPeer)
 	}
 	// An interactive node needs a user session (OIDC login) that the
 	// control plane bound to this node id; workloads are admitted on their
-	// device identity alone. 403 tells the spoke "login required".
+	// device identity alone. 403 tells the spoke "login required". With a
+	// login passthrough the tunnel opens anyway and carries only the way to
+	// the sign-in (decide) until the session arrives.
 	if p.NeedsSession() {
 		if _, ok := snap.SessionFor(p.ID, time.Now()); !ok {
-			n.log.Info("tunnel refused: no user session", "peer", p.Name, "node", p.ID)
-			return transport.TunnelConfig{}, http.StatusForbidden, nil
+			if len(n.cfg.LoginPassthrough) == 0 {
+				n.log.Info("tunnel refused: no user session", "peer", p.Name, "node", p.ID)
+				return transport.TunnelConfig{}, http.StatusForbidden, nil
+			}
+			n.log.Info("tunnel admitted for signing in only: no user session yet", "peer", p.Name, "node", p.ID)
 		}
 	}
 	// Per-flow ACL decisions happen in Serve (flow table + Cedar).

@@ -143,6 +143,16 @@ func (d *Declarative) DelBypass(_ context.Context, host netip.Addr) error {
 	return nil
 }
 
+// Refresh hands the current settings to the platform again, for a platform
+// whose own part of them follows the network underneath (Android copies the
+// DNS servers of the network below into the VPN). A platform that returns the
+// same descriptor keeps its device; a new one replaces it as after any change.
+func (d *Declarative) Refresh() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.scheduleLocked()
+}
+
 var errEndpointOnly = errors.New("netcfg: an embedded node is an endpoint: it does not forward (hub, subnet router and exit node need the daemon)")
 
 func (d *Declarative) EnableForwarding(context.Context) error { return errEndpointOnly }

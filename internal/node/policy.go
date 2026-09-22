@@ -50,8 +50,39 @@ func (s *session) decide(e *flow.Entry) flow.Result {
 	if eng == nil || e.Origin.Principal == "" || s.n.holder.Stale(time.Now()) {
 		return flow.Result{}
 	}
+	if r, ok := s.loginPassthrough(e); ok {
+		return r
+	}
 	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: e.DNSName})
 	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI}
+}
+
+// loginPassthrough decides the flows of an interactive peer that has no user
+// session yet, on a hub with login_passthrough: to the listed destinations
+// only, whatever the policies say (there is no user they could name). ok is
+// false for everyone else, whom the policies decide.
+func (s *session) loginPassthrough(e *flow.Entry) (flow.Result, bool) {
+	pass := s.n.cfg.LoginPassthrough
+	if len(pass) == 0 {
+		return flow.Result{}, false
+	}
+	snap := s.n.holder.Load()
+	if snap == nil {
+		return flow.Result{}, true
+	}
+	p, ok := snap.Peer(e.Origin.Principal)
+	if !ok || !p.NeedsSession() {
+		return flow.Result{}, false
+	}
+	if _, ok := snap.SessionFor(p.ID, time.Now()); ok {
+		return flow.Result{}, false
+	}
+	for _, pf := range pass {
+		if pf.Contains(e.Target.Addr()) {
+			return flow.Result{Allow: true, Policies: []string{"login_passthrough"}, Reasons: []string{"before sign-in: " + pf.String()}}, true
+		}
+	}
+	return flow.Result{Reasons: []string{"no user session: only the login passthrough is open"}}, true
 }
 
 // flowSweeper expires idle flows.

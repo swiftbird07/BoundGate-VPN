@@ -15,6 +15,10 @@ behind_mux:
   # no_proxy_protocol: true        # if a reverse proxy in front of the TCP side sends no PROXY v2 header
 # tcp_fallback: false              # UDP only: no TCP listener, and spokes never fall back
 # relay: false                     # do not relay between spokes (docs/PATHS.md): they then only meet through this hub's routing
+# Only for Android's Always-on VPN with "Block connections without VPN" (docs/ANDROID.md): a device
+# without a user session gets a tunnel that reaches these destinations only, so that its browser
+# can sign in. List the IdP's addresses and the DNS resolver the phones use.
+# login_passthrough: [203.0.113.10/32, 10.20.0.1/32]
 public_addr: "bg.example.com:443"  # what spokes dial: the same address and port as the control plane
 auto_up: true
 profile: full

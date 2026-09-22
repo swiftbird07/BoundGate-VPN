@@ -7,10 +7,14 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.IpPrefix
+import android.net.LinkProperties
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.util.Log
 import org.json.JSONObject
+import java.net.InetAddress
 import java.util.concurrent.Executors
 
 /**
@@ -21,6 +25,15 @@ import java.util.concurrent.Executors
  * tunnel (addDisallowedApplication), so the control channel and the hub
  * links never go through themselves.
  *
+ * DNS: the node has no resolver of its own, and apps inside a VPN without
+ * DNS servers resolve nothing. The VPN therefore carries the DNS servers of
+ * the network below, and their addresses stay outside the tunnel, as they do
+ * on the other platforms where the system resolver is used as it is. The
+ * same goes for the `excluded` hosts (control plane, hubs, IdP): the browser
+ * must reach the IdP to sign in before the hub lets anything through.
+ * In lockdown nothing but the tunnel is open to other apps; there the hub's
+ * login_passthrough carries the way to the sign-in instead.
+ *
  * Started by the app's Connect, by Always-on VPN (action
  * android.net.VpnService), or again by the system after the process died
  * (START_STICKY, null intent): all of them mean "connect".
@@ -29,7 +42,9 @@ class TunnelService : VpnService() {
 
     private val node get() = (application as App).node
     private val worker = Executors.newSingleThreadExecutor()
-    private var network: Network? = null
+    // the network below the VPN and its properties (never the VPN itself)
+    @Volatile private var network: Network? = null
+    @Volatile private var below: LinkProperties? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
@@ -46,6 +61,8 @@ class TunnelService : VpnService() {
         watchNetwork()
         worker.execute {
             try {
+                // Connect and Always-on may both start the service: once is enough
+                if (node.call("GET", "/v1/status").optString("state") != "down") return@execute
                 node.call("POST", "/v1/up", JSONObject().put("profile", ""))
             } catch (e: Exception) {
                 Log.w(Node.TAG, "up: ${e.message}")
@@ -85,6 +102,19 @@ class TunnelService : VpnService() {
         s.optJSONArray("routes")?.let { r ->
             for (i in 0 until r.length()) prefix(r.getString(i)).let { (a, bits) -> b.addRoute(a, bits) }
         }
+        val outside = mutableSetOf<InetAddress>()
+        s.optJSONArray("excluded")?.let { e -> for (i in 0 until e.length()) outside += InetAddress.getByName(e.getString(i)) }
+        below?.dnsServers?.forEach {
+            b.addDnsServer(it)
+            outside += it
+        }
+        below?.domains?.split(' ')?.filter { it.isNotBlank() }?.forEach { b.addSearchDomain(it) }
+        // Always-on with "Block connections without VPN" blocks every other
+        // app's traffic outside the tunnel, excluded or not: then the IdP and
+        // DNS go through it, to a hub with login_passthrough (docs/ANDROID.md)
+        if (!isLockdownEnabled) {
+            for (a in outside) b.excludeRoute(IpPrefix(a, if (a.address.size == 4) 32 else 128))
+        }
         b.addDisallowedApplication(packageName)
         b.setConfigureIntent(openApp())
         network?.let { b.setUnderlyingNetworks(arrayOf(it)) }
@@ -107,23 +137,48 @@ class TunnelService : VpnService() {
         return p.substring(0, i) to p.substring(i + 1).toInt()
     }
 
-    /** Wi-Fi <-> cellular: the core reconnects the control channel and the hub links at once. */
+    /**
+     * Wi-Fi <-> cellular: the core reconnects the control channel and the hub
+     * links at once and hands the settings over again, so the VPN gets the
+     * new network's DNS servers.
+     */
     private fun watchNetwork() {
         if (callback != null) return
         val cm = getSystemService(ConnectivityManager::class.java)
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(n: Network) {
-                val changed = network != null && network != n
+            override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                if (network == n) return
+                val changed = network != null
                 network = n
+                below = cm.getLinkProperties(n)
                 setUnderlyingNetworks(arrayOf(n))
                 if (changed) node.networkChanged()
             }
 
+            override fun onLinkPropertiesChanged(n: Network, lp: LinkProperties) {
+                if (n != network) return
+                val dnsChanged = below?.dnsServers != lp.dnsServers
+                below = lp
+                if (dnsChanged) node.networkChanged()
+            }
+
             override fun onLost(n: Network) {
-                if (network == n) network = null
+                if (network == n) {
+                    network = null
+                    below = null
+                }
             }
         }
-        // the default network of this app, which the VPN leaves out: the one underneath
+        // now, before the first establish; the callback may come later
+        cm.activeNetwork?.let { n ->
+            if (cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == false) {
+                network = n
+                below = cm.getLinkProperties(n)
+            }
+        }
+        // the default network of this app, which the VPN leaves out: the one
+        // underneath (the VPN itself shows up here too while it starts)
         cm.registerDefaultNetworkCallback(cb)
         callback = cb
     }

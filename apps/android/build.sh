@@ -46,8 +46,8 @@ run() {
 
 # the core: a native clang against the NDK's sysroot and compiler-rt
 run -e VERSION="$VERSION" -e COMMIT="$COMMIT" -e VPKG="$VPKG" "$IMAGE-core" sh -euc '
-	# ABI, GOARCH, clang target (API 31, the app'"'"'s minSdk), compiler-rt directory
-	for spec in arm64-v8a:arm64:aarch64-linux-android31:aarch64 x86_64:amd64:x86_64-linux-android31:x86_64; do
+	# ABI, GOARCH, clang target (API 33, the app'"'"'s minSdk), compiler-rt directory
+	for spec in arm64-v8a:arm64:aarch64-linux-android33:aarch64 x86_64:amd64:x86_64-linux-android33:x86_64; do
 		abi=${spec%%:*}; rest=${spec#*:}; arch=${rest%%:*}; rest=${rest#*:}; target=${rest%%:*}; cpu=${rest#*:}
 		out=build/android/jniLibs/$abi
 		echo "android: libboundgate.so for $abi"

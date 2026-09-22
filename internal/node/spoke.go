@@ -110,14 +110,27 @@ func (m *spokeManager) retryNow() {
 // loginRequired reports whether any hub refused the node for lack of a
 // user session.
 func (m *spokeManager) loginRequired() bool {
+	only := m.signInOnly()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.links {
-		if l.state == "login required" {
+		if l.state == "login required" || only && l.state == "connected" {
 			return true
 		}
 	}
 	return false
+}
+
+// signInOnly: this node needs a user session and has none. A hub with a
+// login passthrough admits it anyway, for the way to the sign-in only; such
+// a link counts as "login required", not as connected.
+func (m *spokeManager) signInOnly() bool {
+	snap := m.s.n.holder.Load()
+	if snap == nil || !snap.Self.NeedsSession() {
+		return false
+	}
+	_, ok := snap.SessionFor(snap.Self.ID, time.Now())
+	return !ok
 }
 
 // stop closes every link.
@@ -532,6 +545,7 @@ func (m *spokeManager) routes() []string {
 
 // hubs returns the link states in snapshot order.
 func (m *spokeManager) hubs() []HubStatus {
+	only := m.signInOnly()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]HubStatus, 0, len(m.order))
@@ -541,6 +555,9 @@ func (m *spokeManager) hubs() []HubStatus {
 			continue
 		}
 		hs := HubStatus{Name: l.hub.Name, Addr: l.hub.PublicAddr, State: l.state, Error: l.err, Since: l.since, Primary: l == m.primary}
+		if only && l.state == "connected" {
+			hs.State, hs.Error = "login required", "the hub lets this device through for signing in only"
+		}
 		if l.tunnel != nil {
 			hs.Transport = l.tunnel.Transport()
 			hs.TunnelStats = l.tunnel.Stats()

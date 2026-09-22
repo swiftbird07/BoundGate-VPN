@@ -281,7 +281,9 @@ func (e *Engine) Request(method, path string, body []byte) (int, []byte) {
 	return w.status, w.body.Bytes()
 }
 
-// NetworkChanged tells the node the device moved to another network.
+// NetworkChanged tells the node the device moved to another network. The
+// platform gets the network settings again (Refresh): what it adds from the
+// network below, DNS on Android, changes with it.
 func (e *Engine) NetworkChanged() {
 	e.mu.Lock()
 	r := e.run
@@ -289,6 +291,7 @@ func (e *Engine) NetworkChanged() {
 	if r != nil {
 		r.n.NetworkChanged()
 	}
+	e.net.Refresh()
 }
 
 // Stop takes the overlay down and releases the state directory.

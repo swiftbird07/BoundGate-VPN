@@ -33,7 +33,10 @@ the APK carries only the Kotlin standard library besides the app itself.
 * **`apply`:** the service builds a new interface for every change
   (`Builder.establish`): the overlay address, the MTU and the routes, with
   0.0.0.0/0 as its two halves. It hands the descriptor over with `detachFd`,
-  so the core owns it and closes the old one. The core coalesces changes, so
+  so the core owns it and closes the old one. It adds the DNS servers of the
+  network below (apps in a VPN without DNS servers resolve nothing) and
+  excludes their addresses and the `excluded` hosts from the tunnel
+  (`excludeRoute`, Android 13, hence minSdk 33). The core coalesces changes, so
   a connect builds one interface, not one per route.
 * **The app's own sockets** stay outside the tunnel
   (`addDisallowedApplication` for the app itself). That covers the control
@@ -51,6 +54,31 @@ the APK carries only the Kotlin standard library besides the app itself.
   was killed it starts it again (`START_STICKY`). Both mean "connect".
 * **Sign in:** the app opens the IdP's page in the browser and waits for the
   flow as the other apps do (`/v1/login`, `/v1/login/{flow}?wait=25s`).
+
+## Always-on with "Block connections without VPN"
+
+In this mode Android lets no app except BoundGate send anything outside the
+tunnel, not even to the addresses the VPN excludes: the browser cannot reach
+the IdP. Without a user session the hub refuses the tunnel (403), so the
+sign-in would never get through.
+
+The hub option `login_passthrough` solves it (off by default; SECURITY
+R109):
+
+```yaml
+# hub: only for Android's lockdown mode
+login_passthrough: [136.243.123.200/32, 10.20.0.1/32]   # the IdP, the phones' DNS resolver
+```
+
+With it, the hub admits a device without a session. Its tunnel carries only
+flows to these destinations until the user has signed in. The app sees that
+and still shows "Sign-in needed". In lockdown the app excludes nothing from
+the tunnel (`isLockdownEnabled`), so the IdP and DNS go through the tunnel to
+the passthrough. Without lockdown the app excludes them, and the option is
+not needed.
+
+Limit: on a cellular network that only hands out IPv6 DNS servers, DNS in
+lockdown does not work. The tunnel carries IPv4 only.
 
 ## Device key
 

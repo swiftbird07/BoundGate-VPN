@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -56,6 +57,13 @@ type config struct {
 	Transport   string        `yaml:"transport"`    // spoke: auto (default) | quic | tcp
 	QUICRetry   time.Duration `yaml:"quic_retry"`   // spoke on TCP: how often to try QUIC again, default 2m
 	Relay       *bool         `yaml:"relay"`        // hub, default true: relay between spokes that cannot reach each other
+	// LoginPassthrough (hub, default empty): destinations an interactive node
+	// may reach through this hub before its user has signed in, e.g. the
+	// IdP and a DNS resolver. Only needed for Android's Always-on VPN with
+	// "Block connections without VPN": there even the browser's way to the
+	// IdP must go through the tunnel, which the hub otherwise refuses until
+	// the sign-in (docs/ANDROID.md). Empty: no tunnel without a session.
+	LoginPassthrough []netip.Prefix `yaml:"login_passthrough"`
 	Paths       struct {
 		Disabled bool          `yaml:"disabled"` // spoke: everything stays on the hub path
 		Listen   string        `yaml:"listen"`   // spoke: UDP address peers can dial (announce it with public_addr)
@@ -229,6 +237,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		Transport:         cfg.Transport,
 		QUICRetry:         cfg.QUICRetry,
 		NoRelay:           cfg.Relay != nil && !*cfg.Relay,
+		LoginPassthrough:  cfg.LoginPassthrough,
 		NoPaths:           cfg.Paths.Disabled,
 		PathsListen:       cfg.Paths.Listen,
 		PathIdle:          cfg.Paths.Idle,
