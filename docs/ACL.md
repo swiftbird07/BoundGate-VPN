@@ -34,10 +34,41 @@ Policies talk about these entities:
 | `BoundGate::Host::"<ip>"` (resource: the destination of a flow) | `ip` (ipaddr), `port`, `protocol` (`tcp`/`udp`/`icmp`/number), `sni` (only when a TLS ClientHello was seen), `dns_name` (only for DNS queries) | `BoundGate::Network::"<prefix>"` for the overlay pool and every announced prefix containing the address; `BoundGate::Node::"<owner>"` (the node with that overlay address, or the announcer of the longest matching prefix) |
 | `BoundGate::Network::"<prefix>"` | `prefix` (ipaddr) | the announcing node(s) |
 | `BoundGate::Tag::"<tag>"` | | none. A destination is `in` the tags of the node that owns it, through that node |
+| `BoundGate::List::"<name>"` (Lists in the admin UI) | `name`, `kind` (`ip`, `dns`, `sni`) | none. A destination is `in` an `ip` list when its address is inside one of the list's prefixes, in a `dns` list when the DNS query name matches one of its names, in an `sni` list when the TLS server name does |
 | `BoundGate::Action::"connect"` | | the only action |
 
 `context` carries `protocol`, `port`, `has_session`, and when present `sni`,
 `dns_name` and `user {subject, username, email, groups}`.
+
+## Lists
+
+A list is a named set of addresses and prefixes (`ip`), DNS query names
+(`dns`) or TLS server names (`sni`), kept apart from the rules that use it
+(Lists in the admin UI, `/api/v1/admin/lists`). Names are lowercase; a
+leading `*.` matches any number of labels below the name and not the name
+itself (`*.github.com` matches `api.github.com`, not `github.com`; list
+both for both). Up to 10 000 entries per list; every node receives every
+list with its snapshot, and a change takes effect within seconds like a
+policy change.
+
+```cedar
+// an allow-list: the NAS reaches nothing but these servers
+permit(principal == BoundGate::Node::"…nas…", action, resource in BoundGate::List::"allowed-sites");
+
+// a block-list for everyone
+forbid(principal, action, resource in BoundGate::List::"ad-domains");
+
+// the LAN, except the hosts on the list
+permit(principal, action, resource in BoundGate::Network::"10.60.0.0/24")
+  unless { resource in BoundGate::List::"blocked-hosts" };
+```
+
+A list that a policy refers to keeps its name and kind and cannot be
+deleted (409); its entries can change at any time. A policy may only name
+lists that exist (400 otherwise). Lists of server names work like
+`resource.sni` conditions: in a `forbid`, the TLS handshake is reset when
+the name arrives; in a `permit`, the flow is pending until the ClientHello
+(see Flows below).
 
 The membership chain `node ∈ user ∈ group` is what makes user-centric
 policies short: `principal in BoundGate::Group::"admins"` is true for a node
@@ -124,7 +155,8 @@ per new peer-originated flow. Then:
   ClientHellos larger than one segment (post-quantum key shares) are
   reassembled up to 16 KB.
 * **Permit by name**: a `permit … when { resource has sni && resource.sni
-  like "…" }` cannot match the SYN, which has no name yet. When such a
+  like "…" }`, or one with `resource in BoundGate::List::"…"` for a list of
+  server names, cannot match the SYN, which has no name yet. When such a
   permit is in scope and the SYN is otherwise denied, the flow is *pending*
   (`boundgatectl flows` shows `pending`): the TCP handshake passes, the
   first payload from the client is held back and read, and the flow is

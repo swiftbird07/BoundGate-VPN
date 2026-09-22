@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { Node } from '../../lib/types';
+  import type { Node, AclList } from '../../lib/types';
   import { condTypes, newCond, condLabel, type Rule, type Cond, type CondType, type Principal, type Resource } from '../../lib/cedar';
 
-  let { rule = $bindable(), nodes, groups, pool }: { rule: Rule; nodes: Node[]; groups: string[]; pool?: string } = $props();
+  let { rule = $bindable(), nodes, groups, pool, lists = [] }: { rule: Rule; nodes: Node[]; groups: string[]; pool?: string; lists?: AclList[] } = $props();
   const roles = ['endpoint', 'subnet-router', 'hub', 'exit-node'];
   const tags = $derived([...new Set(nodes.flatMap((n) => n.tags ?? []))].sort());
   const known = $derived(nodes.filter((n) => n.status === 'approved' || n.status === 'confirmed'));
@@ -25,10 +25,12 @@
       case 'node': rule.resource = { kind, id: known[0]?.id ?? '' }; break;
       case 'host': rule.resource = { kind, ip: '' }; break;
       case 'tag': rule.resource = { kind, tag: tags[0] ?? '' }; break;
+      case 'list': rule.resource = { kind, list: lists[0]?.name ?? '' }; break;
     }
   }
   function add(list: Cond[], type: CondType) { list.push(newCond(type)); }
-  function retype(list: Cond[], i: number, type: CondType) { list[i] = newCond(type); }
+  function retype(list: Cond[], i: number, type: CondType) { list[i] = newCond(type); if (type === 'list') (list[i] as any).list = lists[0]?.name ?? ''; }
+  const kindLabel = { ip: 'addresses', dns: 'DNS names', sni: 'TLS server names' } as const;
 </script>
 
 {#snippet condRow(list: Cond[], i: number)}
@@ -60,6 +62,9 @@
         <select bind:value={c.role}>{#each roles as r}<option>{r}</option>{/each}</select>
       {:else if c.type === 'platform'}
         <select bind:value={c.platform}><option>linux</option><option>darwin</option><option>windows</option></select>
+      {:else if c.type === 'list'}
+        {#if lists.length}<select bind:value={c.list}>{#each lists as l}<option value={l.name}>{l.name} · {kindLabel[l.kind]} ({l.entries.length})</option>{/each}</select>
+        {:else}<span class="hint">No lists yet: <a href="/lists">create one</a>.</span>{/if}
       {/if}
     </div>
     <button class="btn sm ghost" title="remove" onclick={() => list.splice(i, 1)}>✕</button>
@@ -111,6 +116,7 @@
         <option value="node">a specific node</option>
         <option value="host">one host address</option>
         <option value="tag">nodes with a tag</option>
+        <option value="list">what is in a list</option>
       </select>
       <datalist id="bg-tags">{#each tags as t}<option value={t}></option>{/each}</datalist>
       {#if rule.resource.kind === 'network'}
@@ -124,6 +130,10 @@
       {:else if rule.resource.kind === 'tag'}
         <input placeholder="tag" bind:value={rule.resource.tag} list="bg-tags" />
         <span class="hint">The overlay addresses of the nodes with this tag, and everything they announce.</span>
+      {:else if rule.resource.kind === 'list'}
+        {#if lists.length}<select bind:value={rule.resource.list}>{#each lists as l}<option value={l.name}>{l.name} · {kindLabel[l.kind]} ({l.entries.length})</option>{/each}</select>
+        {:else}<span class="hint">No lists yet: <a href="/lists">create one</a>.</span>{/if}
+        <span class="hint">Destinations whose address, DNS query name or TLS server name is in the list. A list of server names decides on the ClientHello: the handshake passes first, then the flow is allowed or reset (docs/ACL.md).</span>
       {/if}
     </div>
   </div>

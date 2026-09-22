@@ -15,7 +15,8 @@ export type Resource =
   | { kind: 'tag'; tag: string }
   | { kind: 'network'; prefix: string }
   | { kind: 'node'; id: string }
-  | { kind: 'host'; ip: string };
+  | { kind: 'host'; ip: string }
+  | { kind: 'list'; list: string };
 export type NameOp = 'like' | 'notlike' | 'present' | 'absent';
 export type Cond =
   | { type: 'port'; ports: string; not: boolean }
@@ -28,7 +29,8 @@ export type Cond =
   | { type: 'session'; not: boolean }
   | { type: 'group'; name: string; not: boolean }
   | { type: 'role'; role: string; not: boolean }
-  | { type: 'platform'; platform: string; not: boolean };
+  | { type: 'platform'; platform: string; not: boolean }
+  | { type: 'list'; list: string; not: boolean };
 export type CondType = Cond['type'];
 export interface Rule { effect: Effect; principal: Principal; resource: Resource; when: Cond[]; unless: Cond[] }
 
@@ -44,6 +46,7 @@ export const condTypes: { type: CondType; label: string; about: string }[] = [
   { type: 'group', label: 'User in group', about: 'an OIDC group of the logged-in user' },
   { type: 'role', label: 'Node has role', about: 'endpoint, subnet-router, hub or exit-node' },
   { type: 'platform', label: 'Node platform', about: 'linux, darwin, windows' },
+  { type: 'list', label: 'Destination in a list', about: 'an address, DNS name or TLS server name list (Lists)' },
 ];
 
 export function newCond(type: CondType): Cond {
@@ -59,6 +62,7 @@ export function newCond(type: CondType): Cond {
     case 'group': return { type, name: 'vpn-users', not: false };
     case 'role': return { type, role: 'hub', not: false };
     case 'platform': return { type, platform: 'linux', not: false };
+    case 'list': return { type, list: '', not: false };
   }
 }
 
@@ -85,6 +89,7 @@ function resourceText(r: Resource): string {
     case 'node': return `resource in BoundGate::Node::${str(r.id)}`;
     case 'host': return `resource == BoundGate::Host::${str(r.ip)}`;
     case 'tag': return `resource in BoundGate::Tag::${str(r.tag)}`;
+    case 'list': return `resource in BoundGate::List::${str(r.list)}`;
   }
 }
 
@@ -116,6 +121,7 @@ export function condText(c: Cond): string {
     case 'group': t = `(context has user && context.user.groups.contains(${str(c.name)}))`; break;
     case 'role': t = `principal.roles.contains(${str(c.role)})`; break;
     case 'platform': t = `principal.platform == ${str(c.platform)}`; break;
+    case 'list': t = `resource in BoundGate::List::${str(c.list)}`; break;
   }
   return not ? `!(${t})` : t;
 }
@@ -178,6 +184,7 @@ function parseAtom(raw: string): Cond | null {
   if (s === 'principal.has_session') return { type: 'session', not };
   if ((m = s.match(/^principal\.roles\.contains\("([\w-]+)"\)$/))) return { type: 'role', role: m[1], not };
   if ((m = s.match(/^principal\.platform\s*==\s*"(\w+)"$/))) return { type: 'platform', platform: m[1], not };
+  if ((m = s.match(/^resource in BoundGate::List::"((?:[^"\\]|\\.)*)"$/))) return { type: 'list', list: unstr(m[1]), not };
   if ((m = s.match(/^context has user\s*&&\s*context\.user\.groups\.contains\("((?:[^"\\]|\\.)*)"\)$/))) return { type: 'group', name: unstr(m[1]), not };
   for (const [type, field, has] of [['sni', 'resource.sni', 'resource has sni'], ['dns', 'context.dns_name', 'context has dns_name']] as const) {
     if (s === has) return { type, op: not ? 'absent' : 'present', pattern: '' };
@@ -233,6 +240,7 @@ export function parse(cedar: string): Rule | null {
     else if (op === 'in' && ty === 'Node') resource = { kind: 'node', id: unstr(id) };
     else if (op === '==' && ty === 'Host') resource = { kind: 'host', ip: unstr(id) };
     else if (op === 'in' && ty === 'Tag') resource = { kind: 'tag', tag: unstr(id) };
+    else if (op === 'in' && ty === 'List') resource = { kind: 'list', list: unstr(id) };
     else return null;
   }
   const rule: Rule = { effect: m[1] as Effect, principal, resource, when: [], unless: [] };
@@ -290,6 +298,7 @@ export function describe(r: Rule): string {
       case 'node': return `node ${r.resource.id}`;
       case 'host': return `host ${r.resource.ip}`;
       case 'tag': return `nodes tagged “${r.resource.tag}”`;
+      case 'list': return `what is in list “${r.resource.list}”`;
     }
   })();
   let s = `${r.effect === 'permit' ? 'Allow' : 'Deny'} ${who} → ${where}`;
@@ -312,6 +321,7 @@ export function condLabel(c: Cond): string {
     case 'group': return `${n}user in ${c.name}`;
     case 'role': return `${n}role ${c.role}`;
     case 'platform': return `${n}on ${c.platform}`;
+    case 'list': return `${n}in list ${c.list}`;
   }
 }
 

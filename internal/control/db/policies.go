@@ -17,6 +17,8 @@ type Policy struct {
 	Description string
 	Cedar       string
 	Enabled     bool
+	// Group is a label for the admin UI only.
+	Group string
 	// Scope lists node ids that receive the policy; empty means all.
 	Scope     []string
 	CreatedAt time.Time
@@ -38,12 +40,12 @@ func (p Policy) AppliesTo(nodeID string) bool {
 	return false
 }
 
-const policyCols = `id, name, description, cedar, enabled, scope_json, created_at, created_by, updated_at, updated_by`
+const policyCols = `id, name, description, cedar, enabled, scope_json, created_at, created_by, updated_at, updated_by, group_name`
 
 func scanPolicy(s scanner) (Policy, error) {
 	var p Policy
 	var scope, created, updated string
-	if err := s.Scan(&p.ID, &p.Name, &p.Description, &p.Cedar, &p.Enabled, &scope, &created, &p.CreatedBy, &updated, &p.UpdatedBy); err != nil {
+	if err := s.Scan(&p.ID, &p.Name, &p.Description, &p.Cedar, &p.Enabled, &scope, &created, &p.CreatedBy, &updated, &p.UpdatedBy, &p.Group); err != nil {
 		return Policy{}, err
 	}
 	_ = json.Unmarshal([]byte(scope), &p.Scope)
@@ -111,8 +113,8 @@ func (d *DB) CreatePolicy(ctx context.Context, p Policy, by string) (Policy, uin
 	ts := now()
 	p.CreatedBy, p.UpdatedBy = by, by
 	version, err := d.tx(ctx, true, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO policies (`+policyCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			p.ID, p.Name, p.Description, p.Cedar, p.Enabled, string(scope), ts, by, ts, by)
+		_, err := tx.ExecContext(ctx, `INSERT INTO policies (`+policyCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			p.ID, p.Name, p.Description, p.Cedar, p.Enabled, string(scope), ts, by, ts, by, p.Group)
 		if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 			return ErrConflict
 		}
@@ -137,8 +139,8 @@ func (d *DB) UpdatePolicy(ctx context.Context, p Policy, by string) (uint64, err
 	}
 	scope, _ := json.Marshal(p.Scope)
 	return d.tx(ctx, true, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE policies SET name = ?, description = ?, cedar = ?, enabled = ?, scope_json = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
-			p.Name, p.Description, p.Cedar, p.Enabled, string(scope), now(), by, p.ID)
+		res, err := tx.ExecContext(ctx, `UPDATE policies SET name = ?, description = ?, cedar = ?, enabled = ?, scope_json = ?, group_name = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
+			p.Name, p.Description, p.Cedar, p.Enabled, string(scope), p.Group, now(), by, p.ID)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return ErrConflict

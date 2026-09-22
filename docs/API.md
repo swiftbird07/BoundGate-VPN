@@ -53,8 +53,11 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | GET | `/api/v1/admin/logs` | `?stream=&node=&actor=&q=&from=&to=&before=&limit=` | `[LogEvent]` newest first |
 | GET | `/api/v1/admin/policies` | | `[PolicyView]` |
 | POST | `/api/v1/admin/policies` | `PolicyBody` | 201 `PolicyView`; 400 with the Cedar parser message or an unknown scope node; 409 duplicate name |
-| GET/PUT/DELETE | `/api/v1/admin/policies/{id}` | `PolicyBody` (PUT replaces everything) | `PolicyView` / 204; every change bumps the snapshot |
+| GET/PUT/DELETE | `/api/v1/admin/policies/{id}` | `PolicyBody` (PUT replaces everything) | `PolicyView` / 204; every change bumps the snapshot. `PolicyBody`/`PolicyView` carry `group` (a heading for the admin UI, no effect on decisions); a policy that names a list that does not exist is refused (400) |
 | POST | `/api/v1/admin/policies/validate` | `{cedar}` | `{ok, error?}` |
+| GET | `/api/v1/admin/lists` | | `[ListView]`: `{id, name, kind (ip|dns|sni), description?, entries[], used_by[] (policy names), created_at, created_by?, updated_at, updated_by?}` |
+| POST | `/api/v1/admin/lists` | `{name, kind, description?, entries[]}` (entries: one address, prefix or name each; blank lines and `#` comments are dropped, the rest normalized, sorted, de-duplicated; at most 10 000) | 201 `ListView`; 400 with the first bad entry; 409 duplicate name |
+| GET/PUT/DELETE | `/api/v1/admin/lists/{id}` | `{name, kind, description?, entries[]}` | `ListView` / 204; 409 when policies refer to the list and the name or kind would change, or on delete; every change bumps the snapshot |
 | POST | `/api/v1/admin/acl/evaluate` | `{node, dst, port?, proto?, sni?, dns_name?, enforcer?, draft? {id, name, cedar}, draft_only?}` | `{allow, policies, reasons, errors?, policy_count, policy_errors?, principal, user?, groups?, owner?, owner_name?}` (dry run on live state; `draft` replaces the stored policy with the same id or is added, without being stored; `draft_only` evaluates it alone; 400 if the draft does not parse) |
 | GET | `/api/v1/admin/tunnels` | `?node=&active=1&since=&limit=` | `[Tunnel]` newest first: `id, hub_id, hub_name, peer_id, peer_name, peer_addr, opened_at, closed_at?, close_reason, bytes_in/out, packets_in/out, last_report_at` |
 | GET | `/api/v1/admin/flows` | `?node=&principal=&user=&decision=&event=&dst=&sni=&dns_name=&from=&to=&before=&limit=` | `[LogEvent]` of stream `flow` (see ACL.md for the attributes) |
@@ -155,7 +158,7 @@ receipt and cross-check `control_spki` with the key they pinned in TLS.
 self {id, name, spki, kind, roles, overlay_ip, prefixes, public_addr,
 key_version, binding, signature, signed_by}, peers [same shape], sessions
 [{id, node_id, subject, email, username, groups, expires_at}] (own and
-peers'), policies [{id, name, cedar}] (enabled and scoped to the node),
+peers'), policies [{id, name, cedar}] (enabled and scoped to the node), lists [{name, kind, entries}] (all of them),
 pool`. `binding` is the canonical JSON that was
 signed, `signature` the armored SSHSIG; nodes verify both before using a
 record.

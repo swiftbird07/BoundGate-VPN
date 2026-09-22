@@ -25,6 +25,7 @@ type Source struct {
 	cachedNodes   []registry.Node
 	cachedSess    []registry.Session
 	cachedPol     []db.Policy
+	cachedLists   []db.List
 	cachedNet     db.NetworkSettings
 	cachedAt      time.Time
 	cachedChain   []registry.SignerLink
@@ -39,6 +40,7 @@ type loaded struct {
 	nodes    []registry.Node
 	sessions []registry.Session
 	policies []db.Policy
+	lists    []db.List
 	net      db.NetworkSettings
 	at       time.Time
 	chain    []registry.SignerLink
@@ -51,7 +53,7 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	}
 	s.mu.Lock()
 	if s.cachedNodes != nil && s.cachedVersion == version {
-		l := loaded{version, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedNet, s.cachedAt, s.cachedChain}
+		l := loaded{version, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedLists, s.cachedNet, s.cachedAt, s.cachedChain}
 		s.mu.Unlock()
 		return l, nil
 	}
@@ -70,6 +72,10 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 		return loaded{}, err
 	}
 	policies, err := s.db.EnabledPolicies(ctx)
+	if err != nil {
+		return loaded{}, err
+	}
+	lists, err := s.db.Lists(ctx)
 	if err != nil {
 		return loaded{}, err
 	}
@@ -93,9 +99,9 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	}
 	at := time.Now().UTC()
 	s.mu.Lock()
-	s.cachedVersion, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedNet, s.cachedAt, s.cachedChain = version, nodes, sessions, policies, net, at, chain
+	s.cachedVersion, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedLists, s.cachedNet, s.cachedAt, s.cachedChain = version, nodes, sessions, policies, lists, net, at, chain
 	s.mu.Unlock()
-	return loaded{version, nodes, sessions, policies, net, at, chain}, nil
+	return loaded{version, nodes, sessions, policies, lists, net, at, chain}, nil
 }
 
 func toRegistry(n db.Node) registry.Node {
@@ -149,6 +155,9 @@ func (s *Source) BuildFor(ctx context.Context, self transport.DeviceID) (*regist
 		if self == "" || p.AppliesTo(string(self)) {
 			snap.Policies = append(snap.Policies, registry.Policy{ID: p.ID, Name: p.Name, Cedar: p.Cedar})
 		}
+	}
+	for _, x := range l.lists {
+		snap.Lists = append(snap.Lists, registry.List{Name: x.Name, Kind: x.Kind, Entries: x.Entries})
 	}
 	known := make(map[transport.DeviceID]bool, len(l.nodes))
 	for _, n := range l.nodes {

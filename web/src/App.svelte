@@ -13,6 +13,7 @@
   import Mesh from './pages/Mesh.svelte';
   import Sessions from './pages/Sessions.svelte';
   import Policies from './pages/Policies.svelte';
+  import Lists from './pages/Lists.svelte';
   import PolicyEditor from './pages/PolicyEditor.svelte';
   import Logs from './pages/Logs.svelte';
   import Admins from './pages/Admins.svelte';
@@ -47,6 +48,7 @@
     { href: '/mesh', label: 'Mesh', icon: 'mesh' },
     { href: '/sessions', label: 'Sessions', icon: 'sessions' },
     { href: '/policies', label: 'Policies', icon: 'policies' },
+    { href: '/lists', label: 'Lists', icon: 'lists' },
     { href: '/logs', label: 'Logs', icon: 'logs' },
     { href: '/admins', label: 'Admins', icon: 'admins', badge: () => counts?.pending_passkeys ?? 0 },
     { href: '/settings', label: 'Settings', icon: 'settings' },
@@ -62,6 +64,7 @@
     if (p.startsWith('/sessions')) return Sessions;
     if (p.startsWith('/policies/')) return PolicyEditor;
     if (p.startsWith('/policies')) return Policies;
+    if (p.startsWith('/lists')) return Lists;
     if (p.startsWith('/logs')) return Logs;
     if (p.startsWith('/admins')) return Admins;
     if (p.startsWith('/settings')) return Settings;

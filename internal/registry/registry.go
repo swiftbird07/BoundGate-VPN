@@ -164,6 +164,15 @@ type Policy struct {
 	Cedar string `json:"cedar"`
 }
 
+// List is a named set of addresses or names that policies refer to as
+// BoundGate::List::"<name>". Kind is "ip" (addresses and prefixes), "dns"
+// (query names) or "sni" (TLS server names); names may start with "*.".
+type List struct {
+	Name    string   `json:"name"`
+	Kind    string   `json:"kind"`
+	Entries []string `json:"entries"`
+}
+
 // Snapshot is an immutable, versioned registry state for one node.
 type Snapshot struct {
 	Version     uint64    `json:"version"`
@@ -178,6 +187,8 @@ type Snapshot struct {
 	Peers    []Node    `json:"peers"`
 	Sessions []Session `json:"sessions,omitempty"`
 	Policies []Policy  `json:"policies,omitempty"`
+	// Lists are the named sets the policies may refer to.
+	Lists []List `json:"lists,omitempty"`
 	// Pool is the overlay address range.
 	Pool netip.Prefix `json:"pool"`
 	// SignerChain is the signed history of the admin key list (package
@@ -378,7 +389,9 @@ func diff(old, cur *Snapshot) Diff {
 	}
 	d.HubsChanged = !slices.EqualFunc(old.Hubs(), cur.Hubs(), sameNode)
 	d.SelfChanged = !sameNode(old.Self, cur.Self)
-	d.PoliciesChanged = !slices.Equal(old.Policies, cur.Policies)
+	d.PoliciesChanged = !slices.Equal(old.Policies, cur.Policies) || !slices.EqualFunc(old.Lists, cur.Lists, func(a, b List) bool {
+		return a.Name == b.Name && a.Kind == b.Kind && slices.Equal(a.Entries, b.Entries)
+	})
 	d.PoolChanged = old.Pool != cur.Pool
 	return d
 }

@@ -45,6 +45,7 @@ const (
 	TypeTag     types.EntityType = "BoundGate::Tag"
 	TypeHost    types.EntityType = "BoundGate::Host"
 	TypeNetwork types.EntityType = "BoundGate::Network"
+	TypeList    types.EntityType = "BoundGate::List"
 	TypeAction  types.EntityType = "BoundGate::Action"
 
 	ActionConnect = "connect"
@@ -117,8 +118,78 @@ type Engine struct {
 	networks []network
 	errs     []PolicyError
 	count    int
-	// permitsBySNI: at least one permit statement mentions `sni`
+	// permitsBySNI: at least one permit statement mentions `sni`, or a list
+	// of server names
 	permitsBySNI bool
+	lists        []list
+}
+
+// list is a compiled registry.List: a destination is `in` the list when
+// its address is inside one of the prefixes (kind ip), or its DNS query
+// name or TLS server name matches one of the names (kind dns, sni). A name
+// "*.example.com" matches every name under example.com, not example.com
+// itself.
+type list struct {
+	name     string
+	kind     string
+	uid      types.EntityUID
+	prefixes []netip.Prefix
+	exact    map[string]bool
+	under    []string // "*.example.com" stored as ".example.com"
+}
+
+func compileList(l registry.List) list {
+	c := list{name: l.Name, kind: l.Kind, uid: types.NewEntityUID(TypeList, types.String(l.Name)), exact: map[string]bool{}}
+	for _, e := range l.Entries {
+		switch l.Kind {
+		case "ip":
+			if p, err := netip.ParsePrefix(e); err == nil {
+				c.prefixes = append(c.prefixes, p)
+			}
+		default:
+			e = strings.ToLower(e)
+			if rest, ok := strings.CutPrefix(e, "*."); ok {
+				c.under = append(c.under, "."+rest)
+			} else {
+				c.exact[e] = true
+			}
+		}
+	}
+	return c
+}
+
+// has reports whether the flow's destination is in the list.
+func (c *list) has(dst netip.Addr, sni, dnsName string) bool {
+	switch c.kind {
+	case "ip":
+		for _, p := range c.prefixes {
+			if p.Contains(dst) {
+				return true
+			}
+		}
+		return false
+	case "sni":
+		return c.hasName(sni)
+	case "dns":
+		return c.hasName(dnsName)
+	}
+	return false
+}
+
+func (c *list) hasName(name string) bool {
+	if name == "" {
+		return false
+	}
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	if c.exact[name] {
+		return true
+	}
+	for _, u := range c.under {
+		if strings.HasSuffix(name, u) && len(name) > len(u) {
+			return true
+		}
+	}
+	return false
 }
 
 type network struct {
@@ -134,6 +205,15 @@ func New(snap *registry.Snapshot) *Engine {
 	e := &Engine{snap: snap, set: cedar.NewPolicySet(), names: make(map[string]string), base: types.EntityMap{}}
 	if snap == nil {
 		return e
+	}
+	sniLists := map[string]bool{}
+	for _, l := range snap.Lists {
+		c := compileList(l)
+		e.lists = append(e.lists, c)
+		e.base[c.uid] = types.Entity{UID: c.uid, Attributes: types.NewRecord(types.RecordMap{"kind": types.String(l.Kind), "name": types.String(l.Name)})}
+		if l.Kind == "sni" {
+			sniLists[`BoundGate::List::"`+l.Name+`"`] = true
+		}
 	}
 	for _, p := range snap.Policies {
 		if len(p.Cedar) > MaxPolicyBytes {
@@ -153,8 +233,16 @@ func New(snap *registry.Snapshot) *Engine {
 			e.set.Add(types.PolicyID(id), pol)
 			e.names[id] = p.Name
 			e.count++
-			if pol.Effect() == cedar.Permit && bytes.Contains(pol.MarshalCedar(), []byte("sni")) {
-				e.permitsBySNI = true
+			if pol.Effect() == cedar.Permit {
+				text := pol.MarshalCedar()
+				if bytes.Contains(text, []byte("sni")) {
+					e.permitsBySNI = true
+				}
+				for ref := range sniLists {
+					if bytes.Contains(text, []byte(ref)) {
+						e.permitsBySNI = true
+					}
+				}
 			}
 		}
 	}
@@ -389,6 +477,11 @@ func (e *Engine) evaluate(r Request) Decision {
 	if owner, ok := Owner(e.snap, r.Dst); ok {
 		d.Owner = &owner
 		parents = append(parents, nodeUID(owner.ID))
+	}
+	for i := range e.lists {
+		if e.lists[i].has(r.Dst, r.SNI, r.DNSName) {
+			parents = append(parents, e.lists[i].uid)
+		}
 	}
 	proto := ProtoName(r.Proto)
 	hostAttrs := types.RecordMap{

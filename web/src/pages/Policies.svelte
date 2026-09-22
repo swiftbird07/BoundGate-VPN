@@ -11,8 +11,16 @@
   async function load() { try { [policies, nodes] = await Promise.all([admin.policies(), admin.nodes()]); } catch (e) { fail(e); } }
   onMount(() => { void load(); });
   const nodeName = (id: string) => nodes.find((n) => n.id === id)?.name ?? id.slice(0, 8);
+  // groups are headings; the order is by name, ungrouped policies last
+  const groups = $derived.by(() => {
+    const m = new Map<string, Policy[]>();
+    for (const p of policies) { const g = p.group || ''; if (!m.has(g)) m.set(g, []); m.get(g)!.push(p); }
+    return [...m.entries()].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+  });
+  let closed = $state<Record<string, boolean>>((() => { try { return JSON.parse(localStorage.getItem('bg.policy.groups') || '{}'); } catch { return {}; } })());
+  function fold(g: string) { closed = { ...closed, [g]: !closed[g] }; try { localStorage.setItem('bg.policy.groups', JSON.stringify(closed)); } catch { /* private mode */ } }
   async function toggle(p: Policy) {
-    try { await admin.putPolicy(p.id, { name: p.name, description: p.description || '', cedar: p.cedar, enabled: !p.enabled, scope: p.scope }); toast(p.enabled ? 'Policy disabled' : 'Policy enabled', 'ok'); await load(); } catch (e) { fail(e); }
+    try { await admin.putPolicy(p.id, { name: p.name, description: p.description || '', cedar: p.cedar, enabled: !p.enabled, group: p.group || '', scope: p.scope }); toast(p.enabled ? 'Policy disabled' : 'Policy enabled', 'ok'); await load(); } catch (e) { fail(e); }
   }
   async function remove(p: Policy) {
     if (!window.confirm(`Delete policy “${p.name}”? Nodes re-evaluate their flows within seconds.`)) return;
@@ -22,13 +30,24 @@
 
 <div class="page-head">
   <div><h1>Access policies</h1><div class="sub">Cedar policies decide every flow. Nothing is allowed until a policy permits it; a forbid always wins.</div></div>
-  <a class="btn primary" href="/policies/new">+ New policy</a>
+  <div class="row"><a class="btn" href="/lists">Lists</a><a class="btn primary" href="/policies/new">+ New policy</a></div>
 </div>
 {#if policies.length === 0}
   <div class="card empty">No policies: every flow in the overlay is denied. <a href="/policies/new">Write the first one.</a></div>
 {/if}
+{#each groups as [g, ps] (g)}
+  {#if groups.length > 1 || g}
+    <div class="row between" style="margin:18px 0 8px">
+      <button class="btn sm ghost" onclick={() => fold(g)} style="font-size:14px" aria-expanded={!closed[g]}>
+        <span style="display:inline-block;width:1em;transform:rotate({closed[g] ? 0 : 90}deg);transition:transform .15s">▸</span>
+        <b>{g || 'Ungrouped'}</b> <span class="faint">· {ps.length} · {ps.filter((p) => p.enabled).length} enabled</span>
+      </button>
+      {#if g}<a class="btn sm" href="/policies/new?group={encodeURIComponent(g)}">+ policy in {g}</a>{/if}
+    </div>
+  {/if}
+  {#if !closed[g]}
 <div class="col" style="gap:12px">
-  {#each policies as p (p.id)}
+  {#each ps as p (p.id)}
     {@const rule = parse(p.cedar)}
     <div class="card" style="opacity:{p.enabled ? 1 : 0.6}">
       <div class="row between" style="align-items:flex-start">
@@ -52,3 +71,5 @@
     </div>
   {/each}
 </div>
+  {/if}
+{/each}

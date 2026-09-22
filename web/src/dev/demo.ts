@@ -76,14 +76,22 @@ const sessions: T.Session[] = [
 ];
 
 const policies: T.Policy[] = [
-  { id: 'p1', name: 'staff-to-intranet', description: 'Staff reach the intranet behind hub1', enabled: true, scope: [], created_at: ago(86400 * 6), created_by: 'martin', updated_at: ago(86400 * 2), updated_by: 'martin',
+  { id: 'p1', name: 'staff-to-intranet', description: 'Staff reach the intranet behind hub1', enabled: true, group: 'Office', scope: [], created_at: ago(86400 * 6), created_by: 'martin', updated_at: ago(86400 * 2), updated_by: 'martin',
     cedar: 'permit(\n  principal in BoundGate::Group::"staff",\n  action,\n  resource in BoundGate::Network::"10.60.0.0/24"\n);' },
-  { id: 'p2', name: 'engineering-home-lan', description: 'Engineering may use the LAN behind node-r, HTTPS only', enabled: true, scope: [nodes[2].id], created_at: ago(86400 * 5), created_by: 'martin', updated_at: ago(86400 * 5),
+  { id: 'p2', name: 'engineering-home-lan', description: 'Engineering may use the LAN behind node-r, HTTPS only', enabled: true, group: 'Office', scope: [nodes[2].id], created_at: ago(86400 * 5), created_by: 'martin', updated_at: ago(86400 * 5),
     cedar: 'permit(\n  principal in BoundGate::Group::"engineering",\n  action,\n  resource in BoundGate::Network::"192.168.178.0/24"\n) when {\n  resource.port == 443\n};' },
-  { id: 'p3', name: 'block-telemetry', description: 'Never allow the telemetry hosts, whoever asks', enabled: true, scope: [], created_at: ago(86400 * 4), created_by: 'ada', updated_at: ago(86400),
+  { id: 'p3', name: 'block-telemetry', description: 'Never allow the telemetry hosts, whoever asks', enabled: true, group: 'Hygiene', scope: [], created_at: ago(86400 * 4), created_by: 'ada', updated_at: ago(86400),
     cedar: 'forbid(principal, action, resource) when {\n  resource has sni && resource.sni like "*.telemetry.example.com"\n};' },
+  { id: 'p5', name: 'block-ad-domains', description: 'DNS names on the ad list are never resolved', enabled: true, group: 'Hygiene', scope: [], created_at: ago(86400 * 3), created_by: 'ada', updated_at: ago(86400 * 3),
+    cedar: 'forbid(\n  principal,\n  action,\n  resource in BoundGate::List::"ad-domains"\n);' },
   { id: 'p4', name: 'contractors-draft', description: 'Not live yet', enabled: false, scope: [], created_at: ago(7200), created_by: 'martin', updated_at: ago(7200),
     cedar: 'permit(\n  principal in BoundGate::Group::"contractors",\n  action,\n  resource == BoundGate::Host::"10.60.0.10"\n);' },
+];
+
+const lists: T.AclList[] = [
+  { id: 'l1', name: 'ad-domains', kind: 'dns', description: 'Trackers and ad networks', entries: ['*.ads.example', '*.doubleclick.example', 'tracker.example'], used_by: ['block-ad-domains'], created_at: ago(86400 * 3), created_by: 'ada', updated_at: ago(3600 * 5), updated_by: 'ada' },
+  { id: 'l2', name: 'allowed-sites', kind: 'sni', description: 'What the NAS may talk to', entries: ['myip.wtf', '*.github.com'], used_by: [], created_at: ago(86400), created_by: 'martin', updated_at: ago(86400), updated_by: 'martin' },
+  { id: 'l3', name: 'blocked-hosts', kind: 'ip', description: 'Printers and the old NAS', entries: ['192.168.178.99/32', '10.60.0.128/25'], used_by: [], created_at: ago(86400 * 2), created_by: 'martin', updated_at: ago(86400 * 2), updated_by: 'martin' },
 ];
 
 let seq = 9000;
@@ -146,6 +154,8 @@ function answer(method: string, path: string, query: URLSearchParams, body: any,
   if (path === '/admin/tunnels') return tunnels.filter((t) => !query.get('active') || !t.closed_at);
   if (path === '/admin/sessions') return sessions.filter((s) => query.get('all') || !s.ended_at);
   if (path === '/admin/policies') return method === 'GET' ? policies : { ...policies[0], ...body, id: 'p' + (policies.length + 1) };
+  if (path === '/admin/lists') return method === 'GET' ? lists : { ...lists[0], ...body, id: 'l' + (lists.length + 1), used_by: [] };
+  if (path.startsWith('/admin/lists/')) return method === 'DELETE' ? undefined : { ...(lists.find((l) => path.endsWith(l.id)) ?? lists[0]), ...(body ?? {}) };
   if (path.startsWith('/admin/policies/validate')) return { ok: true };
   if (path.startsWith('/admin/policies/')) return { ...(policies.find((p) => path.endsWith(p.id)) ?? policies[0]), ...(body ?? {}) };
   if (path === '/admin/acl/evaluate') {

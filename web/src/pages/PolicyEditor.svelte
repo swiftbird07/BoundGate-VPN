@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { admin, ApiError } from '../lib/api';
   import { route, navigate } from '../lib/router.svelte';
-  import type { Policy, Node, Session, NetworkSettings } from '../lib/types';
+  import type { Policy, Node, Session, NetworkSettings, AclList } from '../lib/types';
   import { parse, generate, emptyRule, describe, highlight, type Rule } from '../lib/cedar';
   import Builder from './policy/Builder.svelte';
   import SanityCheck from './policy/SanityCheck.svelte';
@@ -15,6 +15,9 @@
   let description = $state('');
   let enabled = $state(true);
   let scope = $state<string[]>([]);
+  let group = $state('');
+  let groups_ = $state<string[]>([]);
+  let lists = $state<AclList[]>([]);
   let mode = $state<'builder' | 'cedar'>('builder');
   let rule = $state<Rule>(emptyRule());
   let cedar = $state('');            // authoritative in cedar mode
@@ -26,23 +29,25 @@
   let original = $state<Policy | null>(null);
 
   const effectiveCedar = $derived(mode === 'builder' ? generate(rule) : cedar);
-  const dirty = $derived(!original ? true : original.name !== name || (original.description || '') !== description || original.enabled !== enabled || original.scope.join() !== scope.join() || original.cedar.trim() !== effectiveCedar.trim());
+  const dirty = $derived(!original ? true : original.name !== name || (original.description || '') !== description || original.enabled !== enabled || (original.group || '') !== group || original.scope.join() !== scope.join() || original.cedar.trim() !== effectiveCedar.trim());
   const groups = $derived([...new Set(sessions.flatMap((s) => s.groups))].sort());
 
   onMount(async () => {
     try {
-      [nodes, sessions, network] = await Promise.all([admin.nodes(), admin.sessions(true), admin.network().catch(() => null)]);
+      let ps: Policy[];
+      [nodes, sessions, network, lists, ps] = await Promise.all([admin.nodes(), admin.sessions(true), admin.network().catch(() => null), admin.lists().catch(() => []), admin.policies()]);
+      groups_ = [...new Set(ps.map((p) => p.group || '').filter(Boolean))].sort();
       if (!isNew) {
-        const ps = await admin.policies();
         const p = ps.find((x) => x.id === id);
         if (!p) { toast('Policy not found', 'bad'); navigate('/policies'); return; }
         original = p;
-        name = p.name; description = p.description || ''; enabled = p.enabled; scope = [...p.scope]; cedar = p.cedar;
+        name = p.name; description = p.description || ''; enabled = p.enabled; group = p.group || ''; scope = [...p.scope]; cedar = p.cedar;
         const r = parse(p.cedar);
         if (r) { rule = r; mode = 'builder'; } else { mode = 'cedar'; }
       } else {
         const tpl = route.query.get('template');
         if (tpl === 'allow-all') rule = { ...emptyRule(), effect: 'permit' };
+        group = route.query.get('group') || '';
       }
     } catch (e) { fail(e); }
     loaded = true;
@@ -66,7 +71,7 @@
   async function save() {
     busy = true;
     try {
-      const body = { name: name.trim(), description: description.trim(), cedar: effectiveCedar, enabled, scope };
+      const body = { name: name.trim(), description: description.trim(), cedar: effectiveCedar, enabled, group: group.trim(), scope };
       if (!body.name) { toast('Give the policy a name', 'bad'); return; }
       const p = isNew ? await admin.createPolicy(body) : await admin.putPolicy(id, body);
       original = p; cedar = p.cedar;
@@ -101,6 +106,8 @@
         <label class="field">Name <input placeholder="lan-for-vpn-users" bind:value={name} /></label>
         <label class="field">Description <input placeholder="what this policy is for" bind:value={description} /></label>
       </div>
+      <label class="field">Group <input placeholder="a heading the policy is listed under, e.g. NAS" bind:value={group} list="bg-policy-groups" /><span class="hint">Only for the overview: policies are shown under this heading. No effect on decisions.</span></label>
+      <datalist id="bg-policy-groups">{#each groups_ as g}<option value={g}></option>{/each}</datalist>
       <div class="row between">
         <label class="check"><input type="checkbox" bind:checked={enabled} /> enabled</label>
         <details><summary class="small muted" style="cursor:pointer">Scope: {scope.length ? `${scope.length} node(s)` : 'all nodes'}</summary>
@@ -123,7 +130,7 @@
         <div class="seg"><button class:active={mode === 'builder'} onclick={() => switchMode('builder')}>Builder</button><button class:active={mode === 'cedar'} onclick={() => switchMode('cedar')}>Cedar</button></div>
       </div>
       {#if mode === 'builder'}
-        <Builder bind:rule {nodes} {groups} pool={network?.pool} />
+        <Builder bind:rule {nodes} {groups} {lists} pool={network?.pool} />
         <div>
           <h3 style="margin-bottom:6px">Reads as</h3>
           <div class="muted">{describe(rule)}</div>
@@ -134,7 +141,7 @@
         </div>
       {:else}
         <textarea class="code" rows="14" bind:value={cedar} spellcheck="false"></textarea>
-        <div class="hint">Entities: <code>BoundGate::Node</code>, <code>User</code>, <code>Group</code>, <code>Role</code>, <code>Host</code> (resource; <code>ip</code>, <code>port</code>, <code>protocol</code>, <code>sni</code>, <code>dns_name</code>), <code>Network</code>. See docs/ACL.md.</div>
+        <div class="hint">Entities: <code>BoundGate::Node</code>, <code>User</code>, <code>Group</code>, <code>Role</code>, <code>Host</code> (resource; <code>ip</code>, <code>port</code>, <code>protocol</code>, <code>sni</code>, <code>dns_name</code>), <code>Network</code>, <code>List</code> (<a href="/lists">Lists</a>). See docs/ACL.md.</div>
       {/if}
       {#if validation}
         {#if validation.ok}<div class="ok small">✓ Cedar parses</div>{:else}<div class="error small">✕ {validation.error}</div>{/if}

@@ -11,6 +11,8 @@ rules.push({ effect: 'permit', principal: { kind: 'node', id: 'abc123' }, resour
 rules.push({ effect: 'permit', principal: { kind: 'user', subject: 'u1' }, resource: { kind: 'host', ip: '10.60.0.11' }, when: [], unless: [] });
 rules.push({ effect: 'permit', principal: { kind: 'role', role: 'subnet-router' }, resource: { kind: 'any' }, when: [], unless: [] });
 rules.push({ effect: 'permit', principal: { kind: 'tag', tag: 'priv_client' }, resource: { kind: 'tag', tag: 'server' }, when: [], unless: [] });
+rules.push({ effect: 'forbid', principal: { kind: 'any' }, resource: { kind: 'list', list: 'ad-domains' }, when: [], unless: [] });
+rules.push({ effect: 'permit', principal: { kind: 'any' }, resource: { kind: 'network', prefix: '10.60.0.0/24' }, when: [], unless: [{ type: 'list', list: 'blocked-hosts', not: false }] });
 for (const t of condTypes) {
   const c = newCond(t.type);
   rules.push({ ...emptyRule(), when: [c] });

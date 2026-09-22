@@ -15,8 +15,12 @@ export interface Signer { id: string; name: string; subject?: string; public_key
 export interface SignerChange { version: number; keys: Signer[]; added: string[]; removed: string[]; affected_nodes: { id: string; name: string }[]; signable_by: string[]; sign_token: string; sign_command: string; sign_expires_at: string }
 export interface SignerSet { version: number; hash?: string; genesis_hash?: string; history: { version: number; hash: string; signed_by: string; admin: string; created_at: string; added: string[]; removed: string[] }[] }
 export interface Session { id: string; node_id: string; node_name?: string; subject: string; email?: string; username?: string; groups: string[]; login_ip?: string; issued_at: string; expires_at: string; ended_at?: string; ended_by?: string; end_reason?: string }
-export interface Policy { id: string; name: string; description?: string; cedar: string; enabled: boolean; scope: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string }
-export interface PolicyBody { name: string; description: string; cedar: string; enabled: boolean; scope: string[] }
+export interface Policy { id: string; name: string; description?: string; cedar: string; enabled: boolean; group?: string; scope: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string }
+export interface PolicyBody { name: string; description: string; cedar: string; enabled: boolean; group?: string; scope: string[] }
+/** A named set policies refer to as BoundGate::List::"name": addresses (ip), DNS query names (dns) or TLS server names (sni). */
+export type ListKind = 'ip' | 'dns' | 'sni';
+export interface AclList { id: string; name: string; kind: ListKind; description?: string; entries: string[]; used_by: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string }
+export interface ListBody { name: string; kind: ListKind; description: string; entries: string[] }
 export interface EvaluateBody { node: string; dst: string; port?: number; proto?: string; sni?: string; dns_name?: string; enforcer?: string; draft?: { id: string; name: string; cedar: string }; draft_only?: boolean }
 export interface Evaluation { allow: boolean; policies: string[]; reasons: string[]; errors?: string[]; policy_count: number; policy_errors?: string[]; principal: string; user?: string; groups?: string[]; owner?: string; owner_name?: string }
 export interface Tunnel { id: string; hub_id: string; hub_name?: string; peer_id: string; peer_name?: string; peer_addr?: string; transport?: string; opened_at: string; closed_at?: string; close_reason?: string; bytes_in: number; bytes_out: number; packets_in: number; packets_out: number; last_report_at: string }
