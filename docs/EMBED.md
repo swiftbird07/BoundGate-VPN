@@ -79,7 +79,7 @@ talk to the Mac's daemon or to their own extension:
 | `platform` | Reported at enrollment (`ios`, `android`, `macos`). |
 | `name` | Device name offered at enrollment. |
 | `auto_up`, `profile` | The extension brings the overlay up once approved. It only runs while the user wants the tunnel. |
-| `mtu` | Default 1230 (`transport.FitMTU`). |
+| `mtu` | Default 1280 (`transport.FitMTU`). |
 | `control_pin`, `signers_genesis`, `hub_addrs`, `transport` | Provisioning, as in a daemon's configuration file (MDM). |
 | `memory_limit_mib` | Soft Go heap limit (`debug.SetMemoryLimit`). An iOS packet tunnel is killed at 50 MiB. |
 | `log_level`, `flow_log` | `flow_log` writes a line per connection. Flow records reach the control plane either way. |

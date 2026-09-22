@@ -6,9 +6,9 @@ import (
 )
 
 func TestTooLargeAnswersIPv4WithASizeThatFits(t *testing.T) {
-	pkt := make([]byte, 1280)
+	pkt := make([]byte, 1300)
 	pkt[0], pkt[9] = 0x45, 6 // IPv4, TCP
-	binary.BigEndian.PutUint16(pkt[2:], 1280)
+	binary.BigEndian.PutUint16(pkt[2:], 1300)
 	copy(pkt[12:16], []byte{17, 57, 146, 58})
 	copy(pkt[16:20], []byte{10, 25, 0, 1})
 	if tooLarge(pkt, nil) != nil {
@@ -30,8 +30,9 @@ func TestTooLargeAnswersIPv4WithASizeThatFits(t *testing.T) {
 	if out := tooLarge(v6, theirs); &out[0] != &theirs[0] {
 		t.Fatal("IPv6: 1280 is the right answer, keep it")
 	}
-	// 1280-byte QUIC packets: 1243 per datagram, 3 for the HTTP datagram prefix
-	if FitMTU > 1243-3 {
+	// PacketSize QUIC packets: 37 bytes of packet overhead, 3 for the HTTP
+	// datagram prefix
+	if FitMTU > PacketSize-37-3 {
 		t.Fatalf("FitMTU %d does not fit a connection without path MTU discovery", FitMTU)
 	}
 }

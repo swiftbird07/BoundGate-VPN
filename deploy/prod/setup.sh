@@ -216,7 +216,6 @@ auto_up: true
 profile: full                      # a server should not follow an exit node's default route: docs/PROFILES.md
 socket: /run/boundgate/node.sock
 tun_name: bg0
-mtu: 1230
 log_dir: /var/log/boundgate
 log_stdout: true
 EOF

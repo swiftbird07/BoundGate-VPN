@@ -231,6 +231,8 @@ func NewServer(cfg ServerConfig, h Handler) (*Server, error) {
 			Allow0RTT:       false,
 			MaxIdleTimeout:  cfg.IdleTimeout,
 			KeepAlivePeriod: cfg.KeepAlive,
+			// PacketSize, not quic-go's 1280, also behind a mux (mtu.go)
+			InitialPacketSize: PacketSize,
 		},
 		ConnContext: func(ctx context.Context, c *quic.Conn) context.Context {
 			return context.WithValue(ctx, quicConnKey{}, c)

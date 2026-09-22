@@ -14,7 +14,6 @@ profile: lab
 profiles_dir: /etc/boundgate/profiles
 socket: /run/boundgate/node.sock
 tun_name: bg0
-mtu: 1230
 log_dir: /var/log/boundgate
 log_stdout: true
 paths:

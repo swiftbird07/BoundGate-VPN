@@ -9,4 +9,3 @@ key_kind: auto                 # a key in the TPM (TPM Base Services); a node th
 roles: [endpoint]              # Windows nodes are endpoints
 socket_group: BoundGate Users  # members may use the tray app and boundgatectl without administrator rights
 tun_name: BoundGate            # the Wintun adapter's name
-mtu: 1230

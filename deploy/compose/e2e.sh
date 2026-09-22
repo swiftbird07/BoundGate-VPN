@@ -387,7 +387,7 @@ wait_for 20 status_is node-m '.login_required == true' || fail "hubs did not ask
 $S login node-m >/dev/null
 wait_for 20 status_is node-m '.state == "up" and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "node-m not connected to both hubs"
 # what the platform was handed: address, MTU and the routes, on the device it opened
-x node-m sh -c "ip -br addr show bgm0 | grep -q ' $(x node-m boundgatectl -json status | jq -r .overlay_ip)/32' && ip route | grep -q '^10.60.0.0/24 dev bgm0' && [ \$(cat /sys/class/net/bgm0/mtu) = 1230 ]" || fail "node-m's platform did not get the settings"
+x node-m sh -c "ip -br addr show bgm0 | grep -q ' $(x node-m boundgatectl -json status | jq -r .overlay_ip)/32' && ip route | grep -q '^10.60.0.0/24 dev bgm0' && [ \$(cat /sys/class/net/bgm0/mtu) = 1280 ]" || fail "node-m's platform did not get the settings"
 wait_for 10 sh -c 'docker compose -f docker-compose.yml exec -T node-m curl -sf --max-time 3 http://10.60.0.10 | grep -q "^Name: target"' || fail "target unreachable from node-m"
 # down releases the device; up gets a new one from the platform
 x node-m boundgatectl down >/dev/null

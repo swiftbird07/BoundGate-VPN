@@ -156,7 +156,7 @@ func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		d.mu.Unlock()
 		return rsp, nil
 	}
-	if req.Context().Err() != nil {
+	if req.Context().Err() != nil || answeredOverUDP(err) {
 		return nil, err
 	}
 	// A body may have been consumed; only retry idempotent-safe requests
@@ -174,6 +174,16 @@ func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	d.mu.Unlock()
 	return d.overTCP(tcp, req)
+}
+
+// answeredOverUDP: the control plane was reached over UDP and the
+// connection failed on its content (a key that is not pinned yet, a refused
+// certificate, a closed connection). TCP would fail the same way; falling
+// back is for a path that carries no UDP.
+func answeredOverUDP(err error) bool {
+	var te *quic.TransportError
+	var ae *quic.ApplicationError
+	return errors.As(err, &te) || errors.As(err, &ae)
 }
 
 func (d *dualTransport) overTCP(tcp *http.Transport, req *http.Request) (*http.Response, error) {

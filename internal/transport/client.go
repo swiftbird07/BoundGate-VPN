@@ -140,6 +140,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 		MaxIdleTimeout:       cfg.IdleTimeout,
 		KeepAlivePeriod:      cfg.KeepAlive,
 		HandshakeIdleTimeout: cfg.HandshakeTimeout,
+		InitialPacketSize:    PacketSize, // mtu.go
 	}
 	var qconn *quic.Conn
 	var qt *quic.Transport
