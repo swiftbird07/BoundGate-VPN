@@ -269,9 +269,13 @@ name to client prefixes:
 admin_allow: [100.96.0.0/16, 10.0.0.0/8, 203.0.113.7]   # the overlay, a private network, the office
 ```
 
-Outside the list the TLS handshake for the admin name fails, so nothing is
-served, not even the certificate; the node name is never restricted; ACME
-validation handshakes are always let through. Client addresses are what
+Outside the list every request for the admin name gets 403, with one
+exception: `GET /api/v1/oidc/callback`. The identity provider sends users'
+browsers back there when they sign in to their devices, from wherever they
+are (a phone on a mobile network). An *admin* login that arrives there from
+outside the list is refused as well. The node name is never restricted.
+Until 2026-09-22 the check was made at the TLS handshake, which also cut off
+every user's sign-in from outside the list. Client addresses are what
 the mux or proxy reports (PROXY protocol), so behind
 `no_proxy_protocol: true` every client is the proxy. Administering
 BoundGate through its own overlay (the control plane's host as a hub,

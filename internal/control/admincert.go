@@ -3,6 +3,7 @@ package control
 import (
 	"crypto/tls"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"slices"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 )
 
 // certReloader serves the admin certificate from files and picks up a new
@@ -87,41 +90,39 @@ func adminAllowed(allow []netip.Prefix, addr net.Addr, protos []string) bool {
 	return false
 }
 
-// errAdminNotAllowed fails the handshake: the client gets an alert and no
-// certificate, not even the admin name's.
-type errAdminNotAllowed struct{ addr net.Addr }
-
-func (e errAdminNotAllowed) Error() string {
-	return "control: admin UI not allowed from " + e.addr.String()
-}
-
-// restrictAdmin wraps a split TLS configuration so that handshakes for
-// anything but the node name are refused unless the client address is on
-// the list.
-func restrictAdmin(cfg *tls.Config, nodeServerName string, allow []netip.Prefix, onDeny func(net.Addr)) *tls.Config {
+// adminGate enforces admin_allow per request on every server name but the
+// node name. From an address outside the list exactly one request passes:
+// GET of the OIDC callback, because users sign in to their nodes from
+// anywhere and the identity provider sends their browser back there. It is
+// marked (api.WithAdminDenied), so the callback still refuses an admin
+// login from outside the list. Everything else gets 403.
+//
+// The check is no longer made at the TLS handshake: a handshake does not know
+// the path, and refusing it there cut off every user's sign-in from outside
+// the list (seen with an iPhone on a mobile network).
+func adminGate(allow []netip.Prefix, nodeServerName string, onDeny func(net.Addr), inner http.Handler) http.Handler {
 	if len(allow) == 0 {
-		return cfg
+		return inner
 	}
-	split := cfg.GetConfigForClient
-	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		if hello.ServerName != nodeServerName {
-			var addr net.Addr
-			if hello.Conn != nil {
-				addr = hello.Conn.RemoteAddr()
-			}
-			if !adminAllowed(allow, addr, hello.SupportedProtos) {
-				if onDeny != nil {
-					onDeny(addr)
-				}
-				if addr == nil {
-					addr = strAddr("unknown")
-				}
-				return nil, errAdminNotAllowed{addr}
-			}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil && r.TLS.ServerName == nodeServerName {
+			inner.ServeHTTP(w, r)
+			return
 		}
-		return split(hello)
-	}
-	return cfg
+		addr := strAddr(r.RemoteAddr)
+		if adminAllowed(allow, addr, nil) {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == api.OIDCCallbackPath {
+			inner.ServeHTTP(w, api.WithAdminDenied(r))
+			return
+		}
+		if onDeny != nil {
+			onDeny(addr)
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+	})
 }
 
 type strAddr string

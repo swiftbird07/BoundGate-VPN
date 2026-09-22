@@ -73,7 +73,7 @@ func (h *Handlers) AdminMux() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/snapshot", h.adminSnapshot)
 	mux.HandleFunc("GET /api/v1/admin/logs", h.adminLogs)
 	outer := http.NewServeMux()
-	outer.HandleFunc("GET /api/v1/oidc/callback", h.oidcCallback)
+	outer.HandleFunc("GET "+OIDCCallbackPath, h.oidcCallback)
 	outer.HandleFunc("GET /api/v1/admin/auth/login", h.adminLoginStart)
 	outer.HandleFunc("GET /api/v1/admin/auth/status", h.adminAuthStatus)
 	outer.Handle("/api/v1/sign/", h.signMux())

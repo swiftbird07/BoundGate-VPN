@@ -3,77 +3,70 @@ package control
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/servercert"
 )
 
-// admin_allow: the admin name's handshake fails from an address outside the
-// list (no certificate is served), the node name is untouched, and an ACME
-// validation handshake passes regardless.
+// admin_allow: from an address outside the list the admin name answers 403
+// to everything but GET of the sign-in callback, which passes marked as
+// "admin denied"; the node name is untouched; on the list, everything passes.
 func TestAdminAllowlist(t *testing.T) {
-	dir := t.TempDir()
-	adminCert, _, _ := servercert.LoadOrCreate(filepath.Join(dir, "a.crt"), filepath.Join(dir, "a.key"), []string{"bg.example.com"})
-	nodeCert, _, _ := servercert.LoadOrCreate(filepath.Join(dir, "n.crt"), filepath.Join(dir, "n.key"), []string{"nodes.bg.example.com"})
-	get := func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &adminCert, nil }
-	roots := x509.NewCertPool()
-	roots.AddCert(adminCert.Leaf)
-	nodeRoots := x509.NewCertPool()
-	nodeRoots.AddCert(nodeCert.Leaf)
+	var sawDenied bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawDenied = api.AdminDeniedForTest(r)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	outside := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	var denied int
+	gate := adminGate(outside, "nodes.bg.example.com", func(net.Addr) { denied++ }, inner)
+	do := func(h http.Handler, method, path, sni string) int {
+		r := httptest.NewRequest(method, "https://bg.example.com"+path, nil)
+		r.RemoteAddr = "192.0.2.7:5555"
+		r.TLS = &tls.ConnectionState{ServerName: sni}
+		w := httptest.NewRecorder()
+		sawDenied = false
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	if c := do(gate, "GET", "/", "bg.example.com"); c != http.StatusForbidden {
+		t.Fatalf("admin UI from outside: %d", c)
+	}
+	if c := do(gate, "GET", "/api/v1/admin/nodes", "bg.example.com"); c != http.StatusForbidden {
+		t.Fatalf("admin API from outside: %d", c)
+	}
+	if c := do(gate, "POST", api.OIDCCallbackPath, "bg.example.com"); c != http.StatusForbidden {
+		t.Fatalf("POST to the callback from outside: %d", c)
+	}
+	if c := do(gate, "GET", api.OIDCCallbackPath+"?state=x&code=y", "bg.example.com"); c != http.StatusNoContent || !sawDenied {
+		t.Fatalf("user sign-in callback from outside: %d, marked %v", c, sawDenied)
+	}
+	if c := do(gate, "GET", "/api/v1/node/snapshot", "nodes.bg.example.com"); c != http.StatusNoContent || sawDenied {
+		t.Fatalf("node name: %d", c)
+	}
+	if denied != 3 {
+		t.Fatalf("denials logged: %d", denied)
+	}
+	inside := adminGate([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}, "nodes.bg.example.com", nil, inner)
+	if c := do(inside, "GET", api.OIDCCallbackPath, "bg.example.com"); c != http.StatusNoContent || sawDenied {
+		t.Fatalf("callback from an allowed address: %d, marked %v", c, sawDenied)
+	}
+	if c := do(inside, "GET", "/", "bg.example.com"); c != http.StatusNoContent {
+		t.Fatalf("admin UI from an allowed address: %d", c)
+	}
 
-	serve := func(allow []netip.Prefix) *httptest.Server {
-		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-		cfg := TLSConfigACME(get, nodeCert, "nodes.bg.example.com", []string{"http/1.1", "acme-tls/1"})
-		srv.TLS = restrictAdmin(cfg, "nodes.bg.example.com", allow, nil)
-		srv.StartTLS()
-		return srv
-	}
-	adminGet := func(srv *httptest.Server) error {
-		c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "bg.example.com"}}}
-		rsp, err := c.Get(srv.URL)
-		if err == nil {
-			rsp.Body.Close()
-		}
-		return err
-	}
-
-	// not on the list: the handshake itself fails
-	srv := serve([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")})
-	if err := adminGet(srv); err == nil {
-		t.Fatal("admin name served to an address outside admin_allow")
-	}
-	// the node name still answers (with the usual client-certificate demand)
-	c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: nodeRoots, ServerName: "nodes.bg.example.com"}}}
-	if _, err := c.Get(srv.URL); err == nil || !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("node name: %v", err)
-	}
-	// an ACME validation handshake is let through to the certificate callback
-	conn, err := tls.Dial("tcp", strings.TrimPrefix(srv.URL, "https://"), &tls.Config{RootCAs: roots, ServerName: "bg.example.com", NextProtos: []string{"acme-tls/1"}})
-	if err != nil {
-		t.Fatalf("acme-tls/1 handshake refused: %v", err)
-	}
-	conn.Close()
-	srv.Close()
-
-	// on the list: served
-	srv = serve([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")})
-	if err := adminGet(srv); err != nil {
-		t.Fatalf("admin name refused from an allowed address: %v", err)
-	}
-	srv.Close()
-
-	// the HTTP-level check on its own
-	if adminAllowed([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, strAddr("10.1.2.3:4444"), nil) != true ||
-		adminAllowed([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, strAddr("[::ffff:10.1.2.3]:4444"), nil) != true ||
-		adminAllowed([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, strAddr("192.0.2.1:1"), nil) != false ||
-		adminAllowed([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, nil, nil) != false ||
+	if adminAllowed(outside, strAddr("10.1.2.3:4444"), nil) != true ||
+		adminAllowed(outside, strAddr("[::ffff:10.1.2.3]:4444"), nil) != true ||
+		adminAllowed(outside, strAddr("192.0.2.1:1"), nil) != false ||
+		adminAllowed(outside, nil, nil) != false ||
 		adminAllowed(nil, strAddr("192.0.2.1:1"), nil) != true {
 		t.Fatal("adminAllowed")
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"html"
 	"net/http"
@@ -176,10 +177,30 @@ func (h *Handlers) nodeLogout(w http.ResponseWriter, r *http.Request) {
 // oidcCallback is where the IdP sends the browser. No admin auth: the
 // state binds the request to a flow a node started (user login) or a
 // browser started (admin login).
+// OIDCCallbackPath is where the identity provider sends browsers back, for
+// user and admin logins alike.
+const OIDCCallbackPath = "/api/v1/oidc/callback"
+
+type adminDeniedKey struct{}
+
+// WithAdminDenied marks a request from an address outside admin_allow that
+// was let through to the callback for a user's sign-in.
+func WithAdminDenied(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), adminDeniedKey{}, true))
+}
+
+func adminDenied(r *http.Request) bool { v, _ := r.Context().Value(adminDeniedKey{}).(bool); return v }
+
 func (h *Handlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state := q.Get("state")
 	if af, err := h.d.DB.AdminLoginFlowByState(r.Context(), state); state != "" && err == nil {
+		if adminDenied(r) {
+			// the flow stays open: finishing it from an allowed address still works
+			h.d.Logs.AdminAuth.Warn("admin login callback from outside admin_allow refused", "src", remoteIP(r), "flow", af.ID)
+			loginPage(w, http.StatusForbidden, "Not allowed from here", "Admin logins are only accepted from the networks in <code>admin_allow</code>.")
+			return
+		}
 		h.adminCallback(w, r, af)
 		return
 	} else if errors.Is(err, db.ErrConflict) || errors.Is(err, db.ErrTokenExpired) {

@@ -80,8 +80,8 @@ type Config struct {
 	BehindMux *BehindMux
 	// AdminAllow restricts the admin UI and API (every server name but the
 	// node name) to client addresses in these prefixes; empty allows all.
-	// Enforced at the TLS handshake and again per request. The node channel
-	// is never restricted: nodes are anywhere.
+	// Enforced per request (adminGate); users' sign-in callback is open to
+	// all. The node channel is never restricted: nodes are anywhere.
 	AdminAllow []netip.Prefix
 	// CertReloadInterval is how often TLSCert/TLSKey are checked for a
 	// renewed pair (default 30s; an external ACME client writes them).
@@ -282,20 +282,8 @@ func Run(ctx context.Context, cfg Config) error {
 				log.Warn("admin UI refused: address not in admin_allow", "addr", addr, "count", n)
 			}
 		}
-		tcpTLS = restrictAdmin(tcpTLS, cfg.NodeServerName, cfg.AdminAllow, onDeny)
-		udpTLS = restrictAdmin(udpTLS, cfg.NodeServerName, cfg.AdminAllow, onDeny)
-		inner := root
-		root = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// second line of defence behind the handshake check
-			if r.TLS == nil || r.TLS.ServerName != cfg.NodeServerName {
-				if !adminAllowed(cfg.AdminAllow, strAddr(r.RemoteAddr), nil) {
-					http.Error(w, "forbidden", http.StatusForbidden)
-					return
-				}
-			}
-			inner.ServeHTTP(w, r)
-		})
-		log.Info("admin UI restricted to", "admin_allow", cfg.AdminAllow)
+		root = adminGate(cfg.AdminAllow, cfg.NodeServerName, onDeny, root)
+		log.Info("admin UI restricted to", "admin_allow", cfg.AdminAllow, "open to all", "GET "+api.OIDCCallbackPath+" (user sign-in)")
 	}
 	tcpSrv := &http.Server{
 		Addr:              cfg.Listen,

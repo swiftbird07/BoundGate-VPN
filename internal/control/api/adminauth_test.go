@@ -454,3 +454,31 @@ func TestPasskeyLoginWithUnsolicitedExtensionOutput(t *testing.T) {
 		t.Fatalf("status after the passkey login: %+v", st)
 	}
 }
+
+// An admin login's callback from outside admin_allow (the control plane lets
+// it through for users' sign-in and marks it) is refused and leaves no
+// session; the same flow still completes from an allowed address.
+func TestAdminCallbackFromOutsideAllowlist(t *testing.T) {
+	e := newEnv(t)
+	e.withAdminIdP(t, oidctest.User{Subject: "alice", Email: "alice@example.test", Username: "alice", Groups: []string{"admins"}})
+	mux := e.admin.Config.Handler
+	outside := true
+	e.admin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if outside && r.URL.Path == api.OIDCCallbackPath {
+			r = api.WithAdminDenied(r)
+		}
+		mux.ServeHTTP(w, r)
+	})
+	c := browserClient()
+	code, body := e.adminLogin(c, "/")
+	if code != http.StatusForbidden || !strings.Contains(body, "admin_allow") {
+		t.Fatalf("admin callback from outside: %d %s", code, body)
+	}
+	if st := e.status(c); st.Level != "none" {
+		t.Fatalf("a session came of it: %+v", st)
+	}
+	outside = false
+	if code, _ := e.adminLogin(c, "/"); code != http.StatusFound {
+		t.Fatalf("admin login from inside: %d", code)
+	}
+}
