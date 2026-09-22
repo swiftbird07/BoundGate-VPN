@@ -334,9 +334,15 @@ func TestCloseDeviceRevokesLiveTunnel(t *testing.T) {
 	if _, err := env.dial(t, certA); err == nil {
 		t.Fatal("revoked device reconnected")
 	}
-	if ids := env.srv.ActiveDevices(); len(ids) != 1 || ids[0] != "dev-b" {
-		t.Fatalf("active devices %v", ids)
+	// the server forgets a closed tunnel when its serving goroutine ends,
+	// a moment after the client saw the close (seen on a loaded CI runner)
+	var ids []transport.DeviceID
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if ids = env.srv.ActiveDevices(); len(ids) == 1 && ids[0] == "dev-b" {
+			return
+		}
 	}
+	t.Fatalf("active devices %v", ids)
 }
 
 func TestPeerFromTLSStateRejectsUnknownAndBadCerts(t *testing.T) {
