@@ -28,7 +28,9 @@ enum AppConfig {
 
     static var deviceName: String {
         #if canImport(UIKit) && !targetEnvironment(macCatalyst)
-        return ProcessInfo.processInfo.hostName
+        // "Martins-iPhone.local": the name the user gave the phone, as a host name
+        let h = ProcessInfo.processInfo.hostName
+        return h.hasSuffix(".local") ? String(h.dropLast(6)) : h
         #else
         return Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         #endif

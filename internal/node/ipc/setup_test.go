@@ -19,6 +19,7 @@ func TestSettingsValidate(t *testing.T) {
 		"bg.example.com:8443":      "bg.example.com:8443",
 		"203.0.113.7:443":          "203.0.113.7:443",
 		"[2001:db8::1]:443":        "[2001:db8::1]:443",
+		"Vpn.Net407.com:443":       "vpn.net407.com:443", // a keyboard's capitals: the node name must still match
 	} {
 		s := Settings{ControlAddr: in}
 		if err := s.Validate(); err != nil || s.ControlAddr != want {

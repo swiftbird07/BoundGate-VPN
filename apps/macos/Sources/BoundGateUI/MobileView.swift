@@ -106,7 +106,9 @@ public struct MobileView: View {
 struct MobileSetupCard: View {
     @ObservedObject var model: MobileModel
     @State private var control = ""
-    @State private var name = UIDevice.current.name
+    // the name the node already uses (shown below the card); UIDevice.name is
+    // only "iPhone" for apps without a special entitlement
+    @State private var name = ""
     @Environment(\.theme) private var t
     var body: some View {
         Card {
@@ -115,11 +117,14 @@ struct MobileSetupCard: View {
                 .font(.body(13)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
             field("vpn.example.com", text: $control, mono: true)
                 .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                .onChange(of: control) { v in if v != v.lowercased() { control = v.lowercased() } }
             field("Device name", text: $name, mono: false)
             Button("Continue") { model.configure(control: control.trimmingCharacters(in: .whitespaces), name: name) }
                 .buttonStyle(BGButtonStyle(kind: .primary, large: true))
                 .disabled(control.trimmingCharacters(in: .whitespaces).isEmpty || model.busy != nil)
         }
+        .onAppear { if name.isEmpty { name = model.status?.nodeName ?? "" } }
+        .onChange(of: model.status?.nodeName) { n in if name.isEmpty, let n { name = n } }
     }
     private func field(_ prompt: String, text: Binding<String>, mono: Bool) -> some View {
         TextField(prompt, text: text)

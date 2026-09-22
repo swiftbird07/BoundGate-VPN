@@ -37,6 +37,9 @@ func (s *Settings) Validate() error {
 	s.ControlServerName = strings.TrimSpace(s.ControlServerName)
 	s.Name = strings.TrimSpace(s.Name)
 	s.ControlAddr = strings.TrimSuffix(strings.TrimPrefix(s.ControlAddr, "https://"), "/")
+	// lowercase as entered: the control plane compares its node name exactly
+	s.ControlAddr = strings.ToLower(s.ControlAddr)
+	s.ControlServerName = strings.ToLower(s.ControlServerName)
 	if s.ControlAddr == "" {
 		return errors.New("control plane address is required")
 	}
