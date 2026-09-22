@@ -51,7 +51,7 @@ func (s *session) decide(e *flow.Entry) flow.Result {
 		return flow.Result{}
 	}
 	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: e.DNSName})
-	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner}
+	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI}
 }
 
 // flowSweeper expires idle flows.
@@ -105,6 +105,8 @@ func decisionOf(e flow.Entry) string {
 	switch {
 	case !e.Decided:
 		return "local"
+	case e.Probing():
+		return "pending"
 	case e.Allowed:
 		return "allow"
 	}

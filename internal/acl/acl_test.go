@@ -127,6 +127,32 @@ func TestSNIAndDNS(t *testing.T) {
 	}
 }
 
+func TestPermitBySNIIsFlaggedForTheFlowTable(t *testing.T) {
+	e := New(lab(
+		registry.Policy{ID: "myip", Name: "myip", Cedar: `permit(principal, action, resource) when { resource has sni && resource.sni == "myip.wtf" };`},
+	))
+	r := req("node-a", "104.19.192.174", 443, 6)
+	if d := e.Evaluate(r); d.Allow || !d.PermitBySNI {
+		t.Fatalf("a SYN that a permit could allow by name: %+v", d)
+	}
+	r.SNI = "myip.wtf"
+	if d := e.Evaluate(r); !d.Allow || d.PermitBySNI {
+		t.Fatalf("with the name: %+v", d)
+	}
+	r.SNI = "other.example"
+	if d := e.Evaluate(r); d.Allow || d.PermitBySNI {
+		t.Fatalf("another name is a deny, nothing to wait for: %+v", d)
+	}
+	u := req("node-a", "104.19.192.174", 443, 17)
+	if d := e.Evaluate(u); d.PermitBySNI {
+		t.Fatal("UDP has no client hello to wait for")
+	}
+	f := New(lab(registry.Policy{ID: "x", Name: "x", Cedar: `forbid(principal, action, resource) when { resource has sni && resource.sni like "*.evil" };`}))
+	if d := f.Evaluate(req("node-a", "104.19.192.174", 443, 6)); d.PermitBySNI {
+		t.Fatal("a forbid by name does not make a deny worth waiting on")
+	}
+}
+
 func TestBrokenPolicyIsSkipped(t *testing.T) {
 	e := New(lab(
 		registry.Policy{ID: "bad", Name: "bad", Cedar: `permit(principal, action, resource) when { this is not cedar };`},

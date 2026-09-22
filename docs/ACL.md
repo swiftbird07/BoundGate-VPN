@@ -123,6 +123,19 @@ per new peer-originated flow. Then:
   RSTs to both ends (the client sees "connection reset", not a timeout).
   ClientHellos larger than one segment (post-quantum key shares) are
   reassembled up to 16 KB.
+* **Permit by name**: a `permit … when { resource has sni && resource.sni
+  like "…" }` cannot match the SYN, which has no name yet. When such a
+  permit is in scope and the SYN is otherwise denied, the flow is *pending*
+  (`boundgatectl flows` shows `pending`): the TCP handshake passes, the
+  first payload from the client is held back and read, and the flow is
+  decided with the name. Permitted, the ClientHello goes on and the flow
+  opens (the open event carries the name); anything else (another name, no
+  name, not TLS, a server that speaks first) aborts the connection with
+  RSTs to both ends, and the deny event carries the name. The server sees a
+  completed handshake from the node's address and never a byte of payload
+  (SECURITY R102). A handshake without a ClientHello within 10 s is
+  reported as denied. UDP has no handshake: a name-based permit for DNS
+  (`dns_name`) works on the first packet, which already carries the query.
 * **DNS**: the question name of a UDP/53 query is available as `dns_name`
   before the first decision.
 * **ICMP errors** about an existing allowed flow pass with it.

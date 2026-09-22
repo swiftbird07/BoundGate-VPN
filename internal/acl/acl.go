@@ -20,6 +20,7 @@
 package acl
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -101,6 +102,10 @@ type Decision struct {
 	Session *registry.Session
 	// Owner is the node that owns the destination, if any.
 	Owner *registry.Node
+	// PermitBySNI: denied without a server name, but some permit in scope
+	// looks at `sni`: the flow table lets the TCP handshake through and
+	// decides again on the ClientHello (or aborts the connection).
+	PermitBySNI bool
 }
 
 // Engine is a compiled policy set plus the entities of one snapshot.
@@ -112,6 +117,8 @@ type Engine struct {
 	networks []network
 	errs     []PolicyError
 	count    int
+	// permitsBySNI: at least one permit statement mentions `sni`
+	permitsBySNI bool
 }
 
 type network struct {
@@ -146,6 +153,9 @@ func New(snap *registry.Snapshot) *Engine {
 			e.set.Add(types.PolicyID(id), pol)
 			e.names[id] = p.Name
 			e.count++
+			if pol.Effect() == cedar.Permit && bytes.Contains(pol.MarshalCedar(), []byte("sni")) {
+				e.permitsBySNI = true
+			}
 		}
 	}
 	e.buildEntities()
@@ -334,6 +344,14 @@ func (l layered) Get(uid types.EntityUID) (types.Entity, bool) {
 // Evaluate decides one flow. An unknown principal is denied without
 // consulting the policies.
 func (e *Engine) Evaluate(r Request) Decision {
+	d := e.evaluate(r)
+	if !d.Allow && r.SNI == "" && r.Proto == 6 && e.permitsBySNI {
+		d.PermitBySNI = true
+	}
+	return d
+}
+
+func (e *Engine) evaluate(r Request) Decision {
 	var d Decision
 	if e.snap == nil {
 		return d

@@ -54,6 +54,9 @@ type Result struct {
 	Errors   []string
 	Session  *registry.Session
 	Owner    *registry.Node
+	// PermitBySNI: denied so far, but a permit may match once the TLS
+	// server name is known (acl.Decision.PermitBySNI).
+	PermitBySNI bool
 }
 
 // Decider is asked once per new peer-originated flow, and again when an
@@ -83,7 +86,16 @@ type Entry struct {
 	dnsDone  bool
 	closing  bool
 	denyOnly bool // cached deny, expires quickly
+	// probing: a TCP flow denied at the SYN that a permit could still allow
+	// by server name. The handshake passes, the first payload from the
+	// originator is held back until it was read: a ClientHello with a name
+	// the policies permit opens the flow, anything else aborts it with
+	// RSTs. The server sees a handshake, never a byte of payload.
+	probing bool
 }
+
+// Probing reports a flow waiting for its TLS server name to be decided.
+func (e *Entry) Probing() bool { return e.probing }
 
 // EventType of a flow event.
 type EventType string
@@ -291,6 +303,10 @@ func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 		}
 		e.Decided = true
 		e.decide(decide)
+		if !e.Allowed && e.Result.PermitBySNI && h.Proto == netparse.ProtoTCP && !stray(h) {
+			e.probing = true
+			return Pass, e
+		}
 		if !e.Allowed {
 			e.denyOnly = true
 			if stray(h) {
@@ -309,6 +325,9 @@ func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 		return Pass, e
 	}
 	e.LastSeen = now
+	if e.probing {
+		return t.probe(e, h, pkt, src, decide, now)
+	}
 	if !e.Allowed {
 		return Drop, e
 	}
@@ -391,6 +410,37 @@ func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort) bool 
 	return false
 }
 
+// probe handles a packet of a flow that waits for its server name.
+func (t *Table) probe(e *Entry, h netparse.Header, pkt []byte, src netip.AddrPort, decide Decider, now time.Time) (Outcome, *Entry) {
+	if h.TCPFlags&(netparse.TCPFin|netparse.TCPRst) != 0 {
+		e.closing = true
+	}
+	if h.Payload < 0 || h.Payload >= len(pkt) {
+		return Pass, e // the handshake, acknowledgements, the end
+	}
+	if src == e.Originator {
+		e.inspect(h, pkt, src)
+		if !e.sniDone {
+			// a ClientHello split over segments: hold this one back too; the
+			// client retransmits it once the name is known and permitted
+			return Drop, e
+		}
+		if e.SNI != "" {
+			e.decide(decide)
+		}
+	}
+	// a server that speaks first, no TLS, no name, or a name no permit takes
+	e.probing = false
+	if e.Allowed {
+		e.count(src, len(pkt))
+		t.onEvent(Event{Type: EventOpen, Entry: *e, At: now})
+		return Pass, e
+	}
+	e.denyOnly, e.closing = true, true
+	t.onEvent(Event{Type: EventDeny, Entry: *e, Reset: true, At: now})
+	return Reset, e
+}
+
 // relatedLocked finds the allowed flow an ICMP error refers to.
 func (t *Table) relatedLocked(h netparse.Header, pkt []byte) *Entry {
 	if h.Proto != netparse.ProtoICMP || h.Version != 4 || len(pkt) < 20 {
@@ -433,8 +483,11 @@ func (t *Table) Expire(now time.Time) int {
 	}
 	t.mu.Unlock()
 	for _, e := range closed {
-		if e.Allowed {
+		switch {
+		case e.Allowed:
 			t.onEvent(Event{Type: EventClose, Entry: *e, Reason: "idle", At: now})
+		case e.probing:
+			t.onEvent(Event{Type: EventDeny, Entry: *e, Reason: "no TLS client hello", At: now})
 		}
 	}
 	return len(closed)
@@ -442,7 +495,7 @@ func (t *Table) Expire(now time.Time) int {
 
 func (t *Table) timeout(e *Entry) time.Duration {
 	switch {
-	case e.denyOnly:
+	case e.denyOnly, e.probing:
 		return t.t.Deny
 	case e.closing:
 		return t.t.Closing
