@@ -222,6 +222,9 @@ type Status struct {
 	HardwareKeyAvailable bool   `json:"hardware_key_available,omitempty"`
 	Enrollment           string `json:"enrollment"` // unknown | pending | confirmed | approved | revoked
 	EnrollmentError      string `json:"enrollment_error,omitempty"`
+	// EnrollmentStale: Enrollment is what the control plane said last time
+	// (kept in the state directory), it has not answered since this start.
+	EnrollmentStale bool `json:"enrollment_stale,omitempty"`
 	Control              string `json:"control"`
 	// ControlError is the last error of the control channel ("" = fine).
 	ControlError string `json:"control_error,omitempty"`
@@ -443,6 +446,11 @@ func (n *Node) init(enclave bool) (*Node, error) {
 		AdminKeys:            n.trust.signers().Fingerprints(),
 	}
 	n.status.AdminSetVersion = n.trust.current().Version
+	// a node that was enrolled before says so from the start, not only once
+	// the control plane answers (and not "unknown" while it cannot)
+	if e, ok := loadEnrollment(cfg.StateDir); ok {
+		n.status.Enrollment, n.status.NodeID, n.status.EnrollmentStale = e.Status, e.NodeID, true
+	}
 	if pin, ok := n.pins.Pinned(); ok {
 		n.status.ControlPin = pin.Fingerprint()
 	}
@@ -511,7 +519,8 @@ func (n *Node) applyEnrollStatus(st api.EnrollStatus) {
 		}
 	}
 	n.mu.Lock()
-	n.status.Enrollment, n.status.EnrollmentError, n.status.NodeID = st.Status, "", st.NodeID
+	n.status.Enrollment, n.status.EnrollmentError, n.status.NodeID, n.status.EnrollmentStale = st.Status, "", st.NodeID, false
+	n.saveEnrollment()
 	if pin, ok := n.pins.Pinned(); ok {
 		n.status.ControlPin = pin.Fingerprint()
 	}
@@ -641,7 +650,8 @@ func (n *Node) Run(ctx context.Context) {
 				n.log.Warn("control plane no longer approves this node")
 				n.holder.Clear()
 				n.mu.Lock()
-				n.status.Enrollment, n.status.SnapshotVersion, n.status.Binding = "revoked", 0, ""
+				n.status.Enrollment, n.status.SnapshotVersion, n.status.Binding, n.status.EnrollmentStale = "revoked", 0, "", false
+				n.saveEnrollment()
 				n.autoDone = false // auto_up nodes come back once approved again
 				n.mu.Unlock()
 				n.Down("node no longer approved by the control plane")
@@ -1059,6 +1069,7 @@ func (n *Node) Down(reason string) {
 // reconnected at once and hub links that are down try again now; links that
 // are up notice a dead path through their keep-alives.
 func (n *Node) NetworkChanged() {
+	n.hosts.networkChanged()
 	n.control.Reconnect()
 	n.mu.Lock()
 	s := n.sess

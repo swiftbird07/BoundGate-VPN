@@ -87,6 +87,22 @@ creates the profiles with automatic signing:
   which is also the address excluded from the tunnel. A lookup that fails
   keeps the address the name had, with one warning in the log, and the next
   lookup that works replaces it. The same code runs on every platform.
+* **IPv6-only networks.** Many mobile networks give a phone no IPv4 at all;
+  an IPv4 address then fails at once with "network is unreachable" (UDP and
+  TCP). Of a name's addresses the node dials the first the device has a
+  route for, IPv4 first; on such a network that is the address the
+  network's DNS64 answers with, and an IPv4 address without one (a literal,
+  or a name whose lookup fails inside the tunnel) is translated with the
+  network's NAT64 prefix, which the node asks for as `ipv4only.arpa`
+  (RFC 7050, /96 prefixes). The prefix is asked for again after every
+  network change. IPv6 is not routed into the tunnel, so those dials need
+  no excluded route.
+* **Enrollment across starts.** The node keeps the last enrollment state
+  the control plane reported (`enrollment.json`) and shows it at once after
+  a start, marked `enrollment_stale` until the control plane answers. It
+  decides nothing: the overlay still needs a snapshot, which only an
+  approved node gets. Before, the app showed "Request access" until the
+  first answer, and for good when the control plane was unreachable.
 
 The device key is created by the app on first start and only loaded by the
 extension. Its access control is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`

@@ -186,7 +186,7 @@ func SetupHandler(status node.Status, upd *update.Service, save func(Settings) e
 // pinned control-plane key and the admin key list; with newIdentity the
 // device key files as well. The next control plane sees a node that enrolls.
 func Forget(stateDir, settingsPath string, newIdentity bool) error {
-	files := []string{settingsPath, "control.pin", "admin_trust.json", "admin_keys"}
+	files := []string{settingsPath, "control.pin", "admin_trust.json", "admin_keys", "enrollment.json"}
 	if newIdentity {
 		files = append(files, "device.key", "device.sekey", "device.tpm", "device.crt")
 	}
