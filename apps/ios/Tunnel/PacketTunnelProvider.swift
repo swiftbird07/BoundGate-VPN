@@ -140,11 +140,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         }
         let s = try JSONDecoder().decode(NetSettings.self, from: Data(settingsJSON.utf8))
         guard let (addr, _) = s.address.splitPrefix() else { throw CoreError("bad overlay address \(s.address)") }
-        // An exit node stays the halves 0/1 and 128/1 and the remote address
-        // an IPv4 one: with NEIPv4Route.default() and the hub's IPv6 address
-        // (b2f6c0a) the phone reported "not connected to the internet" on
-        // Wi-Fi and LTE alike, while its flows through the hub got answers.
-        let ns = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: s.excluded?.first(where: { !$0.contains(":") }) ?? "127.0.0.1")
+        // The remote address is the hub as the node dials it, also an IPv6
+        // (or NAT64) address on an IPv6-only network: with 127.0.0.1 there
+        // the phone stayed on LTE when a Wi-Fi came (excluded is sorted, IPv4
+        // first, so a dual-stack network gets the IPv4 address).
+        // An exit node stays the halves 0/1 and 128/1: with
+        // NEIPv4Route.default() the phone reported "not connected to the
+        // internet" on Wi-Fi and LTE, while its flows through the hub got
+        // answers.
+        let ns = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: s.excluded?.first ?? "127.0.0.1")
         let v4 = NEIPv4Settings(addresses: [addr], subnetMasks: ["255.255.255.255"])
         let routes = s.routes
         v4.includedRoutes = routes.compactMap { r in
