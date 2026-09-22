@@ -108,6 +108,7 @@ type ClientTunnel struct {
 	link      clientLink
 	transport string // "quic" or "tcp"
 	dns       []netip.Addr
+	cfg       ClientConfig // how this hub was dialed; a relay over TCP dials again
 
 	bytesIn, bytesOut, packetsIn, packetsOut atomic.Uint64
 }

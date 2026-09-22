@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -79,16 +78,37 @@ type relay struct {
 
 type relayListener struct {
 	owner   DeviceID
-	str     *http3.Stream
+	str     relayStream
 	cancel  context.CancelFunc
 	dialers map[uint16]*relayDialer
 	next    uint16
 }
 
 type relayDialer struct {
+	owner  DeviceID
 	src    netip.AddrPort
-	str    *http3.Stream
+	str    relayStream
 	cancel context.CancelFunc
+}
+
+// closeDevice ends every relay stream of a device that lost its admission.
+func (r *relay) closeDevice(id DeviceID) {
+	r.mu.Lock()
+	var gone []context.CancelFunc
+	for _, l := range r.listeners {
+		if l.owner == id {
+			gone = append(gone, l.cancel)
+		}
+		for _, d := range l.dialers {
+			if d.owner == id {
+				gone = append(gone, d.cancel)
+			}
+		}
+	}
+	r.mu.Unlock()
+	for _, cancel := range gone {
+		cancel()
+	}
 }
 
 func parseRelayPath(p string) (netip.Addr, error) {
@@ -144,7 +164,7 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request, peer Authen
 			w.WriteHeader(st)
 			return
 		}
-		s.relayListen(ctx, cancel, w, peer, target)
+		s.relayListen(ctx, cancel, takeOver(w), peer, target)
 		return
 	}
 	src, st := rh.RelayDial(peer, target)
@@ -155,21 +175,20 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request, peer Authen
 	s.relayDial(ctx, cancel, w, peer, src, target)
 }
 
-func takeOver(w http.ResponseWriter) *http3.Stream {
+func takeOver(w http.ResponseWriter) relayStream {
 	w.Header().Set("Capsule-Protocol", "?1")
 	w.WriteHeader(http.StatusOK)
-	return w.(http3.HTTPStreamer).HTTPStream()
+	return h3Stream{str: w.(http3.HTTPStreamer).HTTPStream()}
 }
 
-// untilClosed cancels when the peer ends the request stream; nothing but
-// capsules we do not use can arrive on it.
-func untilClosed(str *http3.Stream, cancel context.CancelFunc) {
-	_, _ = io.Copy(io.Discard, str)
+// untilClosed cancels when the peer ends the stream; nothing but capsules we
+// do not use can arrive on it.
+func untilClosed(str relayStream, cancel context.CancelFunc) {
+	str.waitEnd()
 	cancel()
 }
 
-func (s *Server) relayListen(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, peer AuthenticatedPeer, addr netip.Addr) {
-	str := takeOver(w)
+func (s *Server) relayListen(ctx context.Context, cancel context.CancelFunc, str relayStream, peer AuthenticatedPeer, addr netip.Addr) {
 	defer str.Close()
 	l := &relayListener{owner: peer.DeviceID(), str: str, cancel: cancel, dialers: make(map[uint16]*relayDialer), next: 1024}
 	s.relay.mu.Lock()
@@ -215,20 +234,39 @@ func (s *Server) relayListen(ctx context.Context, cancel context.CancelFunc, w h
 }
 
 func (s *Server) relayDial(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, peer AuthenticatedPeer, src, target netip.Addr) {
+	if st := s.relayRoom(target); st != http.StatusOK {
+		w.WriteHeader(st)
+		return
+	}
+	s.relayDialOn(ctx, cancel, takeOver(w), peer, src, target)
+}
+
+// relayRoom: is there a listener for target, and has it room for one more
+// dialer? Asked before a stream is taken over, so a refusal is a status.
+func (s *Server) relayRoom(target netip.Addr) int {
+	s.relay.mu.Lock()
+	defer s.relay.mu.Unlock()
+	l := s.relay.listeners[target]
+	switch {
+	case l == nil:
+		return http.StatusNotFound // the target does not listen here
+	case len(l.dialers) >= relayMaxDialers:
+		return http.StatusTooManyRequests
+	}
+	return http.StatusOK
+}
+
+// relayDialOn pairs an open dialer stream with the target's listener.
+func (s *Server) relayDialOn(ctx context.Context, cancel context.CancelFunc, str relayStream, peer AuthenticatedPeer, src, target netip.Addr) {
 	s.relay.mu.Lock()
 	l := s.relay.listeners[target]
 	full := l != nil && len(l.dialers) >= relayMaxDialers
 	s.relay.mu.Unlock()
-	if l == nil {
-		w.WriteHeader(http.StatusNotFound) // the target does not listen here
+	if l == nil || full {
+		_ = str.Close() // the listener left, or has enough dialers already
 		return
 	}
-	if full {
-		w.WriteHeader(http.StatusTooManyRequests)
-		return
-	}
-	// the listener must not learn of the dialer before its stream exists
-	d := &relayDialer{str: takeOver(w), cancel: cancel}
+	d := &relayDialer{owner: peer.DeviceID(), str: str, cancel: cancel}
 	s.relay.mu.Lock()
 	if s.relay.listeners[target] != l {
 		s.relay.mu.Unlock()
@@ -281,8 +319,8 @@ func (s *Server) relayDial(ctx context.Context, cancel context.CancelFunc, w htt
 
 // ---- the nodes' side ----
 
-// ErrNoRelay: the link cannot carry relay streams (TCP fallback).
-var ErrNoRelay = errors.New("transport: this hub connection cannot relay (not QUIC)")
+// ErrNoRelay: this link cannot carry relay streams.
+var ErrNoRelay = errors.New("transport: this hub connection cannot relay")
 
 // RelayError is a hub's refusal of a relay request.
 type RelayError struct{ Status int }
@@ -311,33 +349,9 @@ func (t *ClientTunnel) RelayDial(ctx context.Context, self, target netip.Addr) (
 }
 
 func (t *ClientTunnel) openRelay(ctx context.Context, self, target netip.Addr, listen bool) (net.PacketConn, error) {
-	ql, ok := t.link.(*quicClientLink)
-	if !ok {
-		return nil, ErrNoRelay
-	}
-	str, err := ql.cc.OpenRequestStream(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("transport: relay stream: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+HubServerName+relayPath(target), nil)
+	str, err := t.relayStream(ctx, target, listen)
 	if err != nil {
 		return nil, err
-	}
-	req.Proto = relayProtocol
-	req.Header.Set("Capsule-Protocol", "?1")
-	if listen {
-		req.Header.Set(relayBindHeader, "?1")
-	}
-	if err := str.SendRequestHeader(req); err != nil {
-		return nil, fmt.Errorf("transport: relay request: %w", err)
-	}
-	rsp, err := str.ReadResponse()
-	if err != nil {
-		return nil, fmt.Errorf("transport: relay response: %w", err)
-	}
-	if rsp.StatusCode != http.StatusOK {
-		_ = str.Close()
-		return nil, &RelayError{Status: rsp.StatusCode}
 	}
 	c := &relayConn{str: str, listen: listen, local: &net.UDPAddr{IP: self.AsSlice(), Port: RelayPort}, peer: &net.UDPAddr{IP: target.AsSlice(), Port: RelayPort},
 		in: make(chan relayPacket, 256), closed: make(chan struct{}), deadline: newDeadline()}
@@ -345,10 +359,48 @@ func (t *ClientTunnel) openRelay(ctx context.Context, self, target netip.Addr, l
 	go func() {
 		// the hub ends the stream when the other side left or this node lost
 		// its admission; only a reader learns of that
-		_, _ = io.Copy(io.Discard, str)
+		str.waitEnd()
 		_ = c.Close()
 	}()
 	return c, nil
+}
+
+// relayStream asks the hub for one relay stream: a request stream on the
+// QUIC connection, or, on the TCP fallback, a second connection to the same
+// hub (relaytcp.go).
+func (t *ClientTunnel) relayStream(ctx context.Context, target netip.Addr, listen bool) (relayStream, error) {
+	switch l := t.link.(type) {
+	case *capsuleLink:
+		return dialRelayTCP(ctx, t.cfg, target, listen)
+	case *quicClientLink:
+		str, err := l.cc.OpenRequestStream(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("transport: relay stream: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+HubServerName+relayPath(target), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Proto = relayProtocol
+		req.Header.Set("Capsule-Protocol", "?1")
+		if listen {
+			req.Header.Set(relayBindHeader, "?1")
+		}
+		if err := str.SendRequestHeader(req); err != nil {
+			return nil, fmt.Errorf("transport: relay request: %w", err)
+		}
+		rsp, err := str.ReadResponse()
+		if err != nil {
+			return nil, fmt.Errorf("transport: relay response: %w", err)
+		}
+		if rsp.StatusCode != http.StatusOK {
+			_ = str.Close()
+			return nil, &RelayError{Status: rsp.StatusCode}
+		}
+		return h3Request{str: str}, nil
+	default:
+		return nil, ErrNoRelay
+	}
 }
 
 type relayPacket struct {
@@ -359,7 +411,7 @@ type relayPacket struct {
 // relayConn is the net.PacketConn a QUIC transport runs on: datagrams of one
 // relay stream, addressed with overlay addresses.
 type relayConn struct {
-	str    *http3.RequestStream
+	str    relayStream
 	listen bool
 	local  *net.UDPAddr
 	peer   *net.UDPAddr // dialing side: the one remote
@@ -457,7 +509,6 @@ func (c *relayConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 func (c *relayConn) Close() error {
 	c.once.Do(func() {
 		close(c.closed)
-		c.str.CancelRead(0)
 		_ = c.str.Close()
 	})
 	return nil

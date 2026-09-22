@@ -48,10 +48,21 @@ BoundGate nodes, interoperability with other software is not claimed). The
 listener's QUIC server sees them as coming from that address and answers to it;
 the hub delivers the answer to the matching dialer.
 
-Every spoke listens at every hub it is connected to over QUIC (not over the
-TCP fallback: no datagrams there). A relayed path ends with the hub connection
-it runs on, on both sides at once; the hub path takes over without a gap in
-the lab, and the path forms again through another hub.
+Every spoke listens at every hub it is connected to. A relayed path ends with
+the hub connection it runs on, on both sides at once; the hub path takes over
+without a gap in the lab, and the path forms again through another hub.
+
+**On the TCP fallback** a node has no stream to spare: the one connection
+carries its IP packets as capsules. A relay stream is therefore a second TLS
+connection to the same hub, with the same device certificate and the same
+pinned key, upgraded to `connect-udp` over HTTP/1.1 and then carrying every
+datagram as one DATAGRAM capsule (RFC 9297) whose payload is what the QUIC
+side puts in an HTTP datagram. The hub pairs the two sides exactly as it does
+on QUIC, and either side may be on either transport. What ends a QUIC node's
+relay streams by itself, losing its admission, is done for these connections
+in `CloseDevice`: a revoked node or an ended session closes them too. A node
+whose network blocks UDP so reaches its peers end to end, at the price of the
+fallback's head-of-line blocking.
 
 "Relay pairs approved nodes only" therefore means: both ends are nodes with a
 signed binding in the hub's snapshot, the dialer has its session, a revoked
@@ -137,6 +148,6 @@ direct one).
 
 * Hole punching (both sides behind NAT, no relay in the data path). The relay
   is the fallback it would need anyway.
-* Relaying over the TCP fallback, and paths of hubs among each other.
+* Paths of hubs among each other.
 * A spoke is reachable for every approved peer, as it is through a hub. Which
   peers may open flows is the ACL's matter, not the path's.

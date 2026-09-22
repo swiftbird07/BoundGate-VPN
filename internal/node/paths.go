@@ -477,9 +477,6 @@ func (pm *pathManager) listenDirect(ctx context.Context, addr string) error {
 // not relay say so; the node then is reachable through the others, or not
 // at all besides the hub path.
 func (pm *pathManager) hubUp(ctx context.Context, hub registry.Node, t *transport.ClientTunnel) {
-	if t.Transport() != "quic" {
-		return
-	}
 	s := pm.s
 	lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	pc, err := t.RelayListen(lctx, s.self.OverlayIP)

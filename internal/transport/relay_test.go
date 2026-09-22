@@ -2,6 +2,7 @@ package transport_test
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
@@ -164,7 +165,7 @@ func TestRelayCarriesTheTunnelHandshakeOfTwoNodes(t *testing.T) {
 	}
 }
 
-func TestRelayNeedsAHubThatRelaysAndQUIC(t *testing.T) {
+func TestRelayNeedsAHubThatRelays(t *testing.T) {
 	certA, spkiA := newDevice(t, "node-a")
 	env := startServer(t, &staticLookup{m: map[devicekey.SPKIHash]transport.DeviceInfo{spkiA: {ID: "a"}}})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -183,7 +184,89 @@ func TestRelayNeedsAHubThatRelaysAndQUIC(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tcp.Close()
-	if _, err := tcp.RelayListen(ctx, netip.MustParseAddr("10.21.0.5")); !errors.Is(err, transport.ErrNoRelay) {
-		t.Fatalf("tcp link: %v", err)
+	if _, err := tcp.RelayListen(ctx, netip.MustParseAddr("10.21.0.5")); !errors.As(err, &re) || re.Status != http.StatusNotImplemented {
+		t.Fatalf("tcp link against a hub without a relay: %v", err)
+	}
+}
+
+// A node whose network blocks UDP reaches its peers all the same: its relay
+// streams are second TLS connections to the same hub, upgraded to
+// connect-udp, carrying the same datagrams as capsules.
+func TestRelayOverTheTCPFallback(t *testing.T) {
+	certHub, spkiHub := newDevice(t, "hub")
+	certA, spkiA := newDevice(t, "node-a")
+	certB, spkiB := newDevice(t, "node-b")
+	ipA, ipB := netip.MustParseAddr("10.21.0.5"), netip.MustParseAddr("10.21.0.6")
+	lookup := &staticLookup{m: map[devicekey.SPKIHash]transport.DeviceInfo{spkiA: {ID: "a"}, spkiB: {ID: "b"}}}
+	hubH := &relayHub{echoHandler: &echoHandler{accepted: make(chan transport.AuthenticatedPeer, 8)}, overlay: map[transport.DeviceID]netip.Addr{"a": ipA, "b": ipB}}
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := serve(t, transport.ServerConfig{Addr: "127.0.0.1:0", TLS: transport.ServerTLSConfig(certHub, lookup), Lookup: lookup, Template: transport.HubTemplate,
+		IdleTimeout: 5 * time.Second, KeepAlive: time.Second, TCPListener: tcpLn}, hubH)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	dialTCPHub := func(name string, cert tls.Certificate) *transport.ClientTunnel {
+		tun, err := transport.DialTCP(ctx, transport.ClientConfig{GatewayAddr: tcpLn.Addr().String(), TLS: transport.ClientTLSConfigPinned(cert, spkiHub),
+			Template: transport.HubTemplate, IdleTimeout: 5 * time.Second, KeepAlive: time.Second})
+		if err != nil {
+			t.Fatalf("%s to hub over TCP: %v", name, err)
+		}
+		t.Cleanup(func() { _ = tun.Close() })
+		if tun.Transport() != "tcp" {
+			t.Fatalf("%s: transport %q", name, tun.Transport())
+		}
+		return tun
+	}
+	a, b := dialTCPHub("a", certA), dialTCPHub("b", certB)
+
+	pcB, err := b.RelayListen(ctx, ipB)
+	if err != nil {
+		t.Fatalf("listen over TCP: %v", err)
+	}
+	onlyA := &staticLookup{m: map[devicekey.SPKIHash]transport.DeviceInfo{spkiA: {ID: "a"}}}
+	hB := &echoHandler{accepted: make(chan transport.AuthenticatedPeer, 8)}
+	serve(t, transport.ServerConfig{PacketConn: pcB, Relayed: true, TLS: transport.ServerTLSConfig(certB, onlyA), Lookup: onlyA, Template: transport.HubTemplate,
+		IdleTimeout: 5 * time.Second, KeepAlive: time.Second}, hB)
+
+	pcA, err := a.RelayDial(ctx, ipA, ipB)
+	if err != nil {
+		t.Fatalf("dial over TCP: %v", err)
+	}
+	ab, err := transport.Dial(ctx, transport.ClientConfig{PacketConn: pcA, Remote: relayRemote(ipB), TLS: transport.ClientTLSConfigPinned(certA, spkiB),
+		Template: transport.HubTemplate, IdleTimeout: 5 * time.Second, KeepAlive: time.Second})
+	if err != nil {
+		t.Fatalf("a to b through the relay on TCP: %v", err)
+	}
+	defer ab.Close()
+	select {
+	case peer := <-hB.accepted:
+		if peer.DeviceID() != "a" || peer.SPKI() != spkiA || peer.SourceIP() != ipA {
+			t.Fatalf("b authenticated %v", peer)
+		}
+	case <-ctx.Done():
+		t.Fatal("b never accepted")
+	}
+	pkt := ipv4Packet(netip.MustParseAddr("100.96.0.2"), netip.MustParseAddr("10.0.0.1"), []byte("relayed while UDP is blocked"))
+	if _, err := ab.WritePacket(pkt); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2000)
+	n, err := ab.ReadPacket(buf)
+	if err != nil || string(buf[20:n]) != "relayed while UDP is blocked" {
+		t.Fatalf("echo: %v %q", err, buf[:n])
+	}
+	if st := hub.RelayStats(); st.Listeners != 1 || st.Dialers != 1 || st.Packets == 0 {
+		t.Fatalf("relay stats %+v", st)
+	}
+	// the hub drops b: its listener goes, and the relayed tunnel ends with it
+	if hub.CloseDevice("b", transport.ErrCodeRevoked, "test") == 0 {
+		t.Fatal("hub had no tunnel of b")
+	}
+	select {
+	case <-ab.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("the relayed tunnel outlived the listener it led to")
 	}
 }

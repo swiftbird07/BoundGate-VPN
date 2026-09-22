@@ -456,6 +456,9 @@ func (s *Server) CloseDevice(id DeviceID, code quic.ApplicationErrorCode, reason
 	for _, t := range ts {
 		_ = t.Close(code, reason)
 	}
+	// Relay streams of a QUIC node end with its connection; on the TCP
+	// fallback they are connections of their own and have to be ended here.
+	s.relay.closeDevice(id)
 	return len(ts)
 }
 

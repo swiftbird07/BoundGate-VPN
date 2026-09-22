@@ -423,12 +423,15 @@ func (m *spokeManager) pump(ctx context.Context, t *transport.ClientTunnel) {
 }
 
 // relays lists the hub links a relay stream can run on, the primary first.
+// Every connected hub can: over QUIC the stream is a request stream of the
+// tunnel's connection, over the TCP fallback a second connection to the same
+// hub (docs/PATHS.md).
 func (m *spokeManager) relays() []*hubLink {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*hubLink
 	for _, id := range m.order {
-		if l := m.links[id]; l != nil && l.tunnel != nil && l.tunnel.Transport() == "quic" {
+		if l := m.links[id]; l != nil && l.tunnel != nil && l.state == "connected" {
 			c := *l // the tunnel as it is now; the link may move on
 			if l == m.primary {
 				out = append([]*hubLink{&c}, out...)

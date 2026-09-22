@@ -66,6 +66,10 @@ func (s *Server) handleTCP(w http.ResponseWriter, r *http.Request, path string) 
 		http.Error(w, "device not approved", http.StatusForbidden)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, relayPathPrefix) {
+		s.handleRelayTCP(w, r, peer)
+		return
+	}
 	if r.Method != http.MethodGet || r.URL.Path != path ||
 		!strings.EqualFold(r.Header.Get("Upgrade"), upgradeProto) ||
 		!headerHasToken(r.Header.Get("Connection"), "upgrade") ||
@@ -179,7 +183,7 @@ func DialTCP(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 		return nil, &DialError{Status: rsp.StatusCode, Err: errors.New("101 without the connect-ip upgrade")}
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &ClientTunnel{link: newCapsuleLink(conn, r, cfg.IdleTimeout, cfg.KeepAlive), transport: "tcp", dns: parseDNSHeader(rsp.Header.Get(DNSHeader))}, nil
+	return &ClientTunnel{link: newCapsuleLink(conn, r, cfg.IdleTimeout, cfg.KeepAlive), transport: "tcp", cfg: cfg, dns: parseDNSHeader(rsp.Header.Get(DNSHeader))}, nil
 }
 
 // templatePath is the request target for a CONNECT-IP template without
