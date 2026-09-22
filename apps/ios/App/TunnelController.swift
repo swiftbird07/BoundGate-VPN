@@ -17,6 +17,7 @@ final class TunnelController: ObservableObject, TunnelControl {
     private var local: CoreEngine?
     private let platform = AppPlatform()
     private var observer: NSObjectProtocol?
+    private let logger = Logger(subsystem: AppConfig.subsystem, category: "app")
 
     var client: DaemonClient? {
         switch vpn {
@@ -39,6 +40,7 @@ final class TunnelController: ObservableObject, TunnelControl {
         do {
             manager = try await NETunnelProviderManager.loadAllFromPreferences().first
         } catch {
+            logger.warning("VPN configurations: \(error.localizedDescription, privacy: .public)")
             vpn = .unavailable(error.localizedDescription)
         }
         update()
@@ -66,6 +68,7 @@ final class TunnelController: ObservableObject, TunnelControl {
             engineError = nil
         } catch {
             engineError = error.localizedDescription
+            logger.error("engine: \(error.localizedDescription, privacy: .public)")
             if retries > 0, error.localizedDescription.hasPrefix("embed: busy") {
                 Task { try? await Task.sleep(nanoseconds: 500_000_000); if self.local == nil { self.startLocal(retries: retries - 1) } }
             }

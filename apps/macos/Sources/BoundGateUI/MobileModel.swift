@@ -42,6 +42,8 @@ public final class MobileModel: ObservableObject {
     @Published public var rate: Traffic.Rate?
     @Published public var memoryMiB: Double?
     @Published public private(set) var vpn: VPNState = .off
+    /// why no engine answers; published so that the screen follows it
+    @Published public private(set) var engineError: String?
     public var openURL: ((URL) -> Void)?
 
     let tunnel: TunnelControl
@@ -56,7 +58,7 @@ public final class MobileModel: ObservableObject {
     }
 
     public var phase: MobilePhase {
-        guard let s = status else { return .noEngine(tunnel.engineError ?? "Starting…") }
+        guard let s = status else { return .noEngine(engineError ?? "Starting…") }
         if s.state == "unconfigured" { return .unconfigured }
         switch s.enrollment ?? "unknown" {
         case "approved": break
@@ -76,6 +78,7 @@ public final class MobileModel: ObservableObject {
 
     public func refresh() {
         vpn = tunnel.vpn
+        engineError = tunnel.engineError
         guard let client = tunnel.client else { status = nil; return }
         let on = vpn == .on
         Task.detached {

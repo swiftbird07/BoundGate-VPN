@@ -7,10 +7,16 @@ Enclave.
 
 Status 2026-09-21:
 
-* App and extension build for devices and Apple silicon simulators.
-* The UI renders in the simulator.
-* Not run on an iPhone yet: that needs the real core, provisioning profiles
-  and a device (see "What is still open").
+* The core builds (`make apple-core`, 2026-09-22, go1.26.7 in
+  `~/.local/go-apple`).
+* App and extension link against it for devices and Apple silicon
+  simulators.
+* In the simulator the app starts its own engine, creates the device key (a
+  software key there) and shows the setup screen. The simulator has no
+  Network Extension service: loading the VPN configuration fails with "IPC
+  failed", so the tunnel itself only runs on a device.
+* Not run on an iPhone yet: that needs provisioning profiles and a device
+  (see "What is still open").
 
 ## Pieces
 
@@ -92,22 +98,23 @@ This is the one place Go runs on the Mac instead of the box (decided
 2026-09-21). The toolchain is the official go.dev tarball in the same version
 as the box, checked against its published SHA-256 and not on `PATH`.
 
-**Not done yet.** On 2026-09-21 `go.dev`, `dl.google.com` and
-`storage.googleapis.com` were not reachable from the Mac: the TCP connect
-timed out, while `google.com`, GitHub and others worked. It looks like an
-egress filter, so the toolchain is not installed yet. Once the download works
-or the tarball is provided:
+Installing the toolchain (done once, 2026-09-22):
 
 ```bash
-mkdir -p ~/.local && tar -C ~/.local -xzf go1.26.7.darwin-arm64.tar.gz && mv ~/.local/go ~/.local/go-apple
+curl -fLO https://go.dev/dl/go1.26.7.darwin-arm64.tar.gz
 ```
 
 ```bash
-make apple-core VERSION=v0.1.6
+/usr/bin/openssl dgst -sha256 -r go1.26.7.darwin-arm64.tar.gz
 ```
 
-Check the SHA-256 against go.dev/dl first, with
-`/usr/bin/openssl dgst -sha256 -r go1.26.7.darwin-arm64.tar.gz`.
+Compare the hash with the one on go.dev/dl, then:
+
+```bash
+mkdir -p ~/.local/go-apple.tmp && tar -C ~/.local/go-apple.tmp -xzf go1.26.7.darwin-arm64.tar.gz && mv ~/.local/go-apple.tmp/go ~/.local/go-apple
+```
+
+A new Go version in the box means the same version here.
 
 ## Building the app
 
@@ -135,18 +142,17 @@ has no keychain group. Everything real needs the signed build.
 
 ## What is still open
 
-1. **The core itself:** Go on the Mac, `make apple-core`.
-2. **Profiles:** open the project in Xcode once with the team signed in, and
+1. **Profiles:** open the project in Xcode once with the team signed in, and
    let automatic signing register the App IDs, the app group and the Network
    Extension capability.
-3. **Memory spike on the iPhone** (the plan's gate before more UI work):
+2. **Memory spike on the iPhone** (the plan's gate before more UI work):
    connect, run a speed test through the tunnel, and read "Tunnel memory"
    under Details. The goal is below 35 MiB of the 50. In the lab the embedded
    engine stayed at 25 MiB RSS for 300 MB (EMBED.md).
-4. **Acceptance:** enroll with the Secure Enclave key, get confirmed and
+3. **Acceptance:** enroll with the Secure Enclave key, get confirmed and
    signed, sign in, connect to pVPN, and reach the LAN target. Check a policy
    with `hardware_bound`, and a Wi-Fi ↔ LTE switch in under 5 s.
-5. Later:
+4. Later:
    * App icon asset. The app has none yet.
    * On-demand rules.
    * Distribution: TestFlight internal, and the App Store needs an
