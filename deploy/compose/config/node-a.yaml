@@ -9,6 +9,7 @@ roles: [endpoint]                  # requested; an admin grants roles at approva
 public_addr: ""
 listen: ":443"               # hub tunnel listener (UDP)
 auto_up: false
+quic_retry: 15s              # step 15b: back to QUIC quickly once UDP works again (default 2m)
 profile: lab
 profiles_dir: /etc/boundgate/profiles
 socket: /run/boundgate/node.sock

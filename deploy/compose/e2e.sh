@@ -378,6 +378,24 @@ wait_for 60 sh -c "docker compose -f docker-compose.yml exec -T node-a ping -c 1
 $COMPOSE start "$RHUB" >/dev/null
 wait_for 30 status_is node-a '[.hubs[] | select(.state == "connected")] | length == 2' || fail "node-a did not reconnect to $RHUB"
 
+echo "== 15b. a spoke whose network blocks UDP: tunnel and path over TCP, relayed by the hub on a second connection"
+x node-a nft add table ip blk || fail "nft in node-a"
+x node-a nft add chain ip blk out '{ type filter hook output priority 0; }'
+x node-a nft add rule ip blk out udp dport 443 drop
+x node-a boundgatectl down >/dev/null && x node-a boundgatectl up >/dev/null || fail "node-a up with UDP blocked"
+wait_for 60 status_is node-a '[.hubs[] | select(.state == "connected" and .transport == "tcp")] | length >= 1' || fail "node-a did not fall back to TCP"
+wait_for 30 x node-a ping -c 1 -W 2 "$R_IP" || fail "node-r unreachable over TCP"
+# a path is opened on demand: keep traffic going while waiting for it
+wait_for 60 sh -c "docker compose -f docker-compose.yml exec -T node-a ping -c 1 -W 1 $R_IP >/dev/null; [ -n \"\$(docker compose -f docker-compose.yml exec -T node-a boundgatectl -json status | jq -r '[.paths[]? | select(.peer == \"node-r\" and (.via | startswith(\"relay \")))][0].via // empty')\" ]" || fail "no relayed path while node-a is on TCP"
+B0=$(path_of node-a node-r bytes_in)
+x node-a curl -sf --max-time 20 -o /dev/null 'http://192.168.178.10/data?size=300&unit=kb' || fail "download from the LAN behind node-r over the TCP-relayed path"
+B1=$(path_of node-a node-r bytes_in)
+[ $((B1 - B0)) -ge 300000 ] || fail "the download did not take the relayed path over TCP ($B0 -> $B1)"
+echo "   node-a is on TCP and still meets node-r end to end"
+x node-a nft delete table ip blk
+wait_for 60 status_is node-a '[.hubs[] | select(.state == "connected" and .transport == "quic")] | length == 2' || fail "node-a did not return to QUIC"
+wait_for 30 reach 192.168.178.10 target-lan || fail "LAN unreachable after the move back to QUIC"
+
 echo "== 16. the apps' embedded engine (node-m): settings in one piece, the tunnel by descriptor, the key as a signer"
 x node-m boundgatectl logout >/dev/null 2>&1 || true
 x node-m boundgatectl down >/dev/null 2>&1 || true
