@@ -23,7 +23,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         do {
             let key = try DeviceKey.load(create: false)
             // 50 MiB is the limit for the whole process; the Go heap gets 30 of it
-            engine = try CoreEngine(config: try AppConfig.engineConfig(autoUp: true, memoryLimitMiB: 30), platform: self, key: key)
+            let config = try AppConfig.engineConfig(autoUp: true, memoryLimitMiB: 30)
+            // the app stops its own engine right before starting the tunnel;
+            // give it a moment to let go of the state directory
+            var tries = 0
+            while true {
+                do {
+                    engine = try CoreEngine(config: config, platform: self, key: key)
+                    break
+                } catch where error.localizedDescription.hasPrefix("embed: busy") && tries < 20 {
+                    tries += 1
+                    Thread.sleep(forTimeInterval: 0.25)
+                }
+            }
         } catch {
             logger.error("start: \(error.localizedDescription, privacy: .public)")
             Self.record(error.localizedDescription)

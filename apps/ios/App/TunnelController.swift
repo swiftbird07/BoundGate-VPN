@@ -19,6 +19,10 @@ final class TunnelController: ObservableObject, TunnelControl {
     private var observer: NSObjectProtocol?
     private let logger = Logger(subsystem: AppConfig.subsystem, category: "app")
     private var tunnelError: String?
+    /// The state directory belongs to the tunnel from Connect until the
+    /// tunnel is off again: status notifications that arrive late (from
+    /// saving the configuration) must not start the app's engine in between.
+    private var handedOver = false
 
     var client: DaemonClient? {
         switch vpn {
@@ -80,12 +84,17 @@ final class TunnelController: ObservableObject, TunnelControl {
         case .invalid, .disconnected, .none: if case .unavailable = vpn {} else { vpn = .off }
         @unknown default: vpn = .off
         }
-        if vpn == .off, before == .connecting || before == .on, !userStopped {
+        let ended = vpn == .off && (before == .connecting || before == .on || before == .disconnecting)
+        if ended, !userStopped {
             collectTunnelError()
         }
-        if vpn == .off { userStopped = false }
+        if ended {
+            handedOver = false
+            userStopped = false
+        }
+        if handedOver { return }
         if vpn == .off || { if case .unavailable = vpn { return true }; return false }() {
-            if local == nil { startLocal(retries: before == .off ? 0 : 20) }
+            if local == nil { startLocal(retries: ended ? 20 : 0) }
         }
     }
 
@@ -116,11 +125,13 @@ final class TunnelController: ObservableObject, TunnelControl {
         try await m.loadFromPreferences()
         manager = m
         // hand the state directory to the tunnel
+        handedOver = true
         local?.stop()
         local = nil
         do {
             try m.connection.startVPNTunnel()
         } catch {
+            handedOver = false
             startLocal(retries: 0)
             throw error
         }
