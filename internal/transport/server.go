@@ -181,7 +181,8 @@ type ServerConfig struct {
 	Template string
 	// IdleTimeout closes tunnels without any QUIC activity. Default 60s.
 	IdleTimeout time.Duration
-	// KeepAlive sends QUIC PINGs to keep NAT bindings alive. Default 20s.
+	// KeepAlive sends QUIC PINGs to keep NAT bindings alive. Default 20s;
+	// negative: never, the clients keep their own bindings alive.
 	KeepAlive time.Duration
 	Logger    *slog.Logger
 	// PacketConn, when set, is used instead of binding Addr, and
@@ -257,7 +258,7 @@ func NewServer(cfg ServerConfig, h Handler) (*Server, error) {
 			EnableDatagrams: true,
 			Allow0RTT:       false,
 			MaxIdleTimeout:  cfg.IdleTimeout,
-			KeepAlivePeriod: cfg.KeepAlive,
+			KeepAlivePeriod: keepAlivePeriod(cfg.KeepAlive),
 			// PacketSize, not quic-go's 1280, also behind a mux (mtu.go)
 			InitialPacketSize: PacketSize,
 		},

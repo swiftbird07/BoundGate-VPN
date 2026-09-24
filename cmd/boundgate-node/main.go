@@ -69,8 +69,8 @@ type config struct {
 	// through the tunnel; the hub lets DNS to them through (port 53) for every
 	// peer, also before the sign-in and whatever the policies allow. Daemons
 	// keep the system's resolver.
-	DNS []netip.Addr `yaml:"dns"`
-	Paths       struct {
+	DNS   []netip.Addr `yaml:"dns"`
+	Paths struct {
 		Disabled bool          `yaml:"disabled"` // spoke: everything stays on the hub path
 		Listen   string        `yaml:"listen"`   // spoke: UDP address peers can dial (announce it with public_addr)
 		Idle     time.Duration `yaml:"idle"`     // close a path nothing used for this long, default 5m
@@ -89,9 +89,13 @@ type config struct {
 	// while everything this host and its containers start goes through the
 	// tunnel, e.g. to an exit node whose policies decide (docs/ARRIVAL.md).
 	ReplyViaArrival bool `yaml:"reply_via_arrival"`
-	MTU          int               `yaml:"mtu"`
-	LogDir       string            `yaml:"log_dir"`
-	LogStdout    bool              `yaml:"log_stdout"`
+	// PowerSave: a quiet node sends nothing (no keep-alives, the snapshot
+	// polled every 10 min instead of a long-poll), for a laptop on battery.
+	// Peers reach it only after it sent something itself (docs/POWER.md).
+	PowerSave bool   `yaml:"power_save"`
+	MTU       int    `yaml:"mtu"`
+	LogDir    string `yaml:"log_dir"`
+	LogStdout bool   `yaml:"log_stdout"`
 	// Update: release checks (and, from the app bundle, installation).
 	// Release builds check by default; `check: false` turns that off.
 	Update struct {
@@ -260,6 +264,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		HubAddrs:          cfg.HubAddrs,
 		AllowOverlap:      cfg.AllowOverlap,
 		ReplyViaArrival:   cfg.ReplyViaArrival,
+		PowerSave:         cfg.PowerSave,
 		MTU:               cfg.MTU,
 		Log:               logs.System,
 		FlowLog:           logs.Flow,

@@ -1,7 +1,6 @@
 package node
 
 import (
-	"strings"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,7 +44,7 @@ type hubLink struct {
 	since      time.Time
 	tunnel     *transport.ClientTunnel
 	advertised []netip.Prefix
-	retry      chan struct{} // poke: retry now
+	retry      chan bool // poke: retry now; true: the user session changed
 }
 
 // HubStatus is the CLI view of one hub link.
@@ -89,7 +89,7 @@ func (m *spokeManager) sync(hubs []registry.Node) {
 			continue
 		}
 		ctx, cancel := context.WithCancel(m.s.ctx)
-		l := &hubLink{hub: h, cancel: cancel, state: "connecting", retry: make(chan struct{}, 1)}
+		l := &hubLink{hub: h, cancel: cancel, state: "connecting", retry: make(chan bool, 1)}
 		m.links[h.ID] = l
 		go m.run(ctx, l)
 	}
@@ -97,14 +97,16 @@ func (m *spokeManager) sync(hubs []registry.Node) {
 }
 
 // retryNow makes every link that is waiting after a failure dial again
-// immediately (used when the own user session appears).
-func (m *spokeManager) retryNow() {
+// immediately. session: the own user session appeared (a sign-in, a new
+// snapshot); only then do links a hub refused for lack of one try again,
+// otherwise (a network change) they keep waiting for it.
+func (m *spokeManager) retryNow(session bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.links {
-		if l.tunnel == nil {
+		if l.tunnel == nil && (session || l.state != "login required") {
 			select {
-			case l.retry <- struct{}{}:
+			case l.retry <- session:
 			default:
 			}
 		}
@@ -164,28 +166,40 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 				return
 			}
 			state, msg := "error", err.Error()
+			wait := backoff
 			var de *transport.DialError
-			if errors.As(err, &de) && de.Status == http.StatusForbidden {
+			login := errors.As(err, &de) && de.Status == http.StatusForbidden
+			if login {
+				// Asking again changes nothing until the user signs in, and
+				// the sign-in pokes (retryNow): a full handshake every few
+				// seconds all night was what drained a phone overnight.
 				state, msg = "login required", "hub refused the tunnel: user login required (boundgatectl login)"
 				if fast > 0 {
 					fast--
-					backoff = 2 * time.Second
+					wait = 2 * time.Second
 				} else {
-					backoff = max(backoff, 10*time.Second)
+					wait = loginRetry
+					// the session may be in a snapshot a polling node has not fetched yet
+					n.control.Refresh()
 				}
 			}
 			m.mu.Lock()
 			l.state, l.err, l.tunnel = state, msg, nil
 			m.mu.Unlock()
-			n.log.Warn("hub connection failed", "hub", l.hub.Name, "addr", l.hub.PublicAddr, "err", err, "retry_in", backoff)
+			n.log.Warn("hub connection failed", "hub", l.hub.Name, "addr", l.hub.PublicAddr, "err", err, "retry_in", wait)
 			n.publishStatus()
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
-				backoff = min(backoff*2, 30*time.Second)
-			case <-l.retry:
-				backoff, fast = time.Second, 3
+			case <-time.After(wait):
+				if !login {
+					backoff = min(backoff*2, 30*time.Second)
+				}
+			case session := <-l.retry:
+				backoff = time.Second
+				if session {
+					fast = 3
+				}
 			}
 			continue
 		}
@@ -342,12 +356,13 @@ func (m *spokeManager) dialWith(ctx context.Context, hub registry.Node, transpor
 	}
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	idle, keepAlive := s.n.tunnelTimers()
 	cc := transport.ClientConfig{
 		GatewayAddr:      addr.String(),
 		TLS:              transport.ClientTLSConfigPinned(s.n.cert, hub.SPKI),
 		Template:         transport.HubTemplate,
-		IdleTimeout:      30 * time.Second,
-		KeepAlive:        10 * time.Second,
+		IdleTimeout:      idle,
+		KeepAlive:        keepAlive,
 		HandshakeTimeout: 5 * time.Second,
 	}
 	var t *transport.ClientTunnel
@@ -633,4 +648,3 @@ func (m *spokeManager) hubs() []HubStatus {
 	}
 	return out
 }
-

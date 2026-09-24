@@ -58,6 +58,10 @@ e.NetworkChanged()                                 // Wi-Fi <-> cellular: reconn
 e.Stop()
 ```
 
+`NetworkChanged` is for a real change of the network below, not for
+waking from sleep. `power_save` (on by default for `ios` and `android`)
+makes an idle node quiet (POWER.md).
+
 `Request` serves the daemon's socket API in memory with the same handler
 (`ipc.Handler`, and `ipc.SetupHandler` while no control plane is configured).
 The apps therefore speak one protocol and read one status JSON, whether they

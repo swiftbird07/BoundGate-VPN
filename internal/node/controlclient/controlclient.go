@@ -9,8 +9,6 @@
 package controlclient
 
 import (
-	"net/netip"
-	"net"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -19,7 +17,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +39,8 @@ type Client struct {
 	log     *slog.Logger
 	verify  func(*registry.Snapshot) error
 	onError func(error)
+	poll    time.Duration
+	kick    chan struct{}
 
 	// gen ends when Reconnect is called: requests in flight belong to
 	// connections that may no longer lead anywhere
@@ -65,6 +67,11 @@ type Config struct {
 	// Resolve, if set, turns the control plane's host name into the address
 	// to dial (the node's address book: what it excluded from its tunnel).
 	Resolve func(ctx context.Context, host string) (netip.Addr, error)
+	// Poll, when set, replaces the long-poll: Run asks for the snapshot
+	// this often, and at once after Refresh or Reconnect. Nothing is kept
+	// open in between (no keep-alives, no pings), so a phone's radio can
+	// sleep. Zero: the long-poll, which learns of changes within a second.
+	Poll time.Duration
 }
 
 // New creates a client presenting the device certificate.
@@ -72,9 +79,10 @@ func New(cfg Config) *Client {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	rt := &dualTransport{tls: cfg.TLS, log: cfg.Log, resolve: cfg.Resolve}
+	rt := &dualTransport{tls: cfg.TLS, log: cfg.Log, resolve: cfg.Resolve, quiet: cfg.Poll > 0}
 	rt.h3, rt.tcp = rt.transports()
-	c := &Client{URL: "https://" + cfg.Addr, http: &http.Client{Transport: rt}, log: cfg.Log, verify: cfg.Verify, onError: cfg.OnError}
+	c := &Client{URL: "https://" + cfg.Addr, http: &http.Client{Transport: rt}, log: cfg.Log, verify: cfg.Verify, onError: cfg.OnError,
+		poll: cfg.Poll, kick: make(chan struct{}, 1)}
 	c.gen, c.genCancel = context.WithCancel(context.Background())
 	return c
 }
@@ -83,13 +91,19 @@ func New(cfg Config) *Client {
 // machine changed networks, another VPN took over the route) is noticed
 // within 30 s instead of only by the request deadline: keep-alives go out
 // every 10 s, on QUIC and as HTTP/2 pings, and long-polls are quiet for 30 s.
+// Quiet (Config.Poll) sends neither: connections close when idle, and the
+// next poll dials again.
 func (d *dualTransport) transports() (*http3.Transport, *http.Transport) {
+	keepAlive, ping := 10*time.Second, 10*time.Second
+	if d.quiet {
+		keepAlive, ping = 0, 0
+	}
 	h3 := &http3.Transport{
 		TLSClientConfig: d.tls.Clone(),
-		QUICConfig:      &quic.Config{MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second},
+		QUICConfig:      &quic.Config{MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: keepAlive},
 	}
 	tcp := &http.Transport{TLSClientConfig: d.tls.Clone(), ForceAttemptHTTP2: true,
-		HTTP2: &http.HTTP2Config{SendPingTimeout: 10 * time.Second, PingTimeout: 15 * time.Second}}
+		HTTP2: &http.HTTP2Config{SendPingTimeout: ping, PingTimeout: 15 * time.Second}}
 	if d.resolve != nil {
 		// the TLS configs carry the server name; the dial goes to the address
 		h3.Dial = func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
@@ -145,6 +159,31 @@ func (c *Client) Reconnect() {
 	if rt, ok := c.http.Transport.(*dualTransport); ok {
 		rt.reset()
 	}
+	c.Refresh()
+}
+
+// Refresh makes a polling Run ask for the snapshot now (the user signed in,
+// a hub refused us); the long-poll hears of changes by itself.
+func (c *Client) Refresh() {
+	select {
+	case c.kick <- struct{}{}:
+	default:
+	}
+}
+
+// pause waits until the next poll; false when ctx ended. Without Poll the
+// long-poll asks again at once.
+func (c *Client) pause(ctx context.Context) bool {
+	if c.poll <= 0 {
+		return ctx.Err() == nil
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(c.poll):
+	case <-c.kick:
+	}
+	return true
 }
 
 // Transport says what carried the last answer of the control plane: "h3"
@@ -166,6 +205,7 @@ type dualTransport struct {
 	tls     *tls.Config
 	log     *slog.Logger
 	resolve func(ctx context.Context, host string) (netip.Addr, error)
+	quiet   bool
 
 	mu           sync.Mutex
 	h3           *http3.Transport
@@ -425,8 +465,13 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 		since = s.Version
 	}
 	backoff := time.Second
+	// polling: answer at once, nothing stays open until the next poll
+	wait := 30 * time.Second
+	if c.poll > 0 {
+		wait = time.Second
+	}
 	for ctx.Err() == nil {
-		snap, err := c.Snapshot(ctx, since, 30*time.Second)
+		snap, err := c.Snapshot(ctx, since, wait)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -455,6 +500,9 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 		}
 		if snap == nil {
 			holder.Touch()
+			if !c.pause(ctx) {
+				return nil
+			}
 			continue
 		}
 		since = snap.Version
@@ -464,6 +512,9 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 				// rather than with a snapshot we cannot trust
 				c.log.Error("snapshot rejected", "version", snap.Version, "err", err)
 				holder.Clear()
+				if !c.pause(ctx) {
+					return nil
+				}
 				continue
 			}
 		}
@@ -471,6 +522,9 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 		c.log.Info("snapshot applied", "version", snap.Version, "peers", len(snap.Peers), "hubs", len(snap.Hubs()), "added", diff.AddedPeers, "removed", diff.RemovedPeers)
 		if onDiff != nil {
 			onDiff(diff, snap)
+		}
+		if !c.pause(ctx) {
+			return nil
 		}
 	}
 	return nil

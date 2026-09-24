@@ -75,8 +75,11 @@ creates the profiles with automatic signing:
   explanation.
 * **Disconnect.** The tunnel stops and releases the lock. The app takes its
   engine back and retries while the lock is still held.
-* **Wi-Fi ↔ cellular.** `NWPathMonitor` and `wake()` call
-  `bg_network_changed`.
+* **Wi-Fi ↔ cellular.** `NWPathMonitor` calls `bg_network_changed` when
+  the network below changes (not on every quality estimate).
+  `sleep()`/`wake()` do nothing: iOS calls them up to 200 times an hour with
+  the screen off (POWER.md).
+* **Power save** is on (POWER.md): no keep-alives, snapshot every 10 min.
 * **Names.** Once the tunnel's DNS settings are in effect, the system
   resolver answers the extension's own lookups with "no such host" (seen on
   iOS 26 with the control plane's name, two hours into a tunnel: the tunnel

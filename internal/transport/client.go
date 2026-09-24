@@ -25,7 +25,11 @@ type ClientConfig struct {
 	// Template is the gateway's CONNECT-IP URI template.
 	Template    string
 	IdleTimeout time.Duration
-	KeepAlive   time.Duration
+	// KeepAlive is how often a quiet tunnel sends a PING, which keeps the
+	// NAT binding and the hub's idle timer alive. Default 20s; negative:
+	// never (a phone's radio stays asleep; the tunnel then ends after
+	// IdleTimeout without traffic).
+	KeepAlive time.Duration
 	// HandshakeTimeout bounds the QUIC or TLS handshake. Default 5s: on a
 	// network that blacks out UDP this is how long the QUIC attempt takes
 	// before the caller falls back to TCP.
@@ -49,6 +53,11 @@ func (c ClientConfig) withDefaults() ClientConfig {
 		c.HandshakeTimeout = 5 * time.Second
 	}
 	return c
+}
+
+// keepAlivePeriod is KeepAlive as quic-go takes it: 0 sends none.
+func keepAlivePeriod(d time.Duration) time.Duration {
+	return max(d, 0)
 }
 
 // clientLink is what a ClientTunnel needs from its transport.
@@ -140,7 +149,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 	qcfg := &quic.Config{
 		EnableDatagrams:      true,
 		MaxIdleTimeout:       cfg.IdleTimeout,
-		KeepAlivePeriod:      cfg.KeepAlive,
+		KeepAlivePeriod:      keepAlivePeriod(cfg.KeepAlive),
 		HandshakeIdleTimeout: cfg.HandshakeTimeout,
 		InitialPacketSize:    PacketSize, // mtu.go
 	}

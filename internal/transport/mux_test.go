@@ -72,6 +72,11 @@ func TestTunnelThroughMux(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("handler never accepted")
 	}
+	// the address first: a packet sent before the assignment arrived has
+	// its echo dropped by the proxy, and ReadPacket would wait forever
+	if _, err := tun.LocalPrefixes(dctx); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 20; i++ {
 		pkt := ipv4Packet(netip.MustParseAddr("100.96.0.2"), netip.MustParseAddr("10.0.0.1"), []byte("through the mux"))
 		if _, err := tun.WritePacket(pkt); err != nil {

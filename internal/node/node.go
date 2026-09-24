@@ -155,6 +155,9 @@ type Config struct {
 	Net netcfg.Configurator
 	// Platform is what the node reports at enrollment; default runtime.GOOS.
 	Platform string
+	// PowerSave: a quiet node sends nothing, so a phone's radio can sleep
+	// (power.go). The phone apps turn it on.
+	PowerSave bool
 }
 
 // State of the overlay.
@@ -228,8 +231,8 @@ type Status struct {
 	EnrollmentError      string `json:"enrollment_error,omitempty"`
 	// EnrollmentStale: Enrollment is what the control plane said last time
 	// (kept in the state directory), it has not answered since this start.
-	EnrollmentStale bool `json:"enrollment_stale,omitempty"`
-	Control              string `json:"control"`
+	EnrollmentStale bool   `json:"enrollment_stale,omitempty"`
+	Control         string `json:"control"`
 	// ControlError is the last error of the control channel ("" = fine).
 	ControlError string `json:"control_error,omitempty"`
 	// ControlTransport: what carried the control plane's last answer, "h3"
@@ -433,8 +436,9 @@ func (n *Node) init(enclave bool) (*Node, error) {
 		Addr: cfg.ControlAddr,
 		TLS:  transport.ClientTLSConfigControl(cert, cfg.ControlServerName, n.pins, onLearn),
 		Log:  cfg.Log, Verify: n.verifySnapshot, OnError: n.controlError, Resolve: n.hosts.resolve,
+		Poll: n.every(0, quietPoll),
 	})
-	n.ship = newShipper(n.control, cfg.Log)
+	n.ship = newShipper(n.control, cfg.Log, n.every(shipEvery, quietShip))
 	n.status = Status{
 		State:                StateDown,
 		NodeName:             cfg.Name,
@@ -708,7 +712,7 @@ func (n *Node) onSnapshot(diff registry.Diff, snap *registry.Snapshot) {
 }
 
 func (n *Node) heartbeats(ctx context.Context) {
-	t := time.NewTicker(30 * time.Second)
+	t := time.NewTicker(n.every(30*time.Second, quietPoll))
 	defer t.Stop()
 	for {
 		select {
@@ -901,9 +905,11 @@ func (n *Node) LoginWait(ctx context.Context, flowID string, wait time.Duration)
 		n.log.Info("login completed", "subject", st.Session.Subject, "username", st.Session.Username, "groups", st.Session.Groups, "expires_at", st.Session.ExpiresAt)
 		n.mu.Lock()
 		if s := n.sess; s != nil && s.spoke != nil {
-			s.spoke.retryNow()
+			s.spoke.retryNow(true)
 		}
 		n.mu.Unlock()
+		// a polling node fetches the snapshot with the new session now
+		n.control.Refresh()
 	}
 	return st, err
 }
@@ -1084,7 +1090,7 @@ func (n *Node) NetworkChanged() {
 	n.hosts.networkChanged()
 	n.control.Reconnect()
 	if s != nil && s.spoke != nil {
-		s.spoke.retryNow()
+		s.spoke.retryNow(false)
 	}
 }
 
@@ -1272,8 +1278,8 @@ func (s *session) apply(ctx context.Context) error {
 			TLS:             transport.ServerTLSConfig(n.cert, n.holder),
 			Lookup:          n.holder,
 			Template:        transport.HubTemplate,
-			IdleTimeout:     30 * time.Second,
-			KeepAlive:       10 * time.Second,
+			IdleTimeout:     serverIdle,
+			KeepAlive:       -1,
 			Logger:          n.log,
 		}, &hubService{s: s})
 		if err != nil {
@@ -1303,7 +1309,8 @@ func (s *session) apply(ctx context.Context) error {
 	hubs := n.holder.Load().Hubs()
 	if !s.isHub {
 		s.spoke = newSpokeManager(s)
-		if !n.cfg.AllowOverlap {
+		// in power save the platform reports network changes (NetworkChanged)
+		if !n.cfg.AllowOverlap && !n.cfg.PowerSave {
 			go s.spoke.watchLocalNets(s.ctx)
 		}
 		if !n.cfg.NoPaths {
@@ -1397,7 +1404,7 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 		s.spoke.sync(snap.Hubs())
 	}
 	if s.spoke != nil && diff.SessionsChanged {
-		s.spoke.retryNow()
+		s.spoke.retryNow(true)
 	}
 	if (s.srv != nil || s.paths != nil) && diff.SessionsChanged {
 		s.enforceSessions(snap)
@@ -1455,10 +1462,15 @@ func (s *session) enforceSessions(snap *registry.Snapshot) {
 }
 
 // sessionWatch enforces session expiry on a hub every 10 s and reports
-// tunnel counters to the control plane every 30 s.
+// tunnel counters to the control plane every 30 s (in power save both once
+// a minute).
 func (s *session) sessionWatch() {
-	t := time.NewTicker(10 * time.Second)
+	t := time.NewTicker(s.n.every(10*time.Second, time.Minute))
 	defer t.Stop()
+	report := 3
+	if s.n.cfg.PowerSave {
+		report = 1
+	}
 	tick := 0
 	for {
 		select {
@@ -1466,7 +1478,7 @@ func (s *session) sessionWatch() {
 			return
 		case <-t.C:
 			s.enforceSessions(s.n.holder.Load())
-			if tick++; tick%3 == 0 {
+			if tick++; tick%report == 0 {
 				s.reportTunnels()
 			}
 		}

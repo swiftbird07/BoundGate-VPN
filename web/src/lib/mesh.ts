@@ -18,7 +18,16 @@ export interface MeshEdge {
 }
 export interface Mesh { nodes: MeshNode[]; lans: MeshLan[]; edges: MeshEdge[] }
 
-const ONLINE_AFTER = 90; // seconds without a heartbeat
+// Seconds without a heartbeat before a node counts as offline. Phones save
+// power and send one every 10 minutes (node power save, docs/POWER.md).
+const ONLINE_AFTER = 90, ONLINE_AFTER_PHONE = 11 * 60;
+
+/** seenRecently: the node's last heartbeat is recent enough to call it online. */
+export function seenRecently(n: { platform?: string; last_seen_at?: string }, now = Date.now()): boolean {
+  if (!n.last_seen_at) return false;
+  const after = n.platform === 'ios' || n.platform === 'android' ? ONLINE_AFTER_PHONE : ONLINE_AFTER;
+  return (now - Date.parse(n.last_seen_at)) / 1000 < after;
+}
 const REPULSION = 9000, SPRING = 230, GRAVITY = 0.006;
 
 export function kindOf(roles: Role[]): NodeKind {
@@ -70,7 +79,7 @@ export function buildMesh(nodes: Node[], sessions: Session[], tunnels: Tunnel[],
     const p = old.get(n.id) ?? { x: Math.cos(ang) * ring, y: Math.sin(ang) * ring, vx: 0, vy: 0 };
     out.nodes.push({
       id: n.id, name: n.name, kind, roles: n.roles, node: n, r: radius[kind],
-      online: live && !!n.last_seen_at && (now - Date.parse(n.last_seen_at)) / 1000 < ONLINE_AFTER,
+      online: live && seenRecently(n, now),
       user: userOf.get(n.id), hardware: n.hardware_bound, interactive: n.kind === 'interactive',
       x: p.x, y: p.y, vx: p.vx, vy: p.vy, pinned: p.pinned,
     });

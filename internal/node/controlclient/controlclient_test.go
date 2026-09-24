@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 )
 
 // A long-poll that waits on a connection from before a route change is cut
@@ -80,5 +82,53 @@ func TestNoAnswerMessage(t *testing.T) {
 	_, err := c.do(context.Background(), http.MethodGet, "/api/v1/node/snapshot?since=4&wait=30s", nil, nil, 8*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "gave no answer within 8s (GET /api/v1/node/snapshot)") || strings.Contains(err.Error(), "since=") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// A polling client (power save) asks once, stays quiet until the next poll,
+// and asks at once when told to (a sign-in, a network change): it never
+// holds a long-poll open, which would keep a phone's radio awake.
+func TestPollAsksOnlyWhenDueOrTold(t *testing.T) {
+	var calls atomic.Int32
+	waits := make(chan string, 8)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		waits <- r.URL.Query().Get("wait")
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	c := New(Config{Addr: strings.TrimPrefix(srv.URL, "https://"), TLS: &tls.Config{InsecureSkipVerify: true}, Poll: time.Hour})
+	defer c.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = c.Run(ctx, &registry.Holder{}, nil) }()
+
+	next := func(what string) {
+		t.Helper()
+		select {
+		case w := <-waits:
+			if w != "1s" {
+				t.Fatalf("%s: wait=%s, want an answer at once", what, w)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%s: no request", what)
+		}
+	}
+	next("first fetch")
+	time.Sleep(300 * time.Millisecond)
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("%d requests before the poll was due", n)
+	}
+	c.Refresh()
+	next("after Refresh")
+	time.Sleep(300 * time.Millisecond) // the answer is in; a Reconnect during it asks again, rightly
+	c.Reconnect()
+	next("after Reconnect")
+	time.Sleep(300 * time.Millisecond)
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("%d requests, want 3", n)
 	}
 }

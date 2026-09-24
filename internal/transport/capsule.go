@@ -194,6 +194,9 @@ func (l *capsuleLink) readLoop() {
 }
 
 func (l *capsuleLink) keepAliveLoop() {
+	if l.keepAlive <= 0 {
+		return
+	}
 	t := time.NewTicker(l.keepAlive)
 	defer t.Stop()
 	for {

@@ -59,6 +59,17 @@ type Config struct {
 	// either way).
 	LogLevel string `json:"log_level,omitempty"`
 	FlowLog  bool   `json:"flow_log,omitempty"`
+	// PowerSave (node power.go): on by default for ios and android, where
+	// the battery pays for every packet; false turns it off.
+	PowerSave *bool `json:"power_save,omitempty"`
+}
+
+// powerSave is Config.PowerSave with the platform's default.
+func (c Config) powerSave() bool {
+	if c.PowerSave != nil {
+		return *c.PowerSave
+	}
+	return c.Platform == "ios" || c.Platform == "android"
 }
 
 // Platform is what the app provides.
@@ -211,11 +222,12 @@ func (e *Engine) startNode(s ipc.Settings) error {
 		MTU:               e.cfg.MTU,
 		// no paths.listen: peers reach an embedded node through relaying
 		// hubs only (a phone has no stable public address)
-		Key:      e.key,
-		Net:      e.net,
-		Platform: e.cfg.Platform,
-		Log:      e.log,
-		FlowLog:  e.flow,
+		Key:       e.key,
+		Net:       e.net,
+		Platform:  e.cfg.Platform,
+		PowerSave: e.cfg.powerSave(),
+		Log:       e.log,
+		FlowLog:   e.flow,
 	})
 	if err != nil {
 		return err

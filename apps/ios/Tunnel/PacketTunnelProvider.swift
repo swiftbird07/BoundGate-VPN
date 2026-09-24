@@ -63,10 +63,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         let m = NWPathMonitor()
         var last: String?
         m.pathUpdateHandler = { [weak self] path in
-            TunnelLog.shared.write("path: \(path.debugDescription), gateways \(path.gateways), interfaces \(path.availableInterfaces.map { "\($0.name)/\($0.type)" })")
+            // On cellular the path is reported every few seconds (link
+            // quality, bandwidth estimates); only a change of the network
+            // underneath is worth a line and a reconnect.
             let now = Self.underlying(path)
             defer { last = now }
             guard let before = last, before != now else { return }
+            TunnelLog.shared.write("path: \(path.debugDescription), gateways \(path.gateways), interfaces \(path.availableInterfaces.map { "\($0.name)/\($0.type)" })")
             self?.logger.info("network changed: \(before, privacy: .public) -> \(now, privacy: .public)")
             TunnelLog.shared.write("tunnel: network changed: \(before) -> \(now)")
             self?.engine?.networkChanged()
@@ -95,8 +98,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         completionHandler()
     }
 
-    override func sleep(completionHandler: @escaping () -> Void) { TunnelLog.shared.write("tunnel: sleep"); completionHandler() }
-    override func wake() { TunnelLog.shared.write("tunnel: wake"); engine?.networkChanged() }
+    // The system calls these up to 200 times an hour while the screen is
+    // off (tunnel.log, 2026-09-23). Treating every wake as a network change
+    // reconnected the control channel and redialed the hubs each time, which
+    // kept the radio awake. A real change of network comes from the path
+    // monitor; a tunnel that died while the phone slept ends by its own
+    // idle timeout and is dialed again.
+    override func sleep(completionHandler: @escaping () -> Void) { completionHandler() }
+    override func wake() {}
 
     private func finishStart(_ error: Error?) {
         lock.lock()

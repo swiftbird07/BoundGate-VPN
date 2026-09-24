@@ -54,6 +54,8 @@ the APK carries only the Kotlin standard library besides the app itself.
   was killed it starts it again (`START_STICKY`). Both mean "connect".
 * **Sign in:** the app opens the IdP's page in the browser and waits for the
   flow as the other apps do (`/v1/login`, `/v1/login/{flow}?wait=25s`).
+* **Power save** is on (POWER.md): an idle tunnel sends nothing, the
+  snapshot is polled every 10 min and after every network change.
 
 ## Always-on with "Block connections without VPN"
 

@@ -266,9 +266,10 @@ func (pm *pathManager) open(ctx context.Context, cd *candidate) {
 // dial tries the peer's own address, then every hub that relays.
 func (pm *pathManager) dial(ctx context.Context, peer registry.Node) (*path, error) {
 	s := pm.s
+	idle, keepAlive := s.n.tunnelTimers()
 	cc := transport.ClientConfig{
 		TLS:      transport.ClientTLSConfigPinned(s.n.cert, peer.SPKI),
-		Template: transport.HubTemplate, IdleTimeout: 30 * time.Second, KeepAlive: 10 * time.Second, HandshakeTimeout: 5 * time.Second,
+		Template: transport.HubTemplate, IdleTimeout: idle, KeepAlive: keepAlive, HandshakeTimeout: 5 * time.Second,
 	}
 	var errs []error
 	if peer.PublicAddr != "" {
@@ -500,7 +501,7 @@ func (pm *pathManager) serve(ctx context.Context, key, via string, pc net.Packet
 	srv, err := transport.NewServer(transport.ServerConfig{
 		PacketConn: pc, Relayed: relayed,
 		TLS: transport.ServerTLSConfig(s.n.cert, s.n.holder), Lookup: s.n.holder, Template: transport.HubTemplate,
-		IdleTimeout: 30 * time.Second, KeepAlive: 10 * time.Second, Logger: s.n.log,
+		IdleTimeout: serverIdle, KeepAlive: -1, Logger: s.n.log,
 	}, &peerService{s: s, via: via})
 	if err != nil {
 		_ = pc.Close()

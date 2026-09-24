@@ -296,9 +296,11 @@ func Run(ctx context.Context, cfg Config) error {
 		Handler:   root,
 		TLSConfig: udpTLS,
 		QUICConfig: &quic.Config{
-			MaxIdleTimeout:  90 * time.Second, // long-polls run 30 s
-			KeepAlivePeriod: 20 * time.Second,
-			Allow0RTT:       false,
+			MaxIdleTimeout: 90 * time.Second, // long-polls run 30 s
+			// No keep-alives from here: nodes that long-poll keep their
+			// connection alive themselves, and a phone that polls
+			// (node power save) lets it close instead of being woken.
+			Allow0RTT: false,
 		},
 		Logger: log,
 	}

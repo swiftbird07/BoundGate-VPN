@@ -6,6 +6,7 @@
   import Time from '../lib/components/Time.svelte';
   import { bytes } from '../lib/util';
   import { fail } from '../lib/toast.svelte';
+  import { seenRecently } from '../lib/mesh';
   import Icon from '../lib/components/Icon.svelte';
 
   let ov = $state<Overview | null>(null);
@@ -22,7 +23,7 @@
   onMount(() => { void load(); const t = setInterval(load, 10000); return () => clearInterval(t); });
   const waiting = $derived((ov?.nodes.pending ?? 0) + (ov?.nodes.confirmed ?? 0));
   const attention = $derived(nodes.filter((n) => n.status === 'pending' || n.status === 'confirmed'));
-  const online = $derived(nodes.filter((n) => n.status === 'approved' && n.last_seen_at && Date.now() - new Date(n.last_seen_at).getTime() < 90000));
+  const online = $derived(nodes.filter((n) => n.status === 'approved' && seenRecently(n)));
 </script>
 
 <div class="page-head">

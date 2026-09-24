@@ -103,7 +103,7 @@ func (s *session) loginPassthrough(e *flow.Entry) (flow.Result, bool) {
 
 // flowSweeper expires idle flows.
 func (s *session) flowSweeper() {
-	t := time.NewTicker(5 * time.Second)
+	t := time.NewTicker(s.n.every(5*time.Second, 30*time.Second))
 	defer t.Stop()
 	for {
 		select {
@@ -235,6 +235,9 @@ func (s *session) onFlowEvent(ev flow.Event) {
 		args = append(args, k, v)
 	}
 	n.flowLog.Info("flow "+string(ev.Type), args...)
+	if n.cfg.PowerSave && e.Origin.Local {
+		return // the hub or peer that carried it logs it (power.go)
+	}
 	n.ship.add(api.ShippedEvent{TS: ev.At, Stream: api.ShipStreamFlow, Message: string(ev.Type), Attrs: attrs})
 }
 
@@ -383,6 +386,8 @@ type shipper struct {
 	c   *controlclient.Client
 	log *slog.Logger
 
+	every time.Duration
+
 	mu      sync.Mutex
 	buf     []api.ShippedEvent
 	dropped uint64
@@ -390,8 +395,8 @@ type shipper struct {
 	failing bool
 }
 
-func newShipper(c *controlclient.Client, log *slog.Logger) *shipper {
-	return &shipper{c: c, log: log, kick: make(chan struct{}, 1)}
+func newShipper(c *controlclient.Client, log *slog.Logger, every time.Duration) *shipper {
+	return &shipper{c: c, log: log, every: every, kick: make(chan struct{}, 1)}
 }
 
 func (s *shipper) add(ev api.ShippedEvent) {
@@ -412,7 +417,7 @@ func (s *shipper) add(ev api.ShippedEvent) {
 }
 
 func (s *shipper) run(ctx context.Context) {
-	t := time.NewTicker(shipEvery)
+	t := time.NewTicker(s.every)
 	defer t.Stop()
 	for {
 		select {
