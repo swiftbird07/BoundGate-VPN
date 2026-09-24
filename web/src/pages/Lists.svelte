@@ -8,8 +8,13 @@
   let lists = $state<AclList[]>([]);
   let loaded = $state(false);
   // the editor: a new list, or a copy of an existing one
-  let editing = $state<{ id?: string; name: string; kind: ListKind; description: string; text: string } | null>(null);
+  type Draft = { id?: string; name: string; kind: ListKind; description: string; text: string;
+    source_url: string; source_minutes: number; source_header: string; source_secret: string; secret_set: boolean };
+  let editing = $state<Draft | null>(null);
   let busy = $state(false);
+  let fetching = $state<string | null>(null);
+  let importInto = $state<AclList | null>(null);
+  let fileInput: HTMLInputElement | undefined = $state();
   const kindLabel: Record<ListKind, string> = { ip: 'Addresses', dns: 'DNS names', sni: 'TLS server names' };
   const kindHelp: Record<ListKind, string> = {
     ip: 'One address or CIDR prefix per line: 10.60.0.11, 192.168.178.0/24.',
@@ -21,15 +26,22 @@
   onMount(() => { void load(); });
 
   function start(l?: AclList) {
-    editing = l ? { id: l.id, name: l.name, kind: l.kind, description: l.description || '', text: l.entries.join('\n') }
-                : { name: '', kind: 'sni', description: '', text: '' };
+    editing = l
+      ? { id: l.id, name: l.name, kind: l.kind, description: l.description || '', text: l.entries.join('\n'),
+          source_url: l.source_url || '', source_minutes: Math.round((l.source_interval || 900) / 60), source_header: l.source_header || '',
+          source_secret: '', secret_set: !!l.source_secret_set }
+      : { name: '', kind: 'sni', description: '', text: '', source_url: '', source_minutes: 15, source_header: '', source_secret: '', secret_set: false };
   }
   const entryCount = $derived(editing ? editing.text.split(/\r?\n/).map((s) => s.replace(/#.*/, '').trim()).filter(Boolean).length : 0);
   async function save() {
     if (!editing) return;
     busy = true;
     try {
-      const body = { name: editing.name.trim(), kind: editing.kind, description: editing.description.trim(), entries: editing.text.split(/\r?\n/) };
+      const url = editing.source_url.trim();
+      const body = { name: editing.name.trim(), kind: editing.kind, description: editing.description.trim(), entries: editing.text.split(/\r?\n/),
+        source_url: url, source_interval: url ? Math.max(1, editing.source_minutes) * 60 : 0, source_header: editing.source_header.trim(),
+        // absent keeps the stored secret, "" clears it
+        ...(editing.source_secret ? { source_secret: editing.source_secret } : editing.secret_set ? {} : { source_secret: '' }) };
       if (editing.id) await admin.putList(editing.id, body); else await admin.createList(body);
       toast(editing.id ? 'List saved; nodes pick it up within seconds' : 'List created', 'ok');
       editing = null;
@@ -41,6 +53,41 @@
     try { await admin.deleteList(l.id); toast('Deleted', 'ok'); await load(); } catch (e) { fail(e); }
   }
   const preview = (l: AclList) => l.entries.slice(0, 6).join(', ') + (l.entries.length > 6 ? ` … +${l.entries.length - 6}` : '');
+
+  // A list is a text file: it can be downloaded, committed to a repository
+  // and read back, by hand or by the control plane (source url).
+  async function exportList(l: AclList) {
+    try {
+      const text = await admin.exportList(l.id);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+      a.download = l.name + '.list';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { fail(e); }
+  }
+  function pickFile(l: AclList) { importInto = l; fileInput?.click(); }
+  async function importFile(ev: Event) {
+    const input = ev.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    const l = importInto;
+    input.value = '';
+    if (!file || !l) return;
+    const add = window.confirm(`Add ${file.name} to “${l.name}” (${l.entries.length} entries)?\n\nCancel replaces the list with the file.`);
+    try {
+      const out = await admin.importList(l.id, await file.text(), add ? 'add' : 'replace');
+      toast(`${out.entries.length} entries in ${out.name}`, 'ok');
+      await load();
+    } catch (e) { fail(e); }
+  }
+  async function fetchNow(l: AclList) {
+    fetching = l.id;
+    try {
+      const out = await admin.fetchList(l.id);
+      toast(`Fetched: ${out.entries.length} entries`, 'ok');
+      await load();
+    } catch (e) { fail(e); await load(); } finally { fetching = null; }
+  }
 </script>
 
 <div class="page-head">
@@ -64,6 +111,21 @@
       <textarea class="code" rows="12" spellcheck="false" placeholder={editing.kind === 'ip' ? '10.60.0.11\n192.168.178.0/24' : 'myip.wtf\n*.github.com  # comments are fine'} bind:value={editing.text}></textarea>
     </label>
     <div class="hint">{kindHelp[editing.kind]} Blank lines and everything after # are ignored; the list is sorted and de-duplicated on save. Up to 10 000 entries.</div>
+    <details open={!!editing.source_url}>
+      <summary class="small muted" style="cursor:pointer">Source: {editing.source_url ? 'follows a URL' : 'edited here'}</summary>
+      <div class="col" style="gap:10px; margin-top:8px">
+        <label class="field">URL <input class="mono" placeholder="https://git.example.com/acl/raw/branch/main/ad-domains.list" bind:value={editing.source_url} /></label>
+        <div class="grid cols-2">
+          <label class="field">Every <input type="number" min="1" max="10080" bind:value={editing.source_minutes} /><span class="hint">minutes; at least 1</span></label>
+          <label class="field">Header for a private repository <input class="mono" placeholder="Private-Token" bind:value={editing.source_header} /></label>
+        </div>
+        <label class="field">Its value
+          <input type="password" autocomplete="off" placeholder={editing.secret_set ? '•••••••• (stored; type to replace)' : 'only for a private repository'} bind:value={editing.source_secret} />
+          <span class="hint">Kept by the control plane and never sent back to this page. Leave empty to keep what is stored; save with an empty field and no stored value to clear it.</span>
+        </label>
+        <div class="hint">With a URL the control plane fetches the file itself and replaces the entries with what it finds: one entry per line (# comments) or a JSON array, the same form as the export. A raw file URL of GitHub, GitLab or Gitea works. What you type above is only the starting point, and a file that cannot be read leaves the list as it is, with the reason under the list.</div>
+      </div>
+    </details>
     {#if editing.id && (lists.find((l) => l.id === editing?.id)?.used_by.length ?? 0) > 0}
       <div class="hint">Policies refer to this list, so its name and kind stay; the entries can change and take effect on every node within seconds.</div>
     {/if}
@@ -77,6 +139,7 @@
 {#if loaded && lists.length === 0 && !editing}
   <div class="card empty">No lists yet. A list keeps the addresses or names apart from the rules that use them: block <code>ad-domains</code> for everyone, allow <code>allowed-sites</code> for one node, and edit the entries without touching a policy.</div>
 {/if}
+<input type="file" accept=".list,.txt,.json,text/plain,application/json" style="display:none" bind:this={fileInput} onchange={importFile} />
 <div class="col" style="gap:12px">
   {#each lists as l (l.id)}
     <div class="card">
@@ -87,9 +150,20 @@
           </div>
           {#if l.description}<div class="muted" style="margin-top:4px">{l.description}</div>{/if}
           <div class="mono small" style="margin-top:6px; word-break:break-all">{preview(l)}</div>
-          <div class="faint small" style="margin-top:6px">updated <Time at={l.updated_at} /> by {l.updated_by || l.created_by || '?'}</div>
+          <div class="faint small" style="margin-top:6px">updated <Time at={l.updated_at} /> by {l.updated_by === 'source' ? 'its source' : l.updated_by || l.created_by || '?'}</div>
+          {#if l.source_url}
+            <div class="small" style="margin-top:6px; word-break:break-all">
+              <span class="chip">every {Math.round((l.source_interval || 0) / 60)} min</span>
+              <span class="mono faint">{l.source_url}</span>
+              {#if l.source_fetched_at}<span class="faint"> · last <Time at={l.source_fetched_at} /></span>{/if}
+            </div>
+            {#if l.source_status}<div class="error small" style="margin-top:4px">Source: {l.source_status} (the entries are the ones from before)</div>{/if}
+          {/if}
         </div>
         <div class="row" style="gap:6px">
+          {#if l.source_url}<button class="btn sm" disabled={fetching === l.id} onclick={() => fetchNow(l)}>{fetching === l.id ? 'Fetching…' : 'Fetch now'}</button>{/if}
+          <button class="btn sm" onclick={() => exportList(l)}>Export</button>
+          <button class="btn sm" onclick={() => pickFile(l)}>Import…</button>
           <button class="btn sm" onclick={() => start(l)}>Edit</button>
           <button class="btn sm danger" disabled={l.used_by.length > 0} title={l.used_by.length ? 'remove the policies that use it first' : ''} onclick={() => remove(l)}>Delete</button>
         </div>

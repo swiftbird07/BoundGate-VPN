@@ -1,16 +1,19 @@
 package api
 
 import (
-	"regexp"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/acl"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/listsource"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/netparse"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
@@ -39,10 +42,10 @@ func policyView(p db.Policy) PolicyView {
 
 // PolicyBody creates or replaces a policy. Enabled defaults to true.
 type PolicyBody struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Cedar       string   `json:"cedar"`
-	Enabled     *bool    `json:"enabled"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Cedar       string `json:"cedar"`
+	Enabled     *bool  `json:"enabled"`
 	// Group is a label for the admin UI; it does not affect evaluation.
 	Group string   `json:"group"`
 	Scope []string `json:"scope"`
@@ -373,15 +376,29 @@ type ListView struct {
 	CreatedBy   string    `json:"created_by,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	UpdatedBy   string    `json:"updated_by,omitempty"`
+	// a source the list follows (docs/ACL.md); the secret is never sent
+	SourceURL       string     `json:"source_url,omitempty"`
+	SourceInterval  int        `json:"source_interval,omitempty"` // seconds
+	SourceHeader    string     `json:"source_header,omitempty"`
+	SourceSecretSet bool       `json:"source_secret_set,omitempty"`
+	SourceFetchedAt *time.Time `json:"source_fetched_at,omitempty"`
+	SourceStatus    string     `json:"source_status,omitempty"` // empty: the last fetch worked
 }
 
 // ListBody creates or replaces a list. Entries: one address, prefix or
-// name each; blank lines and # comments are dropped.
+// name each; blank lines and # comments are dropped. With a source_url the
+// control plane fetches the entries itself every source_interval seconds
+// and what is sent as entries is only the starting point. source_secret is
+// write-only: absent keeps what is stored, "" clears it.
 type ListBody struct {
-	Name        string   `json:"name"`
-	Kind        string   `json:"kind"`
-	Description string   `json:"description"`
-	Entries     []string `json:"entries"`
+	Name           string   `json:"name"`
+	Kind           string   `json:"kind"`
+	Description    string   `json:"description"`
+	Entries        []string `json:"entries"`
+	SourceURL      string   `json:"source_url"`
+	SourceInterval int      `json:"source_interval"`
+	SourceHeader   string   `json:"source_header"`
+	SourceSecret   *string  `json:"source_secret"`
 }
 
 var listRefRe = regexp.MustCompile(`BoundGate::List::"([^"]*)"`)
@@ -410,7 +427,13 @@ func (h *Handlers) unknownLists(r *http.Request, cedar string) string {
 
 func (h *Handlers) listView(r *http.Request, l db.List, policies []db.Policy) ListView {
 	v := ListView{ID: l.ID, Name: l.Name, Kind: l.Kind, Description: l.Description, Entries: l.Entries, UsedBy: []string{},
-		CreatedAt: l.CreatedAt, CreatedBy: l.CreatedBy, UpdatedAt: l.UpdatedAt, UpdatedBy: l.UpdatedBy}
+		CreatedAt: l.CreatedAt, CreatedBy: l.CreatedBy, UpdatedAt: l.UpdatedAt, UpdatedBy: l.UpdatedBy,
+		SourceURL: l.SourceURL, SourceInterval: int(l.SourceInterval / time.Second), SourceHeader: l.SourceHeader,
+		SourceSecretSet: l.SourceSecret != "", SourceStatus: l.SourceStatus}
+	if !l.SourceFetchedAt.IsZero() {
+		t := l.SourceFetchedAt
+		v.SourceFetchedAt = &t
+	}
 	if policies == nil {
 		policies, _ = h.d.DB.ListPolicies(r.Context())
 	}
@@ -439,7 +462,24 @@ func (h *Handlers) readList(w http.ResponseWriter, r *http.Request) (db.List, bo
 		writeError(w, http.StatusBadRequest, err.Error())
 		return db.List{}, false
 	}
-	return db.List{Name: name, Kind: body.Kind, Description: clip(body.Description, 512), Entries: entries}, true
+	url, interval, header, err := db.CleanListSource(body.SourceURL, time.Duration(body.SourceInterval)*time.Second, body.SourceHeader)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return db.List{}, false
+	}
+	l := db.List{Name: name, Kind: body.Kind, Description: clip(body.Description, 512), Entries: entries,
+		SourceURL: url, SourceInterval: interval, SourceHeader: header}
+	if body.SourceSecret != nil {
+		l.SourceSecret = strings.TrimSpace(*body.SourceSecret)
+	} else if id := r.PathValue("id"); id != "" { // absent: keep what is stored
+		if cur, err := h.d.DB.ListByID(r.Context(), id); err == nil {
+			l.SourceSecret = cur.SourceSecret
+		}
+	}
+	if l.SourceURL == "" {
+		l.SourceHeader, l.SourceSecret = "", ""
+	}
+	return l, true
 }
 
 func (h *Handlers) adminLists(w http.ResponseWriter, r *http.Request) {
@@ -527,4 +567,92 @@ func (h *Handlers) adminDeleteList(w http.ResponseWriter, r *http.Request) {
 	h.d.Snap.Notify(version)
 	h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "list deleted", "", map[string]any{"list": id, "name": l.Name})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminExportList writes a list as a text file: one entry per line, with a
+// header naming the list. It is what a source may hold, so an export can be
+// committed to a repository and fetched back (docs/ACL.md).
+func (h *Handlers) adminExportList(w http.ResponseWriter, r *http.Request) {
+	l, err := h.d.DB.ListByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# BoundGate list %q (%s)\n", l.Name, l.Kind)
+	if l.Description != "" {
+		fmt.Fprintf(&b, "# %s\n", strings.ReplaceAll(l.Description, "\n", " "))
+	}
+	fmt.Fprintf(&b, "# %d entries, exported %s\n", len(l.Entries), time.Now().UTC().Format(time.RFC3339))
+	for _, e := range l.Entries {
+		b.WriteString(e)
+		b.WriteByte('\n')
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", l.Name+".list"))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, b.String())
+}
+
+// adminImportList replaces a list's entries with a text file (or a JSON
+// array), the form an export writes. ?mode=add keeps what is there and adds
+// to it.
+func (h *Handlers) adminImportList(w http.ResponseWriter, r *http.Request) {
+	a, _ := AdminFrom(r.Context())
+	l, err := h.d.DB.ListByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, listsource.MaxBytes+1))
+	if err != nil || len(body) > listsource.MaxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("an import is at most %d bytes", listsource.MaxBytes))
+		return
+	}
+	entries, err := listsource.Parse(l.Kind, body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if r.URL.Query().Get("mode") == "add" {
+		if entries, err = db.CleanListEntries(l.Kind, append(entries, l.Entries...)); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	before := len(l.Entries)
+	l.Entries = entries
+	version, err := h.d.DB.UpdateList(r.Context(), l, a.Subject)
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	h.d.Snap.Notify(version)
+	h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "list imported", "", map[string]any{"list": l.ID, "name": l.Name, "entries": len(entries), "was": before})
+	l, _ = h.d.DB.ListByID(r.Context(), l.ID)
+	writeJSON(w, http.StatusOK, h.listView(r, l, nil))
+}
+
+// adminFetchList fetches a list's source now instead of waiting for its
+// interval. A source that cannot be read is a 502 with the reason, and the
+// list keeps its entries.
+func (h *Handlers) adminFetchList(w http.ResponseWriter, r *http.Request) {
+	a, _ := AdminFrom(r.Context())
+	l, err := h.d.DB.ListByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	if l.SourceURL == "" {
+		writeError(w, http.StatusBadRequest, "this list has no source url")
+		return
+	}
+	l, version, ferr := listsource.New(h.d.Logs.System).Fetch(r.Context(), h.d.DB, h.d.Snap, l)
+	if ferr != nil {
+		h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "list source fetched", "", map[string]any{"list": l.ID, "name": l.Name, "url": l.SourceURL, "err": ferr.Error()})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": ferr.Error(), "list": h.listView(r, l, nil)})
+		return
+	}
+	h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "list source fetched", "", map[string]any{"list": l.ID, "name": l.Name, "url": l.SourceURL, "entries": len(l.Entries), "changed": version > 0})
+	writeJSON(w, http.StatusOK, h.listView(r, l, nil))
 }

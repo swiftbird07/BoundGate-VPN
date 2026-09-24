@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -25,6 +26,48 @@ type List struct {
 	CreatedBy   string
 	UpdatedAt   time.Time
 	UpdatedBy   string
+	// A list can follow a URL (a file in a Git repository, a feed): the
+	// control plane fetches it every SourceInterval and replaces the
+	// entries with what it finds. SourceSecret is an optional value for
+	// SourceHeader (a private repository's token) and never leaves the
+	// control plane; the rest is shown in the admin UI.
+	SourceURL       string
+	SourceInterval  time.Duration
+	SourceHeader    string
+	SourceSecret    string
+	SourceETag      string
+	SourceFetchedAt time.Time
+	SourceStatus    string // empty after a fetch that worked
+}
+
+// MinListSourceInterval is the shortest interval a list source may have;
+// 0 means the list follows no URL.
+const MinListSourceInterval = time.Minute
+
+// CleanListSource checks a list's source and returns it normalized. An
+// empty URL clears the source.
+func CleanListSource(rawURL string, interval time.Duration, header string) (string, time.Duration, string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	header = strings.TrimSpace(header)
+	if rawURL == "" {
+		return "", 0, "", nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", 0, "", errors.New("source url: an http or https address")
+	}
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	if interval < MinListSourceInterval {
+		return "", 0, "", fmt.Errorf("source interval: at least %s", MinListSourceInterval)
+	}
+	for _, c := range header {
+		if c <= ' ' || c == ':' || c > '~' {
+			return "", 0, "", errors.New("source header: a header name")
+		}
+	}
+	return u.String(), interval.Round(time.Second), header, nil
 }
 
 // ListKinds are the kinds a list can have.
@@ -92,13 +135,20 @@ func CleanListEntries(kind string, in []string) ([]string, error) {
 	return out, nil
 }
 
-const listCols = `id, name, kind, description, entries_json, created_at, created_by, updated_at, updated_by`
+const listCols = `id, name, kind, description, entries_json, created_at, created_by, updated_at, updated_by,
+	source_url, source_interval, source_header, source_secret, source_etag, source_fetched_at, source_status`
 
 func scanList(s scanner) (List, error) {
 	var l List
-	var entries, created, updated string
-	if err := s.Scan(&l.ID, &l.Name, &l.Kind, &l.Description, &entries, &created, &l.CreatedBy, &updated, &l.UpdatedBy); err != nil {
+	var entries, created, updated, fetched string
+	var interval int64
+	if err := s.Scan(&l.ID, &l.Name, &l.Kind, &l.Description, &entries, &created, &l.CreatedBy, &updated, &l.UpdatedBy,
+		&l.SourceURL, &interval, &l.SourceHeader, &l.SourceSecret, &l.SourceETag, &fetched, &l.SourceStatus); err != nil {
 		return List{}, err
+	}
+	l.SourceInterval = time.Duration(interval) * time.Second
+	if fetched != "" {
+		l.SourceFetchedAt = parseTime(sql.NullString{String: fetched, Valid: true})
 	}
 	_ = json.Unmarshal([]byte(entries), &l.Entries)
 	if l.Entries == nil {
@@ -143,8 +193,9 @@ func (d *DB) CreateList(ctx context.Context, l List, by string) (List, uint64, e
 	ts := now()
 	l.CreatedBy, l.UpdatedBy = by, by
 	version, err := d.tx(ctx, true, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO lists (`+listCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			l.ID, l.Name, l.Kind, l.Description, string(entries), ts, by, ts, by)
+		_, err := tx.ExecContext(ctx, `INSERT INTO lists (`+listCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '')`,
+			l.ID, l.Name, l.Kind, l.Description, string(entries), ts, by, ts, by,
+			l.SourceURL, int64(l.SourceInterval/time.Second), l.SourceHeader, l.SourceSecret)
 		if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 			return ErrConflict
 		}
@@ -177,8 +228,23 @@ func (d *DB) UpdateList(ctx context.Context, l List, by string) (uint64, error) 
 				return fmt.Errorf("%w: policies refer to list %q; remove those references first", ErrConflict, oldName)
 			}
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE lists SET name = ?, kind = ?, description = ?, entries_json = ?, updated_at = ?, updated_by = ? WHERE id = ?`,
-			l.Name, l.Kind, l.Description, string(entries), now(), by, l.ID)
+		// A source that changed starts over: the ETag of the old URL says
+		// nothing about the new one, and its error is not this one's.
+		var oldURL, oldHeader string
+		if err := tx.QueryRowContext(ctx, `SELECT source_url, source_header FROM lists WHERE id = ?`, l.ID).Scan(&oldURL, &oldHeader); err != nil {
+			return err
+		}
+		reset := oldURL != l.SourceURL || oldHeader != l.SourceHeader
+		q := `UPDATE lists SET name = ?, kind = ?, description = ?, entries_json = ?, updated_at = ?, updated_by = ?,
+			source_url = ?, source_interval = ?, source_header = ?, source_secret = ?`
+		args := []any{l.Name, l.Kind, l.Description, string(entries), now(), by,
+			l.SourceURL, int64(l.SourceInterval / time.Second), l.SourceHeader, l.SourceSecret}
+		if reset {
+			q += `, source_etag = '', source_fetched_at = '', source_status = ''`
+		}
+		q += ` WHERE id = ?`
+		args = append(args, l.ID)
+		_, err := tx.ExecContext(ctx, q, args...)
 		if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 			return ErrConflict
 		}
@@ -202,6 +268,60 @@ func (d *DB) DeleteList(ctx context.Context, id string) (uint64, error) {
 			return fmt.Errorf("%w: policies refer to list %q; remove those references first", ErrConflict, name)
 		}
 		_, err := tx.ExecContext(ctx, `DELETE FROM lists WHERE id = ?`, id)
+		return err
+	})
+}
+
+// ListsDue returns the lists whose source is due for a fetch: never
+// fetched, or last fetched more than their interval ago.
+func (d *DB) ListsDue(ctx context.Context) ([]List, error) {
+	ls, err := d.Lists(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := ls[:0]
+	for _, l := range ls {
+		if l.SourceURL == "" || l.SourceInterval <= 0 {
+			continue
+		}
+		if l.SourceFetchedAt.IsZero() || time.Since(l.SourceFetchedAt) >= l.SourceInterval {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// SaveListFetch records what a fetch of a list's source brought. entries nil
+// leaves the entries alone (nothing changed, or the fetch failed); status is
+// the reason it failed, empty when it worked. The snapshot version comes
+// back non-zero only when the entries changed.
+func (d *DB) SaveListFetch(ctx context.Context, id string, entries []string, etag, status string) (uint64, error) {
+	ts := now()
+	mark := func(keepETag bool) (uint64, error) {
+		if keepETag && etag == "" { // a failed fetch says nothing about the ETag
+			_, err := d.sql.ExecContext(ctx, `UPDATE lists SET source_fetched_at = ?, source_status = ? WHERE id = ?`, ts, status, id)
+			return 0, err
+		}
+		_, err := d.sql.ExecContext(ctx, `UPDATE lists SET source_fetched_at = ?, source_status = ?, source_etag = ? WHERE id = ?`, ts, status, etag, id)
+		return 0, err
+	}
+	if entries == nil {
+		return mark(true)
+	}
+	b, _ := json.Marshal(entries)
+	var current string
+	if err := d.sql.QueryRowContext(ctx, `SELECT entries_json FROM lists WHERE id = ?`, id).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if current == string(b) { // the file is the same as the list: no new snapshot
+		return mark(false)
+	}
+	return d.tx(ctx, true, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE lists SET entries_json = ?, updated_at = ?, updated_by = 'source', source_fetched_at = ?, source_status = ?, source_etag = ? WHERE id = ?`,
+			string(b), ts, ts, status, etag, id)
 		return err
 	})
 }

@@ -19,8 +19,8 @@ export interface Policy { id: string; name: string; description?: string; cedar:
 export interface PolicyBody { name: string; description: string; cedar: string; enabled: boolean; group?: string; scope: string[] }
 /** A named set policies refer to as BoundGate::List::"name": addresses (ip), DNS query names (dns) or TLS server names (sni). */
 export type ListKind = 'ip' | 'dns' | 'sni';
-export interface AclList { id: string; name: string; kind: ListKind; description?: string; entries: string[]; used_by: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string }
-export interface ListBody { name: string; kind: ListKind; description: string; entries: string[] }
+export interface AclList { id: string; name: string; kind: ListKind; description?: string; entries: string[]; used_by: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string; source_url?: string; source_interval?: number; source_header?: string; source_secret_set?: boolean; source_fetched_at?: string; source_status?: string }
+export interface ListBody { name: string; kind: ListKind; description: string; entries: string[]; source_url?: string; source_interval?: number; source_header?: string; source_secret?: string | null }
 export interface EvaluateBody { node: string; dst: string; port?: number; proto?: string; sni?: string; dns_name?: string; enforcer?: string; draft?: { id: string; name: string; cedar: string }; draft_only?: boolean }
 export interface Evaluation { allow: boolean; policies: string[]; reasons: string[]; errors?: string[]; policy_count: number; policy_errors?: string[]; principal: string; user?: string; groups?: string[]; owner?: string; owner_name?: string }
 export interface Tunnel { id: string; hub_id: string; hub_name?: string; peer_id: string; peer_name?: string; peer_addr?: string; transport?: string; opened_at: string; closed_at?: string; close_reason?: string; bytes_in: number; bytes_out: number; packets_in: number; packets_out: number; last_report_at: string }

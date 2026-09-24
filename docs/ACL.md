@@ -63,6 +63,30 @@ permit(principal, action, resource in BoundGate::Network::"10.60.0.0/24")
   unless { resource in BoundGate::List::"blocked-hosts" };
 ```
 
+### A list as a file: import, export, and a source it follows
+
+A list is a text file: one entry per line, `#` comments and blank lines
+ignored, which is what the admin UI's **Export** writes
+(`GET /api/v1/admin/lists/{id}/export`) and what **Import…** reads back
+(`POST …/import`, `?mode=add` keeps what is there). A JSON array of strings
+is read as well, so a list can be kept in whatever form a repository
+already has.
+
+A list can also **follow a URL**: with a source the control plane fetches
+that file itself every interval (at least a minute, 15 minutes by default)
+and replaces the entries with what it finds, so a list lives in a Git
+repository next to the rest of the configuration (a raw file URL of GitHub,
+GitLab or Gitea), or follows a feed someone else maintains. Only `http` and
+`https` addresses, at most 4 MiB, redirects only within the same host; a
+private repository can be given one request header (`Private-Token`,
+`Authorization`) whose value the control plane keeps and never sends back.
+An unchanged file costs one conditional request (`ETag`), and only entries
+that really changed bump the snapshot. A source that cannot be read leaves
+the list exactly as it was, and the reason stands under the list in the UI
+and in the control plane's log; **Fetch now** tries again at once. The
+entries of such a list can still be edited by hand, but the next fetch
+replaces them (R114).
+
 A list that a policy refers to keeps its name and kind and cannot be
 deleted (409); its entries can change at any time. A policy may only name
 lists that exist (400 otherwise). Lists of server names work like

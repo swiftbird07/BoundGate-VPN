@@ -32,6 +32,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/listsource"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/web"
@@ -341,6 +342,8 @@ func Run(ctx context.Context, cfg Config) error {
 	}()
 	go housekeeping(ctx, store, cfg, log)
 	go expireSessions(ctx, store, src, cfg.Logs)
+	// lists that follow a URL (docs/ACL.md)
+	go listsource.Run(ctx, store, src, cfg.Logs.System)
 
 	select {
 	case <-ctx.Done():
