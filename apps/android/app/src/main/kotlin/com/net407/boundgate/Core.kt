@@ -26,6 +26,9 @@ object Core {
 
         /** One log line; level as in Go's log/slog (-4 debug, 0 info, 4 warn, 8 error). */
         fun log(level: Int, line: String)
+
+        /** The node's status (JSON of GET /v1/status) whenever its state, enrollment, need for a sign-in or hub connection changed. */
+        fun statusChanged(statusJson: String)
     }
 
     /** Starts an engine (config: embed.Config as UTF-8 JSON); throws IllegalStateException with the core's reason. */

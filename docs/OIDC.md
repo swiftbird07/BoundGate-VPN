@@ -31,7 +31,7 @@ every node's snapshot carries the session; hubs admit node-a
   plane is unreachable. A stale snapshot (`max_age`) admits nobody anyway.
 * One active session per node; a new login replaces the old one. The
   session lifetime is a control-plane setting (`oidc.session_lifetime`,
-  default 10 h); no refresh tokens, no silent renewal. Log in again.
+  default 24 h); no refresh tokens, no silent renewal. Log in again.
 * The login URL host gets a bypass route while the overlay is up, so a
   full-tunnel profile does not swallow the login.
 * The callback page is served on the admin name without admin
@@ -76,7 +76,7 @@ M3, the ACL's, which gets the session's user and groups per flow).
      redirect_url: https://control.example/api/v1/oidc/callback
      scopes: [openid, profile, email, groups]                 # default
      groups_claim: groups                                     # default
-     session_lifetime: 10h                                    # default
+     session_lifetime: 24h                                    # default
    ```
 
    Discovery runs on the first login (the control plane starts without the

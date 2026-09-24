@@ -8,6 +8,7 @@ package node
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -158,6 +159,11 @@ type Config struct {
 	// PowerSave: a quiet node sends nothing, so a phone's radio can sleep
 	// (power.go). The phone apps turn it on.
 	PowerSave bool
+	// OnStatus, when set, is called (on its own goroutine, one call at a
+	// time) whenever the state, the enrollment, whether a sign-in is
+	// needed, or whether any hub is connected changed: what an app shows
+	// or notifies the user of without polling.
+	OnStatus func(Status)
 }
 
 // State of the overlay.
@@ -286,10 +292,39 @@ type Node struct {
 	flowLog *slog.Logger
 	denied  atomic.Uint64
 
+	// resetKey lets the tunnels this node accepts send stateless resets
+	// after a restart (transport.ServerConfig.StatelessResetKey); kept in
+	// StateDir/reset.key so that it survives restarts, which is the point.
+	resetKey *quic.StatelessResetKey
+
 	mu       sync.Mutex
 	status   Status
 	sess     *session
 	autoDone bool
+	// moves: tunnels on their way to a new socket after a network change,
+	// with what cancels the move (a later change wins).
+	moves map[*transport.ClientTunnel]context.CancelFunc
+	// notified is what OnStatus was last told (statusKey); notify serializes the calls.
+	notified statusKey
+	notify   sync.Mutex
+}
+
+// statusKey is the part of the status an app reacts to (Config.OnStatus).
+type statusKey struct {
+	State         State
+	Enrollment    string
+	LoginRequired bool
+	HubConnected  bool
+}
+
+func keyOf(s *Status) statusKey {
+	k := statusKey{State: s.State, Enrollment: s.Enrollment, LoginRequired: s.LoginRequired}
+	for _, h := range s.Hubs {
+		if h.State == "connected" {
+			k.HubConnected = true
+		}
+	}
+	return k
 }
 
 // New opens (or creates) the device key and certificate.
@@ -358,6 +393,10 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	resetKey, err := loadResetKey(filepath.Join(cfg.StateDir, "reset.key"))
+	if err != nil {
+		return nil, err
+	}
 	spki, err := devicekey.HashPublicKey(key.Public())
 	if err != nil {
 		return nil, err
@@ -366,7 +405,8 @@ func New(cfg Config) (*Node, error) {
 	if nc == nil {
 		nc = netcfg.NewJournal(netcfg.New(), filepath.Join(cfg.StateDir, "netstate.json"))
 	}
-	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: nc, holder: &registry.Holder{}, flowLog: cfg.FlowLog}
+	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: nc, holder: &registry.Holder{}, flowLog: cfg.FlowLog,
+		resetKey: resetKey, moves: make(map[*transport.ClientTunnel]context.CancelFunc)}
 	if n.flowLog == nil {
 		n.flowLog = cfg.Log
 	}
@@ -746,10 +786,27 @@ func (n *Node) Status() Status {
 	return n.status
 }
 
-// publishStatus refreshes the volatile parts (hub links, routes, tunnels).
+// publishStatus refreshes the volatile parts (hub links, routes, tunnels)
+// and tells Config.OnStatus when what an app reacts to changed.
 func (n *Node) publishStatus() {
 	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.publishLocked()
+	k, st := keyOf(&n.status), n.status
+	changed := n.cfg.OnStatus != nil && k != n.notified
+	if changed {
+		n.notified = k
+	}
+	n.mu.Unlock()
+	if changed {
+		go func() {
+			n.notify.Lock()
+			defer n.notify.Unlock()
+			n.cfg.OnStatus(st)
+		}()
+	}
+}
+
+func (n *Node) publishLocked() {
 	n.status.ControlTransport = n.control.Transport()
 	s := n.sess
 	if s == nil {
@@ -1075,9 +1132,11 @@ func (n *Node) Down(reason string) {
 
 // NetworkChanged is called by an embedding app when the device moved to
 // another network (Wi-Fi to cellular): connections made over the old one
-// may sit there unanswered until their timeouts. The control channel is
-// reconnected at once and hub links that are down try again now; links that
-// are up notice a dead path through their keep-alives.
+// may sit there unanswered until their timeouts, or, worse, keep working
+// on a network the device no longer uses for anything else (an iPhone
+// keeps a socket on cellular after Wi-Fi came up). The control channel is
+// reconnected at once, hub links that are down try again now, and every
+// tunnel that is up moves to a new socket on the new network (migrate).
 func (n *Node) NetworkChanged() {
 	n.mu.Lock()
 	s := n.sess
@@ -1091,7 +1150,65 @@ func (n *Node) NetworkChanged() {
 	n.control.Reconnect()
 	if s != nil && s.spoke != nil {
 		s.spoke.retryNow(false)
+		s.spoke.networkChanged()
 	}
+	if s != nil && s.paths != nil {
+		s.paths.networkChanged()
+	}
+}
+
+// migrate moves a tunnel to a new socket after a network change, in the
+// background. A tunnel that cannot move (relay, TCP) or whose peer does not
+// answer on the new socket in time is abandoned; its owner dials again. A
+// network change during a move cancels it and starts over.
+func (n *Node) migrate(t *transport.ClientTunnel, what string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	n.mu.Lock()
+	if prev := n.moves[t]; prev != nil {
+		prev()
+	}
+	n.moves[t] = cancel
+	n.mu.Unlock()
+	go func() {
+		defer cancel()
+		err := t.Migrate(ctx)
+		n.mu.Lock()
+		ours := n.moves[t] != nil && ctx.Err() != context.Canceled
+		if ours {
+			delete(n.moves, t)
+		}
+		n.mu.Unlock()
+		if !ours {
+			return // a later change took over
+		}
+		switch {
+		case err == nil:
+			n.log.Info("tunnel moved to the new network", "to", what)
+		case errors.Is(err, transport.ErrNoMigration):
+			n.log.Info("tunnel cannot move to the new network, dialing again", "to", what, "transport", t.Transport())
+			_ = t.Abandon("network changed")
+		default:
+			n.log.Warn("tunnel did not follow the network change, dialing again", "to", what, "err", err)
+			_ = t.Abandon("network changed: " + err.Error())
+		}
+	}()
+}
+
+// loadResetKey reads the stateless reset key, creating it on first use.
+func loadResetKey(path string) (*quic.StatelessResetKey, error) {
+	var key quic.StatelessResetKey
+	b, err := os.ReadFile(path)
+	if err == nil && len(b) == len(key) {
+		copy(key[:], b)
+		return &key, nil
+	}
+	if _, err := rand.Read(key[:]); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, key[:], 0o600); err != nil {
+		return nil, fmt.Errorf("reset key: %w", err)
+	}
+	return &key, nil
 }
 
 // RoutesChanged is called when the machine's own networks changed under a
@@ -1271,16 +1388,17 @@ func (s *session) apply(ctx context.Context) error {
 			n.log.Info("hub listens behind a mux", "addr", n.cfg.Listen, "id", m.ID, "trusted", m.Trusted, "proxy_protocol", tcpLn != nil && !m.NoProxyProtocol)
 		}
 		srv, err := transport.NewServer(transport.ServerConfig{
-			PacketConn:      pc,
-			ConnIDGenerator: gen,
-			TCPListener:     tcpLn,
-			Addr:            n.cfg.Listen,
-			TLS:             transport.ServerTLSConfig(n.cert, n.holder),
-			Lookup:          n.holder,
-			Template:        transport.HubTemplate,
-			IdleTimeout:     serverIdle,
-			KeepAlive:       -1,
-			Logger:          n.log,
+			PacketConn:        pc,
+			ConnIDGenerator:   gen,
+			TCPListener:       tcpLn,
+			Addr:              n.cfg.Listen,
+			TLS:               transport.ServerTLSConfig(n.cert, n.holder),
+			Lookup:            n.holder,
+			Template:          transport.HubTemplate,
+			IdleTimeout:       serverIdle,
+			KeepAlive:         -1,
+			Logger:            n.log,
+			StatelessResetKey: n.resetKey,
 		}, &hubService{s: s})
 		if err != nil {
 			if tcpLn != nil {

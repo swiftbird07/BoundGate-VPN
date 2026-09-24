@@ -38,6 +38,11 @@ typedef struct bg_platform {
 	// secure-enclave, android-keystore, android-strongbox, softkey (copied)
 	const char *key_kind;
 	int32_t hardware_bound;
+	// Optional (NULL: not called). The node's status (the JSON of GET
+	// /v1/status) whenever its state, its enrollment, whether a sign-in is
+	// needed or whether a hub is connected changed: for a notification
+	// while the app is not open. Called one at a time.
+	void (*status_changed)(void *ctx, const char *status_json);
 } bg_platform;
 
 // The Go side declares the functions itself (cgo's export header), in its own

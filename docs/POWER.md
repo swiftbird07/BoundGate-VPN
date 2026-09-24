@@ -24,9 +24,12 @@ The phone apps turn it on (embed: `ios`, `android`; `"power_save": false`
 turns it off). A daemon can set `power_save: true` in `node.yaml`, for
 example on a laptop. A node in power save sends nothing while it is idle:
 
-* **Hub tunnels without keep-alives.** A tunnel with no traffic ends after
-  5 minutes and is dialed again. If the NAT mapping expired before that,
-  the next packet creates a new one, and QUIC follows the new address.
+* **Hub tunnels with a keep-alive every 2 minutes** instead of every 10 s:
+  seldom enough for the radio to sleep in between, often enough that most
+  NAT mappings survive (they are usually kept for 2 minutes or more), so
+  what the hub sends unasked (a push notification through the tunnel, a
+  peer's relay pairing) usually gets through. A tunnel with no traffic at
+  all ends after 5 minutes and is dialed again.
 * **Snapshot polled every 10 minutes** instead of the long-poll. It is also
   polled at once after a network change, after a sign-in, and when a hub
   refuses the tunnel. Between polls there is no open connection.
@@ -51,12 +54,39 @@ example on a laptop. A node in power save sends nothing while it is idle:
 * **iOS:** `sleep()`/`wake()` do nothing. The path monitor reports real
   network changes and logs only those, not every link quality estimate.
 
+## Network changes and dead tunnels (every node)
+
+Without keep-alives every 10 s a dead tunnel is no longer noticed within
+30 s. Three things take the place of that, for every node:
+
+* **A network change moves the tunnels** (`Node.NetworkChanged`, on a
+  daemon `RoutesChanged`): every QUIC tunnel gets a new UDP socket and the
+  connection migrates to it (RFC 9000 §9: the hub validates the new path
+  and answers there), with its address, routes and flows intact. This is
+  the fix for the iPhone that stayed "not connected" on 5G on 2026-09-23:
+  iOS keeps an existing socket on cellular after Wi-Fi came up, and back
+  again, so the tunnel sat on the wrong network until it timed out. A
+  tunnel over TCP or over a relay cannot move; it ends and is dialed
+  again. A change during a move cancels it; a move the hub does not answer
+  within 8 s ends the tunnel.
+* **Liveness on demand** (`transport.ClientTunnel`): a tunnel into which
+  10 packets went over 30 s without one coming back is probed from a new
+  socket. If the hub answers (the NAT mapping had vanished, the old socket
+  sat on a dead network), the tunnel continues there; if not, it ends
+  (`ErrCodeNoAnswer`) and is dialed again. Nothing is sent while the
+  tunnel is idle.
+* **Stateless resets** (RFC 9000 §10.3): every node keeps a key in
+  `reset.key` in its state directory and answers packets of connections it
+  does not know, after a restart, with a stateless reset. A client that
+  sends into a tunnel the hub has forgotten learns at once instead of at
+  its idle timeout.
+
 ## What it costs
 
-* **An idle phone cannot be reached from outside until it sends again.**
-  Once the NAT mapping has expired, nothing gets through: not a peer
-  dialing it over a relay, not the hub. The relay pairing waits for the
-  phone's next packet or next dial.
+* **An idle phone may be unreachable from outside for up to 2 minutes.**
+  A NAT mapping that expires before the next keep-alive lets nothing
+  through until the phone sends again: not a peer dialing it over a relay,
+  not the hub. The relay pairing waits for the phone's next packet.
 * **A phone learns of changes up to 10 minutes late:** new policies, a
   revocation, a hub list. Enforcement does not depend on this. Hubs enforce
   with their own snapshot, which they long-poll, and a revoked or expired

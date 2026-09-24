@@ -35,6 +35,7 @@ The app implements `embed.Platform`:
 | `Sign(digest)` | Signs a SHA-256 digest, ASN.1 DER signature (`SecKeyCreateSignature` with `.ecdsaSignatureDigestX962SHA256`, Android `NONEwithECDSA`). The core asks for nothing else. |
 | `KeyKind()`, `HardwareBound()` | `secure-enclave`, `android-keystore`, `android-strongbox`, … Like `hardware_bound` from a daemon this is the node's claim; an admin grants it and signs it into the binding (docs/TPM.md). |
 | `Log(level, line)` | One text line per record, without a timestamp. Level as in `log/slog`. |
+| `StatusChanged(statusJSON)` (optional, `embed.StatusNotifier`) | The node's status (the JSON of `GET /v1/status`) whenever its state, its enrollment, `login_required` or whether a hub is connected changed; one call at a time. For what the app tells the user without polling: the notification "Sign-in needed" when the session ended while the app was not open. |
 
 Changes are coalesced: bringing the overlay up, a hub advertising its
 networks and tearing down each end in one `Apply` (50 ms quiet time), so
@@ -135,7 +136,8 @@ void    bg_free(void *p);
 ```
 
 `bg_platform` holds the callbacks (`apply`, `release`, `public_key`, `sign`,
-`log`) and a `ctx` pointer. Strings the core returns are freed with `bg_free`.
+`log`, and the optional `status_changed`, NULL when the app does not
+listen) and a `ctx` pointer. Strings the core returns are freed with `bg_free`.
 Error strings a callback hands back through `char **err` are `malloc`ed by
 the app and freed by the core.
 

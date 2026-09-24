@@ -1,7 +1,7 @@
 // Developer tool, not shipped.
 //   bgtool status                 what the app would read from the daemon ($BOUNDGATE_SOCKET)
 //   bgtool snap DIR               render the panel in every state, light and dark, to PNG
-//   bgtool icon DIR               draw the app icon as DIR/BoundGate.iconset
+//   bgtool icon DIR               draw the app icon as DIR/BoundGate.iconset, and the iOS one as DIR/BoundGate-ios-1024.png
 import AppKit
 import SwiftUI
 import BoundGateKit
@@ -15,9 +15,10 @@ struct MockService: ServiceControlling {
     func openApprovalSettings() {}
 }
 
-@MainActor func png<V: View>(_ view: V, scale: CGFloat, to url: URL) throws {
+@MainActor func png<V: View>(_ view: V, scale: CGFloat, opaque: Bool = false, to url: URL) throws {
     let r = ImageRenderer(content: view)
     r.scale = scale
+    r.isOpaque = opaque // an App Store icon carries no alpha channel
     guard let cg = r.cgImage else { throw DaemonError.protocolError("render failed") }
     let rep = NSBitmapImageRep(cgImage: cg)
     try rep.representation(using: .png, properties: [:])!.write(to: url)
@@ -113,6 +114,16 @@ struct AppIcon: View {
     }
 }
 
+/// iOS app icon: the tile fills the square, iOS rounds the corners itself.
+struct IOSAppIcon: View {
+    var body: some View {
+        ZStack {
+            Theme.charcoal
+            MarkShape().stroke(Theme.accent, style: StrokeStyle(lineWidth: 57, lineCap: .round, lineJoin: .round))
+        }.frame(width: 1024, height: 1024)
+    }
+}
+
 @MainActor func icon(dir: URL) throws {
     let set = dir.appendingPathComponent("BoundGate.iconset")
     try FileManager.default.createDirectory(at: set, withIntermediateDirectories: true)
@@ -121,6 +132,8 @@ struct AppIcon: View {
         let name = scale == 1 ? "icon_\(pt)x\(pt).png" : "icon_\(pt)x\(pt)@2x.png"
         try png(AppIcon().scaleEffect(px / 1024).frame(width: px, height: px), scale: 1, to: set.appendingPathComponent(name))
     }
+    // apps/ios/App/Assets.xcassets/AppIcon.appiconset (committed; regenerate after a design change)
+    try png(IOSAppIcon(), scale: 1, opaque: true, to: dir.appendingPathComponent("BoundGate-ios-1024.png"))
 }
 
 let args = CommandLine.arguments.dropFirst()

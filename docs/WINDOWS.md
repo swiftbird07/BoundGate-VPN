@@ -118,7 +118,9 @@ The right button opens the menu, which shows:
   its name exactly), then the tray requests access.
 * Connect and Disconnect. A profile submenu when there is more than one
   profile.
-* Sign in (browser) and Sign out.
+* Sign in (browser) and Sign out. When the session ends while the tray
+  runs (24 h by default), a message box offers to sign in again, once per
+  occasion.
 * Request access, with a key comparison for the first contact: the same
   text as `boundgatectl enroll`, "No" is the default.
 * Details, closed until opened: address, hubs with protocol and bytes, the

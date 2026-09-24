@@ -35,7 +35,7 @@ type Config struct {
 	Scopes []string
 	// GroupsClaim is the ID-token claim carrying group names (default "groups").
 	GroupsClaim string
-	// SessionLifetime is how long a login is valid (default 10h). Sessions
+	// SessionLifetime is how long a login is valid (default 24h). Sessions
 	// are not tied to token lifetimes; there are no refresh tokens.
 	SessionLifetime time.Duration
 }
@@ -60,7 +60,7 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 		cfg.GroupsClaim = "groups"
 	}
 	if cfg.SessionLifetime <= 0 {
-		cfg.SessionLifetime = 10 * time.Hour
+		cfg.SessionLifetime = 24 * time.Hour
 	}
 	p, err := gooidc.NewProvider(ctx, cfg.Issuer)
 	if err != nil {

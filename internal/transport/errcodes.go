@@ -17,6 +17,9 @@ const (
 	ErrCodeShutdown quic.ApplicationErrorCode = 0x42420003
 	// ErrCodePolicy: the gateway rejected the tunnel for policy reasons.
 	ErrCodePolicy quic.ApplicationErrorCode = 0x42420004
+	// ErrCodeNoAnswer: the client gave up on a tunnel that swallowed its
+	// packets without answering (liveness, client.go). Dial again at once.
+	ErrCodeNoAnswer quic.ApplicationErrorCode = 0x42420005
 )
 
 // CloseCode extracts the application error code from a connection error, if

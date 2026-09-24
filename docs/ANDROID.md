@@ -44,7 +44,8 @@ the APK carries only the Kotlin standard library besides the app itself.
   here.
 * **Network changes:** the service follows the app's default network (the one
   under the VPN). When it changes, it tells the core (`NetworkChanged`: the
-  control channel and hub links reconnect at once) and sets it as the VPN's
+  control channel reconnects at once and the hub links move to new sockets
+  by QUIC connection migration, POWER.md) and sets it as the VPN's
   underlying network, so Android reports metering correctly.
 * **Disconnect:** `POST /v1/down`. The core closes the interface and calls
   `release`, and the service stops. If another VPN takes over or the user
@@ -54,8 +55,13 @@ the APK carries only the Kotlin standard library besides the app itself.
   was killed it starts it again (`START_STICKY`). Both mean "connect".
 * **Sign in:** the app opens the IdP's page in the browser and waits for the
   flow as the other apps do (`/v1/login`, `/v1/login/{flow}?wait=25s`).
-* **Power save** is on (POWER.md): an idle tunnel sends nothing, the
-  snapshot is polled every 10 min and after every network change.
+  When the session ends (24 h by default) the core tells the app
+  (`statusChanged`) and it posts a notification "Sign-in needed" (channel
+  "Sign-in", withdrawn once a hub is connected again); the activity asks
+  for `POST_NOTIFICATIONS` on its first start.
+* **Power save** is on (POWER.md): an idle tunnel sends a keep-alive every
+  2 min, the snapshot is polled every 10 min and after every network
+  change.
 
 ## Always-on with "Block connections without VPN"
 

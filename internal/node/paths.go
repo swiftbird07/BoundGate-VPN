@@ -406,6 +406,16 @@ func (pm *pathManager) closeIdle() {
 	}
 }
 
+// networkChanged moves the dialed paths to the new network; relayed ones
+// cannot move and end, to be dialed again on demand.
+func (pm *pathManager) networkChanged() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	for _, p := range pm.dialed {
+		pm.s.n.migrate(p.t, "peer "+p.peer.Name)
+	}
+}
+
 // closePeer ends every path with a peer (revoked, reconfigured).
 func (pm *pathManager) closePeer(id transport.DeviceID) {
 	pm.mu.Lock()
@@ -501,7 +511,7 @@ func (pm *pathManager) serve(ctx context.Context, key, via string, pc net.Packet
 	srv, err := transport.NewServer(transport.ServerConfig{
 		PacketConn: pc, Relayed: relayed,
 		TLS: transport.ServerTLSConfig(s.n.cert, s.n.holder), Lookup: s.n.holder, Template: transport.HubTemplate,
-		IdleTimeout: serverIdle, KeepAlive: -1, Logger: s.n.log,
+		IdleTimeout: serverIdle, KeepAlive: -1, Logger: s.n.log, StatelessResetKey: s.n.resetKey,
 	}, &peerService{s: s, via: via})
 	if err != nil {
 		_ = pc.Close()

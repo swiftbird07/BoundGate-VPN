@@ -131,6 +131,12 @@ remembered). Open, it shows what the daemon reports in `/v1/status`:
 | Control plane | address, protocol (`HTTP/3 (QUIC)` or `HTTP/2 (TCP fallback)`), policies and snapshot version, open and denied connections | `control`, `control_transport`, `policies`, `snapshot_version`, `flows`, `flows_denied` |
 | This Mac | device key, version | `key_kind`, `version` |
 
+When the phase turns to "sign in required" (the user session ended, 24 h by
+default; OIDC.md) the app posts a notification "Sign-in needed", once per
+occasion, and withdraws it once a hub is connected again. It asks for the
+notification permission when it starts. `bgtool` and the tests never post:
+only the app bundle has a notification center.
+
 The counters are IP packets through the tunnel, counted by the daemon per hub
 tunnel since that tunnel came up; a reconnect starts them again. A daemon
 before v0.1.5 does not count, and the section says so instead of showing zeros.

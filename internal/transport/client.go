@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -77,8 +78,15 @@ type quicClientLink struct {
 	qconn *quic.Conn
 	cc    *http3.ClientConn
 	tr    *http3.Transport
-	qt    *quic.Transport // relayed connections only
-	pc    net.PacketConn
+	relay bool // over a relay stream: the socket is not ours to replace
+
+	// The QUIC transports the connection ran on, oldest first, with their
+	// sockets. Closing a transport destroys the connections on it, so every
+	// one stays until the link ends (RFC 9000 §9: the peer may still send
+	// to the old address until it has validated the new one).
+	mu  sync.Mutex
+	qts []*quic.Transport
+	pcs []net.PacketConn
 }
 
 func (l *quicClientLink) ReadPacket(b []byte) (int, error) { return l.conn.ReadPacket(b) }
@@ -105,11 +113,58 @@ func (l *quicClientLink) Close(code quic.ApplicationErrorCode, reason string) er
 	_ = l.conn.Close()
 	err := l.qconn.CloseWithError(code, reason)
 	_ = l.tr.Close()
-	if l.qt != nil {
-		_ = l.qt.Close()
-		_ = l.pc.Close()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := range l.qts {
+		_ = l.qts[i].Close()
+		_ = l.pcs[i].Close()
 	}
+	l.qts, l.pcs = nil, nil
 	return err
+}
+
+// maxMigrations bounds the sockets a link keeps (one per migration). A link
+// that moved more often ends and is dialed again instead.
+const maxMigrations = 8
+
+// ErrNoMigration: this tunnel cannot move to another socket (it runs over
+// a relay stream or over TCP, or has moved too often); close and dial again.
+var ErrNoMigration = errors.New("transport: the tunnel cannot migrate")
+
+func (l *quicClientLink) migrate(ctx context.Context) error {
+	if l.relay {
+		return ErrNoMigration
+	}
+	l.mu.Lock()
+	n := len(l.qts)
+	l.mu.Unlock()
+	if n > maxMigrations {
+		return ErrNoMigration
+	}
+	pc, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return err
+	}
+	nt := &quic.Transport{Conn: pc}
+	p, err := l.qconn.AddPath(nt)
+	if err != nil {
+		_ = pc.Close()
+		return err
+	}
+	// From here the connection is registered on nt: closing nt would end
+	// it, so nt stays with the link whatever happens to the path.
+	l.mu.Lock()
+	l.qts, l.pcs = append(l.qts, nt), append(l.pcs, pc)
+	l.mu.Unlock()
+	if err := p.Probe(ctx); err != nil {
+		_ = p.Close()
+		return err
+	}
+	if err := p.Switch(); err != nil {
+		_ = p.Close()
+		return err
+	}
+	return nil
 }
 
 // ClientTunnel is the agent's end of an accepted tunnel.
@@ -120,7 +175,29 @@ type ClientTunnel struct {
 	cfg       ClientConfig // how this hub was dialed; a relay over TCP dials again
 
 	bytesIn, bytesOut, packetsIn, packetsOut atomic.Uint64
+
+	// Liveness on demand (no keep-alives needed): a tunnel that has taken
+	// silentWrites packets over silentFor without one packet coming back
+	// is suspect (a NAT binding that vanished, a hub that restarted without
+	// a stateless reset key, a socket left on a network that is gone) even
+	// if QUIC has not given up on it yet; see recover.
+	//
+	// quietSince is when the writes without an answer began (0: none),
+	// quietWrites how many packets went out since. Both are reset by any
+	// packet that arrives. given: a recovery is under way.
+	quietSince  atomic.Int64
+	quietWrites atomic.Int64
+	given       atomic.Bool
 }
+
+// After silentFor of sending at least silentWrites packets into a tunnel
+// without an answer the tunnel counts as dead. 30 s is above the retransmit
+// timers of TCP connections inside the tunnel, so a stall shows as a burst
+// of retransmissions before the tunnel is given up on.
+var (
+	silentFor    = 30 * time.Second
+	silentWrites = int64(10)
+)
 
 // TunnelStats counts the IP packets a tunnel carried, seen from this end.
 type TunnelStats struct {
@@ -154,20 +231,36 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 		InitialPacketSize:    PacketSize, // mtu.go
 	}
 	var qconn *quic.Conn
-	var qt *quic.Transport
+	var qt, ownQT *quic.Transport // qt: relayed; ownQT: our own UDP socket
+	var ownPC net.PacketConn
+	pc := cfg.PacketConn
 	name := "quic"
-	if cfg.PacketConn != nil {
+	if pc != nil {
 		qcfg.InitialPacketSize, qcfg.DisablePathMTUDiscovery = 1200, true
-		qt = &quic.Transport{Conn: cfg.PacketConn}
+		qt = &quic.Transport{Conn: pc}
 		name = "relay"
 		qconn, err = qt.Dial(ctx, cfg.Remote, cfg.TLS, qcfg)
 		if err != nil {
 			_ = qt.Close()
-			_ = cfg.PacketConn.Close()
+			_ = pc.Close()
 			return nil, fmt.Errorf("transport: dial %s through the relay: %w", cfg.Remote, err)
 		}
-	} else if qconn, err = quic.DialAddr(ctx, cfg.GatewayAddr, cfg.TLS, qcfg); err != nil {
-		return nil, fmt.Errorf("transport: dial %s: %w", cfg.GatewayAddr, err)
+	} else {
+		// our own socket and transport (what quic.DialAddr would make), so
+		// that Migrate can move the connection to another socket later
+		raddr, err := net.ResolveUDPAddr("udp", cfg.GatewayAddr)
+		if err != nil {
+			return nil, fmt.Errorf("transport: dial %s: %w", cfg.GatewayAddr, err)
+		}
+		if ownPC, err = net.ListenUDP("udp", nil); err != nil {
+			return nil, fmt.Errorf("transport: dial %s: %w", cfg.GatewayAddr, err)
+		}
+		ownQT = &quic.Transport{Conn: ownPC}
+		if qconn, err = ownQT.Dial(ctx, raddr, cfg.TLS, qcfg); err != nil {
+			_ = ownQT.Close()
+			_ = ownPC.Close()
+			return nil, fmt.Errorf("transport: dial %s: %w", cfg.GatewayAddr, err)
+		}
 	}
 	tr := &http3.Transport{EnableDatagrams: true}
 	cc := tr.NewClientConn(qconn)
@@ -180,7 +273,10 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 		_ = qconn.CloseWithError(0, "connect-ip failed")
 		if qt != nil {
 			_ = qt.Close()
-			_ = cfg.PacketConn.Close()
+			_ = pc.Close()
+		} else {
+			_ = ownQT.Close()
+			_ = ownPC.Close()
 		}
 		return nil, &DialError{Status: status, Err: err}
 	}
@@ -199,7 +295,11 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 	if rsp != nil {
 		dns = parseDNSHeader(rsp.Header.Get(DNSHeader))
 	}
-	return &ClientTunnel{link: &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr, qt: qt, pc: cfg.PacketConn}, transport: name, dns: dns}, nil
+	link := &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr, relay: qt != nil, qts: []*quic.Transport{qt}, pcs: []net.PacketConn{pc}}
+	if qt == nil {
+		link.qts, link.pcs = []*quic.Transport{ownQT}, []net.PacketConn{ownPC}
+	}
+	return &ClientTunnel{link: link, transport: name, dns: dns}, nil
 }
 
 // DialError reports a CONNECT-IP refusal. Status is the HTTP status if the
@@ -230,6 +330,8 @@ func (t *ClientTunnel) ReadPacket(b []byte) (int, error) {
 	if err == nil {
 		t.bytesIn.Add(uint64(n))
 		t.packetsIn.Add(1)
+		t.quietSince.Store(0)
+		t.quietWrites.Store(0)
 	}
 	return n, err
 }
@@ -240,8 +342,68 @@ func (t *ClientTunnel) WritePacket(b []byte) (icmp []byte, err error) {
 	if err == nil && icmp == nil { // an ICMP answer means the packet did not fit and was not sent
 		t.bytesOut.Add(uint64(len(b)))
 		t.packetsOut.Add(1)
+		t.noteQuietWrite()
 	}
 	return icmp, err
+}
+
+// noteQuietWrite counts a packet sent while nothing has come back, and gives
+// the tunnel up when that has gone on for silentFor with silentWrites sent.
+func (t *ClientTunnel) noteQuietWrite() {
+	now := time.Now().UnixNano()
+	since := t.quietSince.Load()
+	if since == 0 {
+		if !t.quietSince.CompareAndSwap(0, now) {
+			since = t.quietSince.Load()
+		} else {
+			since = now
+		}
+	}
+	if t.quietWrites.Add(1) < silentWrites || now-since < int64(silentFor) {
+		return
+	}
+	if t.given.CompareAndSwap(false, true) {
+		go t.recover()
+	}
+}
+
+// recover is the answer to a tunnel that swallows packets: a new socket and
+// a path probe. The hub answers the probe when it still has the connection
+// (the NAT binding of the old socket vanished, or the old socket sits on a
+// network that is gone), and the tunnel goes on there without anyone
+// noticing. No answer within a few seconds, or a tunnel that cannot move,
+// ends the tunnel with ErrCodeNoAnswer; the caller dials again.
+//
+// A tunnel that only ever carries packets one way (a sender nothing answers)
+// is probed every silentFor and, after maxMigrations, dialed again.
+func (t *ClientTunnel) recover() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := t.Migrate(ctx); err != nil {
+		_ = t.link.Close(ErrCodeNoAnswer, "no answer from the hub: "+err.Error())
+		return
+	}
+	t.quietSince.Store(0)
+	t.quietWrites.Store(0)
+	t.given.Store(false)
+}
+
+// Migrate moves the tunnel's QUIC connection onto a new UDP socket, after
+// the device changed networks: the old socket may sit on an interface that
+// is gone, or that the system keeps for it while all other traffic moved
+// elsewhere (an iPhone keeps a socket on cellular after Wi-Fi came up). The
+// hub sees the new address once the path is validated and answers there;
+// the tunnel, its address, routes and flows continue. Returns ErrNoMigration
+// for tunnels that cannot move (over a relay, over TCP, moved too often):
+// close and dial again instead. Any other error means the hub could not be
+// reached on the new socket within ctx; the connection is still on its old
+// path then.
+func (t *ClientTunnel) Migrate(ctx context.Context) error {
+	m, ok := t.link.(interface{ migrate(context.Context) error })
+	if !ok {
+		return ErrNoMigration
+	}
+	return m.migrate(ctx)
 }
 
 // LocalPrefixes returns the addresses the gateway assigned.
@@ -262,3 +424,10 @@ func (t *ClientTunnel) Err() error { return t.link.Err() }
 
 // Close ends the tunnel cleanly.
 func (t *ClientTunnel) Close() error { return t.link.Close(0, "client closed") }
+
+// Abandon ends a tunnel this side no longer trusts to carry packets (it did
+// not follow a network change): ErrCodeNoAnswer, so that the owner dials
+// again at once.
+func (t *ClientTunnel) Abandon(reason string) error {
+	return t.link.Close(ErrCodeNoAnswer, reason)
+}

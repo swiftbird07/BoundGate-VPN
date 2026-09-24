@@ -28,7 +28,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *v, void *reserved) {
 
 typedef struct jplatform {
 	jobject obj; // global reference to the Core.Platform
-	jmethodID apply, release, public_key, sign, log;
+	jmethodID apply, release, public_key, sign, log, status_changed;
 	int64_t engine;
 	struct jplatform *next;
 } jplatform;
@@ -174,6 +174,20 @@ static void cb_log(void *ctx, int32_t level, const char *line) {
 	detach(attached);
 }
 
+static void cb_status_changed(void *ctx, const char *status) {
+	jplatform *p = ctx;
+	int attached;
+	JNIEnv *env = attach(&attached);
+	if (!env) return;
+	jstring s = jstr(env, status);
+	if (s) {
+		(*env)->CallVoidMethod(env, p->obj, p->status_changed, s);
+		(*env)->DeleteLocalRef(env, s);
+	}
+	caught(env, NULL);
+	detach(attached);
+}
+
 static void throw_state(JNIEnv *env, const char *msg) {
 	jclass c = (*env)->FindClass(env, "java/lang/IllegalStateException");
 	if (c) (*env)->ThrowNew(env, c, msg);
@@ -190,6 +204,7 @@ JNIEXPORT jlong JNICALL Java_com_net407_boundgate_Core_start(JNIEnv *env, jclass
 	p->public_key = (*env)->GetMethodID(env, pc, "publicKey", "()[B");
 	p->sign = (*env)->GetMethodID(env, pc, "sign", "([B)[B");
 	p->log = (*env)->GetMethodID(env, pc, "log", "(ILjava/lang/String;)V");
+	p->status_changed = (*env)->GetMethodID(env, pc, "statusChanged", "(Ljava/lang/String;)V");
 	(*env)->DeleteLocalRef(env, pc);
 	if ((*env)->ExceptionCheck(env)) { free(p); return 0; } // NoSuchMethodError stays pending
 	p->obj = (*env)->NewGlobalRef(env, platform);
@@ -202,6 +217,7 @@ JNIEXPORT jlong JNICALL Java_com_net407_boundgate_Core_start(JNIEnv *env, jclass
 	bg_platform bp = {
 		.ctx = p, .apply = cb_apply, .release = cb_release, .public_key = cb_public_key,
 		.sign = cb_sign, .log = cb_log, .key_kind = kind, .hardware_bound = hardwareBound ? 1 : 0,
+		.status_changed = cb_status_changed,
 	};
 	char *err = NULL;
 	int64_t h = bg_start(cfg, &bp, &err);

@@ -2,6 +2,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import UserNotifications
 import BoundGateKit
 
 /// What the panel shows, derived from the service state and the daemon status.
@@ -38,6 +39,7 @@ public final class AppModel: ObservableObject {
     let client: DaemonClient
     let installer: ServiceControlling
     private var timer: Timer?
+    private var lastPhase: Phase?
 
     public init(client: DaemonClient = DaemonClient(), installer: ServiceControlling = LaunchDaemonService()) {
         self.client = client
@@ -79,8 +81,18 @@ public final class AppModel: ObservableObject {
     // MARK: polling
 
     public func start() {
+        SignInNotice.requestPermission()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in Task { @MainActor in self?.refresh() } }
+    }
+
+    /// The session ended (24 h by default) while nobody looked at the menu
+    /// bar: say so once, when the phase turns to loginRequired.
+    private func noticePhase() {
+        let now = phase
+        defer { lastPhase = now }
+        guard now != lastPhase else { return }
+        if now == .loginRequired { SignInNotice.show() } else { SignInNotice.clear() }
     }
 
     public func refresh() {
@@ -100,6 +112,7 @@ public final class AppModel: ObservableObject {
                 self.lastTraffic = now
                 if !names.isEmpty || self.status != nil { self.profiles = names }
                 if self.status != nil { self.pollUpdate() }
+                self.noticePhase()
             }
         }
     }
@@ -312,6 +325,30 @@ public final class AppModel: ObservableObject {
                 self.refresh()
             }
         }
+    }
+}
+/// A user notification "Sign-in needed". Only from the app bundle: the
+/// notification center has no home in a bare executable (bgtool, tests).
+enum SignInNotice {
+    private static var available: Bool { Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app" }
+
+    static func requestPermission() {
+        guard available else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    static func show() {
+        guard available else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Sign-in needed"
+        content.body = "Your BoundGate session has ended. Sign in again from the menu bar."
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "sign-in", content: content, trigger: nil))
+    }
+
+    static func clear() {
+        guard available else { return }
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["sign-in"])
     }
 }
 #endif

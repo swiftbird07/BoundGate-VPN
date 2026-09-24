@@ -9,6 +9,13 @@ protocol CorePlatform: AnyObject {
     func apply(settingsJSON: String) throws -> Int32
     func releaseTunnel()
     func log(level: Int32, line: String)
+    /// The node's status (JSON of GET /v1/status) whenever its state, its
+    /// enrollment, the need for a sign-in or a hub connection changed.
+    func statusChanged(statusJSON: String)
+}
+
+extension CorePlatform {
+    func statusChanged(statusJSON: String) {}
 }
 
 /// The node from libboundgate (docs/EMBED.md). It answers the daemon's API,
@@ -69,6 +76,9 @@ final class CoreEngine: NodeTransport, @unchecked Sendable {
         }
         p.log = { ctx, level, line in
             Unmanaged<Context>.fromOpaque(ctx!).takeUnretainedValue().platform?.log(level: level, line: String(cString: line!))
+        }
+        p.status_changed = { ctx, status in
+            Unmanaged<Context>.fromOpaque(ctx!).takeUnretainedValue().platform?.statusChanged(statusJSON: String(cString: status!))
         }
         p.hardware_bound = key.hardwareBound ? 1 : 0
         var err: UnsafeMutablePointer<CChar>?

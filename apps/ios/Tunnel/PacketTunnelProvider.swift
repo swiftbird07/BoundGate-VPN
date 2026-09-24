@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import NetworkExtension
+import UserNotifications
 import os
 import BoundGateCore
 
@@ -17,6 +18,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     private var stopping = false
     /// what was last handed to the system, and the utun it gave for it
     private var applied: (json: String, fd: Int32)?
+    /// a "sign-in needed" notification is up
+    private var signInShown = false
 
     // MARK: lifecycle
 
@@ -140,6 +143,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     }
 
     // MARK: CorePlatform
+
+    /// The user session ended (24 h by default) while the phone was in a
+    /// pocket: the tunnel stays up and carries nothing until the person
+    /// signs in again in the app. Tell them, once per occasion; the app
+    /// asked for the permission on its first start.
+    func statusChanged(statusJSON: String) {
+        guard let s = try? JSONSerialization.jsonObject(with: Data(statusJSON.utf8)) as? [String: Any] else { return }
+        let hubs = s["hubs"] as? [[String: Any]] ?? []
+        let connected = hubs.contains { $0["state"] as? String == "connected" }
+        let needsSignIn = (s["login_required"] as? Bool ?? false) && !connected
+        lock.lock(); let shown = signInShown; signInShown = needsSignIn; lock.unlock()
+        let center = UNUserNotificationCenter.current()
+        if needsSignIn, !shown {
+            TunnelLog.shared.write("tunnel: sign-in needed, notifying")
+            let content = UNMutableNotificationContent()
+            content.title = "Sign-in needed"
+            content.body = "Your BoundGate session has ended. Open BoundGate to sign in again."
+            content.sound = .default
+            center.add(UNNotificationRequest(identifier: "sign-in", content: content, trigger: nil)) { error in
+                if let error { TunnelLog.shared.write("tunnel: notification: \(error.localizedDescription)") }
+            }
+        } else if !needsSignIn, shown {
+            center.removeDeliveredNotifications(withIdentifiers: ["sign-in"])
+        }
+    }
 
     func apply(settingsJSON: String) throws -> Int32 {
         // The node hands its settings over again after every network change

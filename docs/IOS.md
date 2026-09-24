@@ -76,10 +76,21 @@ creates the profiles with automatic signing:
 * **Disconnect.** The tunnel stops and releases the lock. The app takes its
   engine back and retries while the lock is still held.
 * **Wi-Fi ↔ cellular.** `NWPathMonitor` calls `bg_network_changed` when
-  the network below changes (not on every quality estimate).
+  the network below changes (not on every quality estimate); the tunnels
+  then move to new sockets by QUIC connection migration (POWER.md). iOS
+  keeps an existing socket on the interface it was opened on, so without
+  the move a tunnel dialed on cellular stayed there after Wi-Fi came up,
+  and vice versa (the phone showed "not connected" on 5G, 2026-09-23).
   `sleep()`/`wake()` do nothing: iOS calls them up to 200 times an hour with
   the screen off (POWER.md).
-* **Power save** is on (POWER.md): no keep-alives, snapshot every 10 min.
+* **Power save** is on (POWER.md): a keep-alive every 2 min, snapshot every
+  10 min.
+* **Sign-in needed.** The user session ends after 24 h (`session_lifetime`,
+  OIDC.md); the tunnel stays up and carries nothing until the person signs
+  in again. The extension hears of it from the core (`status_changed`) and
+  posts a notification "Sign-in needed" (once per occasion, withdrawn when
+  a hub is connected again); the app asks for the notification permission
+  on its first start.
 * **Names.** Once the tunnel's DNS settings are in effect, the system
   resolver answers the extension's own lookups with "no such host" (seen on
   iOS 26 with the control plane's name, two hours into a tunnel: the tunnel

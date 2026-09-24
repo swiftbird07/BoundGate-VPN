@@ -16,6 +16,7 @@ static void bg_call_release(bg_platform *p) { p->release(p->ctx); }
 static int32_t bg_call_public_key(bg_platform *p, uint8_t *out, int32_t cap, char **err) { return p->public_key(p->ctx, out, cap, err); }
 static int32_t bg_call_sign(bg_platform *p, const uint8_t *d, int32_t n, uint8_t *out, int32_t cap, char **err) { return p->sign(p->ctx, d, n, out, cap, err); }
 static void bg_call_log(bg_platform *p, int32_t level, const char *line) { if (p->log) p->log(p->ctx, level, line); }
+static void bg_call_status_changed(bg_platform *p, const char *status) { if (p->status_changed) p->status_changed(p->ctx, status); }
 */
 import "C"
 
@@ -105,6 +106,17 @@ func (c *cPlatform) Log(level int, line string) {
 	cs := C.CString(line)
 	defer C.free(unsafe.Pointer(cs))
 	C.bg_call_log(c.p, C.int32_t(level), cs)
+}
+
+// StatusChanged implements embed.StatusNotifier; an app without the
+// callback hears nothing.
+func (c *cPlatform) StatusChanged(statusJSON string) {
+	if c.p.status_changed == nil {
+		return
+	}
+	cs := C.CString(statusJSON)
+	defer C.free(unsafe.Pointer(cs))
+	C.bg_call_status_changed(c.p, cs)
 }
 
 func setErr(err **C.char, e error) {

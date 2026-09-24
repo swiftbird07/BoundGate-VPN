@@ -113,6 +113,18 @@ func (m *spokeManager) retryNow(session bool) {
 	}
 }
 
+// networkChanged moves every hub tunnel to the network the device is on
+// now (Node.migrate); one that cannot move ends and is dialed again.
+func (m *spokeManager) networkChanged() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, l := range m.links {
+		if l.tunnel != nil {
+			m.s.n.migrate(l.tunnel, "hub "+l.hub.Name)
+		}
+	}
+}
+
 // loginRequired reports whether any hub refused the node for lack of a
 // user session.
 func (m *spokeManager) loginRequired() bool {
@@ -232,6 +244,8 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 				reason = "hub shutting down"
 			case transport.ErrCodePolicy:
 				reason = "hub policy: " + t.Err().Error()
+			case transport.ErrCodeNoAnswer:
+				reason = "no answer from the hub: " + t.Err().Error()
 			default:
 				reason = fmt.Sprintf("hub closed the tunnel (code %d)", code)
 			}

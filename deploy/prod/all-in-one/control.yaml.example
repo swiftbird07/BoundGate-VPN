@@ -29,7 +29,7 @@ oidc:                              # Authentik: docs/OIDC.md
   client_id: boundgate
   client_secret_file: /var/lib/boundgate/oidc.secret     # 0600, one line
   redirect_url: https://bg.example.com/api/v1/oidc/callback
-  session_lifetime: 12h            # user sessions of interactive nodes
+  session_lifetime: 24h            # user sessions of interactive nodes (default 24h)
 admin:
   group: admins                    # OIDC group of administrators
   session_lifetime: 1h

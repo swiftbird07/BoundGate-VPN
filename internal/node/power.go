@@ -10,11 +10,11 @@ import "time"
 //
 // With power save a quiet node sends nothing:
 //
-//   - hub tunnels without keep-alives; a tunnel nothing uses ends after
-//     quietIdle and is dialed again. A NAT binding that expired in between
-//     is replaced by the next packet (QUIC follows the new address), but
-//     until then nothing reaches the phone from outside: peers that dial it
-//     wait for its next packet or the next dial.
+//   - hub tunnels with a keep-alive every quietKeepAlive instead of every
+//     10 s; a tunnel nothing uses ends after quietIdle and is dialed again.
+//     A NAT binding that expired in between is replaced by the next packet
+//     (QUIC follows the new address), but until then nothing reaches the
+//     phone from outside: peers that dial it wait for its next packet.
 //   - the snapshot polled every quietPoll, and at once after a network
 //     change or a sign-in, instead of a long-poll that is never quiet;
 //     hubs enforce with their own snapshot, so a phone that learns a change
@@ -41,11 +41,18 @@ const loginRetry = 5 * time.Minute
 // binding alive when it wants to be reached.
 const serverIdle = quietIdle
 
+// quietKeepAlive is the keep-alive of a tunnel in power save: seldom enough
+// for the radio to sleep between them, often enough that a NAT binding
+// mostly survives (most keep UDP bindings for 2 minutes or more), so that
+// what the hub sends unasked (a push through the tunnel, a peer's relay
+// pairing) usually gets through.
+const quietKeepAlive = 2 * time.Minute
+
 // tunnelTimers are the idle timeout and keep-alive of the tunnels this node
-// dials (to hubs and peers); a negative keep-alive sends none.
+// dials (to hubs and peers).
 func (n *Node) tunnelTimers() (idle, keepAlive time.Duration) {
 	if n.cfg.PowerSave {
-		return quietIdle, -1
+		return quietIdle, quietKeepAlive
 	}
 	return 30 * time.Second, 10 * time.Second
 }

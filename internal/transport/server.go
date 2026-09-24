@@ -199,6 +199,12 @@ type ServerConfig struct {
 	// minimum packet size and do not probe for more: the carrier's datagrams
 	// are not certain to hold larger ones. Tunnels report transport "relay".
 	Relayed bool
+	// StatelessResetKey lets this server answer packets of connections it
+	// does not know (after a restart) with a stateless reset (RFC 9000
+	// §10.3), so a client that keeps sending into a dead tunnel learns at
+	// once instead of at its idle timeout. Must stay the same across
+	// restarts to be of use; nil sends none.
+	StatelessResetKey *quic.StatelessResetKey
 }
 
 // Server terminates QUIC + mTLS + CONNECT-IP for approved devices.
@@ -304,7 +310,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			return err
 		}
 	}
-	s.qt = &quic.Transport{Conn: s.pconn, ConnectionIDGenerator: s.cfg.ConnIDGenerator}
+	s.qt = &quic.Transport{Conn: s.pconn, ConnectionIDGenerator: s.cfg.ConnIDGenerator, StatelessResetKey: s.cfg.StatelessResetKey}
 	ln, err := s.qt.ListenEarly(http3.ConfigureTLSConfig(s.cfg.TLS), s.h3.QUICConfig)
 	if err != nil {
 		return fmt.Errorf("transport: listen: %w", err)

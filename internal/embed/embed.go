@@ -12,6 +12,7 @@ package embed
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -79,6 +80,15 @@ type Platform interface {
 	// Log receives one line per record; level as in log/slog (-4 debug,
 	// 0 info, 4 warn, 8 error).
 	Log(level int, line string)
+}
+
+// StatusNotifier is what a Platform may also provide: StatusChanged gets
+// the node's status (the JSON of GET /v1/status) whenever its state, its
+// enrollment, whether a sign-in is needed or whether a hub is connected
+// changed, so that the app can tell the user without polling (a
+// notification when a sign-in is needed while the app is not open).
+type StatusNotifier interface {
+	StatusChanged(statusJSON string)
 }
 
 // Key is the device key, held by the platform.
@@ -180,6 +190,21 @@ func Start(cfg Config, p Platform) (*Engine, error) {
 
 func (e *Engine) settingsPath() string { return filepath.Join(e.cfg.StateDir, "settings.json") }
 
+// onStatus is the node's status callback for a platform that listens.
+func (e *Engine) onStatus() func(node.Status) {
+	sn, ok := e.p.(StatusNotifier)
+	if !ok {
+		return nil
+	}
+	return func(s node.Status) {
+		b, err := json.Marshal(s)
+		if err != nil {
+			return
+		}
+		sn.StatusChanged(string(b))
+	}
+}
+
 // setup serves the API of a node without a control plane.
 func (e *Engine) setup() {
 	spki, _ := devicekey.HashPublicKey(e.key.Public())
@@ -226,6 +251,7 @@ func (e *Engine) startNode(s ipc.Settings) error {
 		Net:       e.net,
 		Platform:  e.cfg.Platform,
 		PowerSave: e.cfg.powerSave(),
+		OnStatus:  e.onStatus(),
 		Log:       e.log,
 		FlowLog:   e.flow,
 	})

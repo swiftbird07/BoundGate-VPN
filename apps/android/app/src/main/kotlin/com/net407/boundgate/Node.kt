@@ -1,6 +1,11 @@
 package com.net407.boundgate
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
@@ -94,6 +99,37 @@ class Node(private val context: Context) : Core.Platform {
 
     override fun sign(digest: ByteArray): ByteArray = key!!.sign(digest)
 
+    /**
+     * The session ended (24 h by default) while the phone was in a pocket:
+     * the tunnel stays up and carries nothing until the person signs in
+     * again. Tell them once per occasion (channel "attention"; the activity
+     * asks for the permission on its first start).
+     */
+    override fun statusChanged(statusJson: String) {
+        val s = try { JSONObject(statusJson) } catch (e: Exception) { return }
+        val hubs = s.optJSONArray("hubs")
+        var connected = false
+        for (i in 0 until (hubs?.length() ?: 0)) if (hubs!!.getJSONObject(i).optString("state") == "connected") connected = true
+        val needsSignIn = s.optBoolean("login_required") && !connected
+        val nm = context.getSystemService(NotificationManager::class.java)
+        if (needsSignIn && !signInShown) {
+            nm.createNotificationChannel(NotificationChannel(ATTENTION, "Sign-in", NotificationManager.IMPORTANCE_HIGH))
+            val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val n = Notification.Builder(context, ATTENTION)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Sign-in needed")
+                .setContentText("Your BoundGate session has ended. Tap to sign in again.")
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            try { nm.notify(SIGN_IN_ID, n) } catch (e: SecurityException) { Log.w(TAG, "no notification: ${e.message}") }
+        } else if (!needsSignIn && signInShown) {
+            nm.cancel(SIGN_IN_ID)
+        }
+        signInShown = needsSignIn
+    }
+    @Volatile private var signInShown = false
+
     override fun log(level: Int, line: String) {
         val priority = when {
             level >= 8 -> Log.ERROR
@@ -106,5 +142,7 @@ class Node(private val context: Context) : Core.Platform {
 
     companion object {
         const val TAG = "BoundGate"
+        private const val ATTENTION = "attention"
+        private const val SIGN_IN_ID = 2
     }
 }
