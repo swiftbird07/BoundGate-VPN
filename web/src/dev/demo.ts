@@ -89,9 +89,9 @@ const policies: T.Policy[] = [
 ];
 
 const lists: T.AclList[] = [
-  { id: 'l1', name: 'ad-domains', kind: 'dns', description: 'Trackers and ad networks', entries: ['*.ads.example', '*.doubleclick.example', 'tracker.example'], used_by: ['block-ad-domains'], created_at: ago(86400 * 3), created_by: 'ada', updated_at: ago(3600 * 5), updated_by: 'ada' },
+  { id: 'l1', name: 'ad-domains', kind: 'dns', description: 'Trackers and ad networks', entries: ['*.ads.example', '*.doubleclick.example', 'tracker.example'], used_by: ['block-ad-domains'], created_at: ago(86400 * 3), created_by: 'ada', updated_at: ago(3600 * 5), updated_by: 'source', source_url: 'https://git.example.com/acl/raw/branch/main/ad-domains.list', source_interval: 900, source_fetched_at: ago(240) },
   { id: 'l2', name: 'allowed-sites', kind: 'sni', description: 'What the NAS may talk to', entries: ['myip.wtf', '*.github.com'], used_by: [], created_at: ago(86400), created_by: 'martin', updated_at: ago(86400), updated_by: 'martin' },
-  { id: 'l3', name: 'blocked-hosts', kind: 'ip', description: 'Printers and the old NAS', entries: ['192.168.178.99/32', '10.60.0.128/25'], used_by: [], created_at: ago(86400 * 2), created_by: 'martin', updated_at: ago(86400 * 2), updated_by: 'martin' },
+  { id: 'l3', name: 'blocked-hosts', kind: 'ip', description: 'Printers and the old NAS', entries: ['192.168.178.99/32', '10.60.0.128/25'], used_by: [], created_at: ago(86400 * 2), created_by: 'martin', updated_at: ago(86400 * 2), updated_by: 'martin', source_url: 'https://git.example.com/acl/raw/branch/main/blocked-hosts.list', source_interval: 3600, source_header: 'Private-Token', source_secret_set: true, source_fetched_at: ago(1800), source_status: 'the source answered HTTP 403' },
 ];
 
 let seq = 9000;
@@ -155,7 +155,21 @@ function answer(method: string, path: string, query: URLSearchParams, body: any,
   if (path === '/admin/sessions') return sessions.filter((s) => query.get('all') || !s.ended_at);
   if (path === '/admin/policies') return method === 'GET' ? policies : { ...policies[0], ...body, id: 'p' + (policies.length + 1) };
   if (path === '/admin/lists') return method === 'GET' ? lists : { ...lists[0], ...body, id: 'l' + (lists.length + 1), used_by: [] };
-  if (path.startsWith('/admin/lists/')) return method === 'DELETE' ? undefined : { ...(lists.find((l) => path.endsWith(l.id)) ?? lists[0]), ...(body ?? {}) };
+  const ml = path.match(/^\/admin\/lists\/([^/]+)(?:\/(export|import|fetch))?$/);
+  if (ml) {
+    const l = lists.find((x) => x.id === ml[1]) ?? lists[0];
+    if (ml[2] === 'export') return `# BoundGate list "${l.name}" (${l.kind})\n# ${l.entries.length} entries\n\n${l.entries.join('\n')}\n`;
+    if (ml[2] === 'import') {
+      const add = query.get('mode') === 'add';
+      const found = String(body ?? '').split(/\r?\n/).map((x) => x.replace(/#.*/, '').trim()).filter(Boolean);
+      l.entries = [...new Set(add ? [...l.entries, ...found] : found)].sort();
+      l.updated_at = ago(0); l.updated_by = 'martin';
+      return l;
+    }
+    if (ml[2] === 'fetch') { l.source_fetched_at = ago(0); l.source_status = ''; l.updated_at = ago(0); l.updated_by = 'source'; return l; }
+    if (method === 'DELETE') return undefined;
+    return Object.assign(l, body ?? {});
+  }
   if (path.startsWith('/admin/policies/validate')) return { ok: true };
   if (path.startsWith('/admin/policies/')) return { ...(policies.find((p) => path.endsWith(p.id)) ?? policies[0]), ...(body ?? {}) };
   if (path === '/admin/acl/evaluate') {
@@ -189,7 +203,7 @@ export function installDemo(): boolean {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (url.pathname.endsWith('/auth/logout')) { mode = 'login'; sessionStorage.setItem(KEY, mode); }
     let body: unknown;
-    try { body = init?.body ? JSON.parse(String(init.body)) : undefined; } catch { /* not json */ }
+    try { body = init?.body ? JSON.parse(String(init.body)) : undefined; } catch { body = String(init?.body); /* a list import is plain text */ }
     await new Promise((r) => setTimeout(r, 120));
     const data = answer(method, url.pathname.slice('/api/v1'.length), url.searchParams, body, mode);
     return data === undefined ? new Response(null, { status: 204 }) : new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
