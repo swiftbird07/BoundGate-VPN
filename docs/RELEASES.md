@@ -126,7 +126,34 @@ sha256sum -c <(jq -r '.assets[] | "\(.sha256)  \(.name)"' manifest.json)
    `GHCR_TOKEN` (a *classic* GitHub token with `write:packages`; fine-grained
    ones cannot push packages) for the public image; `RELEASE_TOKEN`
    (write:repository) only if the job's own token may not create releases.
-5. **The GitHub mirror**:
+   Keep what each of them reaches small: `REGISTRY_TOKEN` of a bot account
+   that is a member of this repository's owner and nothing else, `GHCR_TOKEN`
+   of a GitHub account that owns the `boundgate` package and no other
+   repository or package (a classic token reaches everything its account
+   can), no `read:org`/`delete:packages`/`repo` scopes, an expiry date, and a
+   note in the calendar to renew it.
+5. **Who can push a tag is who can ship code.** A `v*` tag starts
+   `release.yml` with the push tokens of both registries, and the workflow
+   files on the tagged commit decide what it does with them; the signature in
+   step 4 protects nodes that update through `update.sh` or the app, not
+   hosts that follow a tag, nor the registry itself. In Gitea (repository >
+   Settings > Branches and Tags):
+   * **protected tags** `v*`: allowed to push only the maintainer (the account
+     `make release` pushes with); nobody else, not "all writers";
+   * **protected branch** `main`: no force push, no deletion, pushes only
+     through reviewed merges or by the maintainer, and "Protected file
+     patterns" `.gitea/workflows/**` so a change to CI needs that same
+     approval. Everything that reaches `main` is built by `image.yml` with the
+     registry token;
+   * Actions from forks and pull requests: no secrets (Gitea's default; keep
+     it).
+
+   The actions the workflows use are pinned to a commit, the tag only in a
+   comment; update them by resolving the new tag to its commit
+   (`git ls-remote https://github.com/<owner>/<action> refs/tags/<tag>`, and
+   `^{}` for an annotated tag), after the release is at least 14 days old
+   (the project's cooldown), and review the diff between the two commits.
+6. **The GitHub mirror**:
    * a public repository `swiftbird07/BoundGate-VPN`, empty, with Actions
      switched off (Settings > Actions > "Disable actions"): nothing is to be
      built there;
@@ -143,7 +170,7 @@ sha256sum -c <(jq -r '.assets[] | "\(.sha256)  \(.name)"' manifest.json)
 
    `NO_GITHUB=1 make release` leaves the mirror out; updaters that read GitHub
    then do not see that release.
-6. **A private Gitea as the source** (`source: gitea`): an instance that
+7. **A private Gitea as the source** (`source: gitea`): an instance that
    answers visitors with "Only signed in user is allowed to call APIs"
    (`REQUIRE_SIGNIN_VIEW`, as this project's does) needs a read token
    (`read:repository`) on every updater: `update.token` in the state directory

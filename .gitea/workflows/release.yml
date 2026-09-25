@@ -21,6 +21,10 @@
 #                    tokens cannot push packages)
 #   RELEASE_TOKEN    optional: access token with write:repository, if the
 #                    job's own token may not create releases
+# Whoever can push a v* tag starts this job with these secrets, and whoever can
+# change .gitea/workflows on the tagged commit decides what it does with them:
+# protect v* tags and main (docs/RELEASES.md, "Setting it up"), and give each
+# token one package or repository, not an account.
 name: release
 on:
   push:
@@ -37,16 +41,27 @@ env:
   PUBLIC_IMAGE: ghcr.io/swiftbird07/boundgate
   VPKG: gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 
+# Every action is pinned by the commit it was reviewed at (the tag in the
+# comment): a tag can be moved by whoever controls the action's repository,
+# and this job holds the tokens that push the image every server pulls.
+# The job's own token may create the draft release and nothing else.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write     # the draft release (unless RELEASE_TOKEN is set)
+      packages: write     # the image in this Gitea's registry (unless REGISTRY_TOKEN is set)
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # no npm cache either: a release takes nothing from what earlier jobs left on the runner
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - name: admin SPA (embedded into boundgate-control)
         run: cd web && npm ci --no-audit --no-fund && npm run build
       # Exactly the toolchain of go.mod's `toolchain` line (the `go` line is only
@@ -55,7 +70,7 @@ jobs:
       # that fixes or leaves its vulnerabilities. The next step refuses a drift.
       # No cache: a build cache on a shared runner would feed this build
       # objects that nothing here checks.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26.7'
           check-latest: false
@@ -95,27 +110,36 @@ jobs:
             CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath -ldflags "$LD -H=windowsgui" -o bin/windows_$arch/ ./cmd/boundgate-tray
             deploy/windows/zip.sh "$V" $arch bin/windows_$arch dist/release
           done
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      # binfmt and BuildKit run privileged on the runner host: pinned by digest,
+      # like everything else that ends up in or builds the image
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
         with:
-          name: boundgate
-          keep-state: true
+          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+      # A builder of its own for this run, removed at the end (cleanup): the
+      # runner host is shared with another project, and a builder that keeps
+      # its state there would hand this release whatever that cache holds.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          keep-state: false
+          cleanup: true
           driver-opts: |
+            image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
             memory=1g
             memory-swap=1536m
             cpuset-cpus=2-4
             cpu-shares=256
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: gitlab.net407.com
           username: ${{ gitea.actor }}
           password: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ secrets.GHCR_USER }}
           password: ${{ secrets.GHCR_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         id: image
         with:
           context: .
