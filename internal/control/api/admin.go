@@ -92,40 +92,41 @@ func (h *Handlers) AdminMux() http.Handler {
 
 // NodeView is the admin-facing node representation.
 type NodeView struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Hostname          string            `json:"hostname,omitempty"`
-	Platform          string            `json:"platform,omitempty"`
-	KeyKind           string            `json:"key_kind,omitempty"`
-	HardwareBound     bool              `json:"hardware_bound"`   // granted and signed
-	HardwareClaimed   bool              `json:"hardware_claimed"` // reported by the node, unverified
-	SPKI              string            `json:"spki"`
-	Fingerprint       string            `json:"fingerprint"`
-	Status            string            `json:"status"`
-	Kind              registry.Kind     `json:"kind"`
-	RequestedRoles    []registry.Role   `json:"requested_roles"`
-	RequestedPrefixes []registry.Prefix `json:"requested_prefixes"`
-	Roles             []registry.Role   `json:"roles"`
-	Prefixes          []registry.Prefix `json:"prefixes"`
-	OverlayIP         string            `json:"overlay_ip,omitempty"`
-	PublicAddr        string            `json:"public_addr,omitempty"`
-	Tags              []string          `json:"tags"` // the administrator's labels; part of the signed binding
-	KeyVersion        int               `json:"key_version"`
-	Signed            bool              `json:"signed"`
-	SignedBy          string            `json:"signed_by,omitempty"`
-	SignedAt          *time.Time        `json:"signed_at,omitempty"`
-	RequestedAt       time.Time         `json:"requested_at"`
-	RequestIP         string            `json:"request_ip,omitempty"`
-	ConfirmedAt       *time.Time        `json:"confirmed_at,omitempty"`
-	ConfirmedBy       string            `json:"confirmed_by,omitempty"`
-	ApprovedAt        *time.Time        `json:"approved_at,omitempty"`
-	ApprovedBy        string            `json:"approved_by,omitempty"`
-	RevokedAt         *time.Time        `json:"revoked_at,omitempty"`
-	RevokedBy         string            `json:"revoked_by,omitempty"`
-	LastSeenAt        *time.Time        `json:"last_seen_at,omitempty"`
-	SnapshotVersion   uint64            `json:"snapshot_version"`
-	ActiveTunnels     int               `json:"active_tunnels"`
-	Attrs             map[string]string `json:"attrs,omitempty"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Hostname            string            `json:"hostname,omitempty"`
+	Platform            string            `json:"platform,omitempty"`
+	KeyKind             string            `json:"key_kind,omitempty"`
+	HardwareBound       bool              `json:"hardware_bound"`   // granted and signed
+	HardwareClaimed     bool              `json:"hardware_claimed"` // reported by the node, unverified
+	SPKI                string            `json:"spki"`
+	Fingerprint         string            `json:"fingerprint"`
+	Status              string            `json:"status"`
+	Kind                registry.Kind     `json:"kind"`
+	RequestedRoles      []registry.Role   `json:"requested_roles"`
+	RequestedPrefixes   []registry.Prefix `json:"requested_prefixes"`
+	Roles               []registry.Role   `json:"roles"`
+	Prefixes            []registry.Prefix `json:"prefixes"`
+	OverlayIP           string            `json:"overlay_ip,omitempty"`
+	PublicAddr          string            `json:"public_addr,omitempty"`           // set by an admin; what peers dial
+	RequestedPublicAddr string            `json:"requested_public_addr,omitempty"` // what the node asked for, not in effect
+	Tags                []string          `json:"tags"`                            // the administrator's labels; part of the signed binding
+	KeyVersion          int               `json:"key_version"`
+	Signed              bool              `json:"signed"`
+	SignedBy            string            `json:"signed_by,omitempty"`
+	SignedAt            *time.Time        `json:"signed_at,omitempty"`
+	RequestedAt         time.Time         `json:"requested_at"`
+	RequestIP           string            `json:"request_ip,omitempty"`
+	ConfirmedAt         *time.Time        `json:"confirmed_at,omitempty"`
+	ConfirmedBy         string            `json:"confirmed_by,omitempty"`
+	ApprovedAt          *time.Time        `json:"approved_at,omitempty"`
+	ApprovedBy          string            `json:"approved_by,omitempty"`
+	RevokedAt           *time.Time        `json:"revoked_at,omitempty"`
+	RevokedBy           string            `json:"revoked_by,omitempty"`
+	LastSeenAt          *time.Time        `json:"last_seen_at,omitempty"`
+	SnapshotVersion     uint64            `json:"snapshot_version"`
+	ActiveTunnels       int               `json:"active_tunnels"`
+	Attrs               map[string]string `json:"attrs,omitempty"`
 }
 
 func nodeView(n db.Node) NodeView {
@@ -133,7 +134,7 @@ func nodeView(n db.Node) NodeView {
 		ID: n.ID, Name: n.Name, Hostname: n.Hostname, Platform: n.Platform, KeyKind: n.KeyKind,
 		HardwareBound: n.HardwareBound, HardwareClaimed: n.HardwareClaimed, SPKI: n.SPKI.String(), Fingerprint: n.SPKI.Fingerprint(),
 		Status: n.Status, Kind: n.Kind, RequestedRoles: orEmptyRoles(n.RequestedRoles), RequestedPrefixes: orEmptyPrefixes(n.RequestedPrefixes),
-		Roles: orEmptyRoles(n.Roles), Prefixes: orEmptyPrefixes(n.Prefixes), PublicAddr: n.PublicAddr, Tags: append([]string{}, n.Tags...),
+		Roles: orEmptyRoles(n.Roles), Prefixes: orEmptyPrefixes(n.Prefixes), PublicAddr: n.PublicAddr, RequestedPublicAddr: n.RequestedPublicAddr, Tags: append([]string{}, n.Tags...),
 		RequestedAt: n.RequestedAt, RequestIP: n.RequestIP, ConfirmedBy: n.ConfirmedBy, ApprovedBy: n.ApprovedBy, RevokedBy: n.RevokedBy,
 		SnapshotVersion: n.LastSnapshotVersion, ActiveTunnels: n.ActiveTunnels, Attrs: n.Attrs,
 		KeyVersion: n.KeyVersion, Signed: n.Signature != "", SignedBy: n.SignedBy,
@@ -219,10 +220,13 @@ type GrantBody struct {
 	Roles       []string          `json:"roles"`
 	Prefixes    []registry.Prefix `json:"prefixes"`
 	OverlayIP   string            `json:"overlay_ip"`
-	PublicAddr  string            `json:"public_addr"`
-	// HardwareBound: omitted = what the node reported (confirm) or unchanged
-	// (patch). False distrusts a reported hardware key; true without such a
-	// report is refused.
+	// PublicAddr: omitted = unchanged (none for a pending node: what it
+	// requested is shown, not taken over), "" = none. Every peer routes it
+	// around the overlay, so it is the admin's decision alone.
+	PublicAddr *string `json:"public_addr"`
+	// HardwareBound: omitted = what the node reported (first confirm) or
+	// unchanged (confirm of a confirmed node, patch). False distrusts a
+	// reported hardware key; true without such a report is refused.
 	HardwareBound *bool `json:"hardware_bound"`
 	// Tags: omitted = none (confirm) or unchanged (patch). Signed like roles:
 	// changing them on an approved node asks for a new signature.
@@ -230,7 +234,17 @@ type GrantBody struct {
 }
 
 func (b GrantBody) grant() (db.Grant, error) {
-	g := db.Grant{Name: strings.TrimSpace(b.Name), Prefixes: b.Prefixes, PublicAddr: strings.TrimSpace(b.PublicAddr), HardwareBound: b.HardwareBound}
+	g := db.Grant{Name: strings.TrimSpace(b.Name), Prefixes: b.Prefixes, HardwareBound: b.HardwareBound}
+	if b.PublicAddr != nil {
+		addr := strings.TrimSpace(*b.PublicAddr)
+		if addr != "" {
+			var err error
+			if addr, err = db.CleanPublicAddr(addr); err != nil {
+				return g, err
+			}
+		}
+		g.PublicAddr = &addr
+	}
 	if b.Kind != "" {
 		k, err := registry.ParseKind(b.Kind)
 		if err != nil {
@@ -572,6 +586,14 @@ func (h *Handlers) adminPutNetwork(w http.ResponseWriter, r *http.Request) {
 	nodes, err := h.d.DB.ListNodes(r.Context(), "")
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
+		return
+	}
+	// a pool inside a network a router announces would pull overlay
+	// addresses out of the overlay
+	if clash := db.PrefixesInPool(nodes, n.Pool); len(clash) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":    fmt.Sprintf("the pool %s overlaps prefixes that nodes route (%s); change those first", n.Pool, strings.Join(clash, ", ")),
+			"prefixes": clash})
 		return
 	}
 	var outside []map[string]any

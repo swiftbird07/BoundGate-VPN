@@ -26,7 +26,7 @@ const nodes: T.Node[] = [
   node(4, 'node-a', 'approved', ['endpoint'], { kind: 'interactive', active_tunnels: 2 }),
   node(5, 'martins-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', active_tunnels: 2, tags: ['laptop', 'personal'] }),
   node(6, 'build-runner-07', 'confirmed', ['endpoint'], { key_kind: 'tpm2', hardware_bound: true, hardware_claimed: true, requested_at: ago(5400), confirmed_at: ago(1800) }),
-  node(7, 'lenas-thinkpad', 'pending', ['endpoint'], { kind: 'interactive', platform: 'linux/amd64', key_kind: 'tpm2', hardware_bound: false, hardware_claimed: true, requested_at: ago(420) }),
+  node(7, 'lenas-thinkpad', 'pending', ['endpoint'], { kind: 'interactive', platform: 'linux/amd64', key_kind: 'tpm2', hardware_bound: false, hardware_claimed: true, requested_public_addr: '198.51.100.23:4443', requested_at: ago(420) }),
   node(8, 'old-laptop', 'revoked', ['endpoint'], { kind: 'interactive', revoked_at: ago(86400 * 9), revoked_by: 'martin', overlay_ip: '10.21.0.31' }),
   node(9, 'adas-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', key_kind: 'secure-enclave', hardware_bound: true, hardware_claimed: true, active_tunnels: 2, tags: ['laptop'] }),
 ];

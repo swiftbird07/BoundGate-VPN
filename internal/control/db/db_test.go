@@ -44,6 +44,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
+func ptr[T any](v T) *T { return &v }
+
 // approve confirms with the grant, mints a token and stores a (fake, the
 // api verifies it) signature. It mirrors the confirm -> sign flow.
 func approve(t *testing.T, d *DB, id string, g Grant) (uint64, error) {
@@ -142,7 +144,7 @@ func TestNodeLifecycleBumpsSnapshot(t *testing.T) {
 	if _, err := approve(t, d, n2.ID, Grant{Roles: []registry.Role{registry.RoleHub}, OverlayIP: netip.MustParseAddr("10.21.0.1")}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("taken overlay ip accepted: %v", err)
 	}
-	if _, err := approve(t, d, n2.ID, Grant{Roles: []registry.Role{registry.RoleHub}, PublicAddr: "hub:443"}); err != nil {
+	if _, err := approve(t, d, n2.ID, Grant{Roles: []registry.Role{registry.RoleHub}, PublicAddr: ptr("hub:443")}); err != nil {
 		t.Fatal(err)
 	}
 	got2, _ := d.NodeByID(ctx, n2.ID)
@@ -154,10 +156,27 @@ func TestNodeLifecycleBumpsSnapshot(t *testing.T) {
 		t.Fatalf("approved %d", len(approved))
 	}
 	// unsigned fields: update bumps, keeps the approval
-	v2, demoted, err := d.UpdateNode(ctx, n2.ID, Grant{PublicAddr: "hub.example:443"}, pool)
+	v2, demoted, err := d.UpdateNode(ctx, n2.ID, Grant{PublicAddr: ptr("hub.example:443")}, pool)
 	if err != nil || demoted || v2 <= v1 {
 		t.Fatalf("update %d %v demoted %v (v1 %d)", v2, err, demoted, v1)
 	}
+	// absent keeps the address, "" clears it, nonsense is refused
+	if _, _, err := d.UpdateNode(ctx, n2.ID, Grant{Name: "hub-x"}, pool); err != nil {
+		t.Fatal(err)
+	}
+	if got2, _ = d.NodeByID(ctx, n2.ID); got2.PublicAddr != "hub.example:443" {
+		t.Fatalf("absent public_addr changed it: %q", got2.PublicAddr)
+	}
+	if _, _, err := d.UpdateNode(ctx, n2.ID, Grant{PublicAddr: ptr("https://evil.example/x")}, pool); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a URL as public_addr: %v", err)
+	}
+	if v, _, err := d.UpdateNode(ctx, n2.ID, Grant{PublicAddr: ptr("")}, pool); err != nil || v <= v2 {
+		t.Fatal(err)
+	}
+	if got2, _ = d.NodeByID(ctx, n2.ID); got2.PublicAddr != "" || got2.Status != StatusApproved {
+		t.Fatalf("cleared public_addr: %+v", got2)
+	}
+	v2, _ = d.SnapshotVersion(ctx)
 	// signed fields: the node drops back to confirmed and out of snapshots
 	v3, demoted, err := d.UpdateNode(ctx, n2.ID, Grant{Roles: []registry.Role{registry.RoleHub, registry.RoleExitNode}, Prefixes: []registry.Prefix{{Prefix: netip.MustParsePrefix("0.0.0.0/0"), Mode: registry.ModeSNAT}}}, pool)
 	if err != nil || !demoted || v3 != v2+1 {

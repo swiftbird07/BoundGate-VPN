@@ -29,8 +29,12 @@ func (h *Handlers) NodeMux() http.Handler {
 	return mux
 }
 
+// maxPendingEnrollments bounds the requests waiting for an admin.
+const maxPendingEnrollments = 500
+
 // EnrollRequest is the node's enrollment body. Everything in it is a claim;
-// roles and prefixes are what the node asks for, an admin grants them.
+// roles, prefixes and the public address are what the node asks for, an
+// admin grants them.
 type EnrollRequest struct {
 	Name          string            `json:"name"`
 	Hostname      string            `json:"hostname"`
@@ -98,6 +102,16 @@ func (h *Handlers) nodeEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too many enrollment requests")
 		return
 	}
+	// many addresses can still fill the list an admin reads; beyond a bound
+	// new requests wait until the admin cleared it or requests expired
+	if n, err := h.d.DB.CountNodes(r.Context(), db.StatusPending); err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	} else if n >= maxPendingEnrollments {
+		h.d.Logs.Enrollment.Warn("enrollment refused: too many pending requests", "src", ip, "pending", n)
+		writeError(w, http.StatusTooManyRequests, "too many pending enrollment requests; ask the administrator")
+		return
+	}
 	var body EnrollRequest
 	if err := readJSON(r, &body, 16<<10); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -118,10 +132,17 @@ func (h *Handlers) nodeEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "too many prefixes")
 		return
 	}
+	publicAddr := strings.TrimSpace(body.PublicAddr)
+	if publicAddr != "" {
+		if publicAddr, err = db.CleanPublicAddr(publicAddr); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	n, err := h.d.DB.CreatePending(r.Context(), db.EnrollRequest{
 		Name: clip(body.Name, 64), Hostname: clip(body.Hostname, 128), Platform: clip(body.Platform, 32), KeyKind: clip(body.KeyKind, 32),
 		HardwareBound: body.HardwareBound, SPKI: spki, CertDER: r.TLS.PeerCertificates[0].Raw, RequestIP: ip,
-		Roles: roles, Prefixes: body.Prefixes, PublicAddr: clip(body.PublicAddr, 256),
+		Roles: roles, Prefixes: body.Prefixes, PublicAddr: publicAddr,
 	})
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
@@ -130,7 +151,7 @@ func (h *Handlers) nodeEnroll(w http.ResponseWriter, r *http.Request) {
 	h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, "node", "enrollment requested", n.ID,
 		map[string]any{"name": n.Name, "hostname": n.Hostname, "platform": n.Platform, "key_kind": n.KeyKind,
 			"hardware_claimed": n.HardwareClaimed, "spki": n.SPKI.String(), "src": ip,
-			"requested_roles": n.RequestedRoles, "requested_prefixes": n.RequestedPrefixes, "public_addr": n.PublicAddr})
+			"requested_roles": n.RequestedRoles, "requested_prefixes": n.RequestedPrefixes, "requested_public_addr": n.RequestedPublicAddr})
 	writeJSON(w, http.StatusAccepted, h.enrollStatus(r, n))
 }
 

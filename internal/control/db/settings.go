@@ -31,18 +31,54 @@ var DefaultNetwork = NetworkSettings{
 	Pool: netip.MustParsePrefix("10.21.0.0/16"),
 }
 
+// privateRanges are where an overlay pool may lie: addresses no public
+// destination has, so the overlay never shadows the internet.
+var privateRanges = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("100.64.0.0/10"), // shared address space (CGNAT)
+	netip.MustParsePrefix("fc00::/7"),      // unique local
+}
+
 // Validate checks the settings.
 func (n NetworkSettings) Validate() error {
-	if !n.Pool.IsValid() || !n.Pool.Addr().Is4() || n.Pool.Bits() > 30 {
-		return errors.New("pool must be an IPv4 prefix of /30 or larger")
+	if !n.Pool.IsValid() || !n.Pool.Addr().Is4() || n.Pool.Bits() > 30 || n.Pool.Bits() < 8 {
+		return errors.New("pool must be an IPv4 prefix between /8 and /30")
 	}
 	if n.Pool.Masked() != n.Pool {
 		return errors.New("pool must be a network address (host bits zero)")
+	}
+	private := false
+	for _, r := range privateRanges {
+		if r.Bits() <= n.Pool.Bits() && r.Contains(n.Pool.Addr()) {
+			private = true
+		}
+	}
+	if !private {
+		return errors.New("pool must lie in a private range: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10")
 	}
 	if n.MaxAgeSeconds < 0 {
 		return errors.New("max_age_seconds must not be negative")
 	}
 	return nil
+}
+
+// PrefixesInPool lists the node prefixes (confirmed and approved nodes)
+// that overlap pool, as "name: prefix"; a default route never counts.
+func PrefixesInPool(nodes []Node, pool netip.Prefix) []string {
+	var out []string
+	for _, n := range nodes {
+		if n.Status != StatusConfirmed && n.Status != StatusApproved {
+			continue
+		}
+		for _, p := range n.Prefixes {
+			if prefixClearOfPool(p.Prefix, pool) != nil {
+				out = append(out, n.Name+": "+p.Prefix.Masked().String())
+			}
+		}
+	}
+	return out
 }
 
 // GetSetting unmarshals a setting into v. Missing settings return ErrNotFound.

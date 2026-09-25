@@ -5,7 +5,7 @@ export interface Node {
   id: string; name: string; hostname?: string; platform?: string; key_kind?: string; hardware_bound: boolean; hardware_claimed?: boolean;
   spki: string; fingerprint: string; status: 'pending' | 'confirmed' | 'approved' | 'revoked';
   kind: 'interactive' | 'workload'; requested_roles: Role[]; requested_prefixes: Prefix[]; roles: Role[]; prefixes: Prefix[]; tags?: string[];
-  overlay_ip?: string; public_addr?: string; key_version: number; signed: boolean; signed_by?: string; signed_at?: string;
+  overlay_ip?: string; public_addr?: string; requested_public_addr?: string; key_version: number; signed: boolean; signed_by?: string; signed_at?: string;
   requested_at: string; request_ip?: string; confirmed_at?: string; confirmed_by?: string; approved_at?: string; approved_by?: string;
   revoked_at?: string; revoked_by?: string; last_seen_at?: string; snapshot_version: number; active_tunnels: number;
   sign_token?: string; sign_expires_at?: string; sign_command?: string;

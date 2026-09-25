@@ -47,7 +47,9 @@ boundgatectl up               (hubs accept it, spokes dial it if it is a hub)
 * The **grant** is the admin's decision and is stored separately from the
   request. Roles are required; prefixes need the `subnet-router` or
   `exit-node` role; the overlay address is assigned automatically unless
-  given; `public_addr` is what spokes dial and only matters for hubs. The
+  given; `public_addr` is what peers dial (hubs, and spokes with a direct
+  path) and only an admin's value counts: the node's is shown as a request.
+  Prefixes must not overlap the overlay pool (a default route may). The
   **kind** is `interactive` (default: a person must log in before hubs
   admit the node, `docs/OIDC.md`) or `workload` (servers, routers, hubs).
 * The **binding** (`node_id, spki, key_version, roles, prefixes,

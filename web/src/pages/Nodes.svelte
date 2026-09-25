@@ -80,7 +80,8 @@
     if (tagInput.trim()) { addTag(tagInput); if (tagInput) return; }
     busy = true;
     try {
-      const body: Grant = { fingerprint: confirm.node.fingerprint, name: g.name, kind: g.kind, roles: g.roles, prefixes: g.prefixes.filter((p) => p.prefix.trim()), overlay_ip: g.overlay_ip || undefined, public_addr: g.public_addr || undefined, tags: g.tags, hardware_bound: confirm.node.hardware_claimed ? g.hardware : undefined };
+      // public_addr is always sent: empty means none (every peer routes it around the overlay)
+      const body: Grant = { fingerprint: confirm.node.fingerprint, name: g.name, kind: g.kind, roles: g.roles, prefixes: g.prefixes.filter((p) => p.prefix.trim()), overlay_ip: g.overlay_ip || undefined, public_addr: g.public_addr.trim(), tags: g.tags, hardware_bound: confirm.node.hardware_claimed ? g.hardware : undefined };
       const r = confirm.edit ? await admin.patchNode(confirm.node.id, body) : await admin.confirm(confirm.node.id, body);
       confirm = null;
       await load();
@@ -90,7 +91,8 @@
     } catch (e) { fail(e); } finally { busy = false; }
   }
   async function reissue(n: Node) {
-    try { const r = await admin.confirm(n.id, {}); if (r.sign_command) signCmd = { cmd: r.sign_command, expires: r.sign_expires_at || '' }; } catch (e) { fail(e); }
+    // the grant as it stands, hardware_bound included: a new token must not change it
+    try { const r = await admin.confirm(n.id, { hardware_bound: n.hardware_bound }); if (r.sign_command) signCmd = { cmd: r.sign_command, expires: r.sign_expires_at || '' }; } catch (e) { fail(e); }
   }
   async function reject(n: Node) {
     if (!window.confirm(`Reject ${n.name}? The node has to enroll again.`)) return;
@@ -187,6 +189,7 @@
         <dt>Tags</dt><dd>{#each n.tags ?? [] as t}<span class="chip tag">{t}</span> {:else}–{/each}</dd>
         <dt>Overlay IP</dt><dd class="mono">{n.overlay_ip || '–'}</dd>
         {#if n.public_addr}<dt>Public address</dt><dd class="mono">{n.public_addr}</dd>{/if}
+        {#if n.requested_public_addr && n.requested_public_addr !== n.public_addr}<dt>Asked for</dt><dd><span class="mono">{n.requested_public_addr}</span> <span class="faint">as public address; not in effect unless you set it</span></dd>{/if}
         {#if n.confirmed_at}<dt>Confirmed</dt><dd><Time at={n.confirmed_at} /> by {n.confirmed_by}</dd>{/if}
         {#if n.signed_at}<dt>Signed</dt><dd><Time at={n.signed_at} /> by {n.signed_by}</dd>{/if}
         {#if n.approved_at}<dt>Approved</dt><dd><Time at={n.approved_at} /> by {n.approved_by}</dd>{/if}
@@ -232,6 +235,9 @@
         <label class="field">Overlay IP <input placeholder="next free address" bind:value={g.overlay_ip} /></label>
         <label class="field">Public address (hubs) <input placeholder="hub.example:443" bind:value={g.public_addr} /></label>
       </div>
+      {#if confirm.node.requested_public_addr && confirm.node.requested_public_addr !== g.public_addr}
+        <p class="hint">The node asks for <span class="mono">{confirm.node.requested_public_addr}</span> as its public address. <button class="btn sm" onclick={() => (g.public_addr = confirm!.node.requested_public_addr ?? '')}>Use it</button><br />Every peer sends traffic for this address outside the tunnel, so set it only for a node that really listens there. Empty means none.</p>
+      {/if}
       <div class="field"><span>Announced prefixes</span>
         <div class="col" style="gap:6px">
           {#each g.prefixes as p, i}

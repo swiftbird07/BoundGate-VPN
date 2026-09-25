@@ -48,7 +48,7 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | GET | `/api/v1/admin/sessions` | `?all=1` includes ended ones | `[SessionView]` |
 | DELETE | `/api/v1/admin/sessions/{id}` | | 204 (revoke; hubs close the node's tunnels); 409 if already ended |
 | GET | `/api/v1/admin/identity` | | `{control_pin, spki}`: fingerprint of the node-channel key, what a device shows and asks about at its first contact (ENROLLMENT.md) |
-| GET/PUT | `/api/v1/admin/settings/network` | `{pool, max_age_seconds?, renumber?}` | settings; PUT bumps the snapshot. A pool that leaves nodes outside: 409 `{error, outside: [{id, name, overlay_ip, status}]}`, unless `renumber: true`: every such node moves to the same host number in the new pool (10.21.3.7 → 10.25.3.7; 409 and no change if one does not fit), and approved ones go back to `confirmed`, because the overlay address is part of the signed binding: they are out of the network until signed again. Answer: `{pool, max_age_seconds, renumbered: [{id, name, from, to, needs_signature}]}` |
+| GET/PUT | `/api/v1/admin/settings/network` | `{pool, max_age_seconds?, renumber?}` | settings; PUT bumps the snapshot. The pool is an IPv4 prefix between /8 and /30 inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10 (400 otherwise); a pool that overlaps a prefix a node routes is 409 `{error, prefixes}`. A pool that leaves nodes outside: 409 `{error, outside: [{id, name, overlay_ip, status}]}`, unless `renumber: true`: every such node moves to the same host number in the new pool (10.21.3.7 → 10.25.3.7; 409 and no change if one does not fit), and approved ones go back to `confirmed`, because the overlay address is part of the signed binding: they are out of the network until signed again. Answer: `{pool, max_age_seconds, renumbered: [{id, name, from, to, needs_signature}]}` |
 | GET | `/api/v1/admin/snapshot` | `?node=<id>` | the global view, or what that node receives |
 | GET | `/api/v1/admin/logs` | `?stream=&node=&actor=&q=&from=&to=&before=&limit=` | `[LogEvent]` newest first |
 | GET | `/api/v1/admin/policies` | | `[PolicyView]` |
@@ -79,18 +79,24 @@ updated_at/by`.
   "roles": ["endpoint", "subnet-router"],
   "prefixes": [{"prefix": "192.168.178.0/24", "mode": "snat"}],   // routed | snat
   "overlay_ip": "10.21.0.7",            // optional, else the next free address
-  "public_addr": "hub1.example:443",    // hubs: what spokes dial; spokes: where peers can dial a direct path (PATHS.md); unsigned
+  "public_addr": "hub1.example:443",    // hubs: what spokes dial; spokes: where peers can dial a direct path (PATHS.md); unsigned.
+                                        // host:port only (port 1-65535, IPv6 in brackets), else 400. Omitted: unchanged (none for a
+                                        // pending node: what it requested is only shown). "" clears it. Peers route it around the overlay.
   "tags": ["production", "server"],     // optional. Omitted: none (confirm), unchanged (patch). [] clears. Signed, like roles.
                                         // a-z 0-9 . _ - (max 32, starts with a letter or digit), at most 16; lowercased, sorted; else 400
-  "hardware_bound": true                // optional. Omitted: what the node reported (confirm), unchanged (patch).
+  "hardware_bound": true                // optional. Omitted: what the node reported (first confirm of a pending node),
+                                        // unchanged (confirm of a confirmed node, patch).
                                         // false declines a reported hardware key; true without such a report is 409. Signed.
 }
 ```
 
+A prefix that overlaps the overlay pool is refused (409), except a default
+route (`0.0.0.0/0`, what an exit node announces).
+
 `NodeView`: `id, name, hostname, platform, key_kind, hardware_bound` (granted
 and signed)`, hardware_claimed` (reported by the node)`, spki,
 fingerprint, status, kind, requested_roles, requested_prefixes, roles, tags, prefixes,
-overlay_ip, public_addr, key_version, signed, signed_by, signed_at,
+overlay_ip, public_addr, requested_public_addr, key_version, signed, signed_by, signed_at,
 requested_at, request_ip, confirmed_at, confirmed_by, approved_at,
 approved_by, revoked_at, revoked_by, last_seen_at, snapshot_version,
 active_tunnels`.
@@ -136,13 +142,13 @@ first active passkey is 401 with an explanatory message.
 roles, prefixes, overlay_ip, public_addr, binding` (the exact bytes to
 sign), `namespace` (`boundgate-binding`), `expires_at, signers`
 (authorized_keys lines of the active admin keys). Rate limit 30/min per
-source IP.
+source address (per /64 for IPv6).
 
 ## Node (mTLS)
 
 | Method | Path | Who | Result |
 |---|---|---|---|
-| POST | `/api/v1/node/enroll` | any device cert | 202 `EnrollStatus` (new, pending) or 200 (known key, current status); 429 rate limited; 503 while no admin key is registered |
+| POST | `/api/v1/node/enroll` | any device cert | 202 `EnrollStatus` (new, pending) or 200 (known key, current status); 429 rate limited (5/min per address, per /64 for IPv6) or 500 requests already pending; 503 while no admin key is registered |
 | GET | `/api/v1/node/enroll/status` | any device cert | 200 `EnrollStatus` or 404 `{status:"unknown"}` |
 | GET | `/api/v1/node/snapshot` | approved (signed) only, 403 otherwise | `?since=N&wait=30s`: 200 `registry.Snapshot` when version > N, else 304 after `wait` |
 | POST | `/api/v1/node/heartbeat` | approved only | `{version, active_tunnels}` → 204 |
@@ -152,7 +158,9 @@ source IP.
 | POST | `/api/v1/node/logs` | approved only | `{events: [{ts, stream: flow\|tunnel, message, attrs}]}` (≤ 2000 events, ≤ 4 MB) → `{accepted, rejected}`; tunnel events (`reset`, `open`, `update`, `close`) only from hubs; the reporter's id overrides `attrs.node_id` |
 
 Enroll body: `{name, hostname, platform, key_kind, hardware_bound, roles[],
-prefixes[{prefix, mode}], public_addr}`. Everything is a claim.
+prefixes[{prefix, mode}], public_addr}`. Everything is a claim; `public_addr`
+(host:port, 400 otherwise) is kept as `requested_public_addr` and takes
+effect only if an admin sets it.
 
 `EnrollStatus`: `{node_id, name, status, fingerprint, roles?, overlay_ip?,
 admin_signer_keys[], control_spki}`. Nodes pin `admin_signer_keys` on first

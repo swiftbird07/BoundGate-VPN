@@ -91,10 +91,12 @@ never move to a path: an exit node is chosen by the profile, not by who
 answers first.
 
 Where the address comes from is the path signalling: a node requests
-`public_addr` at enrollment, an admin can set it (`PATCH /admin/nodes/{id}`,
-Nodes page), and the control plane hands it to every peer in the snapshot. It
-is not part of the signed binding, as for hubs: a wrong address can only make
-the pinned handshake fail.
+`public_addr` at enrollment, an admin sets it (at confirm, `PATCH
+/admin/nodes/{id}`, Nodes page; the request is shown, never taken over by
+itself, because every peer routes the address around the overlay), and the
+control plane hands it to every peer in the snapshot. It is not part of the
+signed binding, as for hubs: a wrong address can only make the pinned
+handshake fail.
 
 ```yaml
 # a spoke that peers can dial

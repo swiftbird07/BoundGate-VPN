@@ -386,7 +386,17 @@ func TestEnrollmentApprovalRevocationFlow(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond)
 	hst := e.enroll(hub, `{"name":"hub1","roles":["hub"],"public_addr":"hub1:443"}`)
-	nv = e.approve(hst.NodeID, `{"roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"routed"}]}`)
+	var pending api.NodeView
+	e.adminCall("GET", "/api/v1/admin/nodes/"+hst.NodeID, "", http.StatusOK, &pending)
+	if pending.PublicAddr != "" || pending.RequestedPublicAddr != "hub1:443" {
+		t.Fatalf("the node's address is a request, not in effect: %+v", pending)
+	}
+	// an enrollment with an address that is not host:port is refused
+	if code, b := e.nodeCall(e.device("x"), "POST", "/api/v1/node/enroll", `{"roles":["hub"],"public_addr":"http://hub1/"}`); code != http.StatusBadRequest {
+		t.Fatalf("enroll with a URL as public_addr: %d %s", code, b)
+	}
+	e.adminCall("POST", "/api/v1/admin/nodes/"+hst.NodeID+"/confirm", `{"roles":["hub"],"public_addr":"hub1"}`, http.StatusBadRequest, nil)
+	nv = e.approve(hst.NodeID, `{"roles":["hub","subnet-router"],"prefixes":[{"prefix":"10.60.0.0/24","mode":"routed"}],"public_addr":"hub1:443"}`)
 	if nv.PublicAddr != "hub1:443" || nv.OverlayIP != "10.21.0.2" || nv.Status != "approved" {
 		t.Fatalf("%+v", nv)
 	}
@@ -851,6 +861,52 @@ func TestHardwareBoundGrant(t *testing.T) {
 	if nv3 := e.approve(st3.NodeID, `{"roles":["endpoint"],"hardware_bound":false}`); nv3.HardwareBound {
 		t.Fatalf("distrusted at confirm: %+v", nv3)
 	}
+
+	// "Show sign command" confirms a confirmed node again with an empty
+	// body: that must not turn a refused hardware claim back on
+	tpm3 := e.device("nas")
+	st4 := e.enroll(tpm3, `{"name":"nas","platform":"linux","key_kind":"tpm2","hardware_bound":true,"roles":["endpoint"]}`)
+	e.adminCall("POST", "/api/v1/admin/nodes/"+st4.NodeID+"/confirm", `{"roles":["endpoint"],"hardware_bound":false}`, http.StatusOK, nil)
+	var again api.ConfirmResponse
+	e.adminCall("POST", "/api/v1/admin/nodes/"+st4.NodeID+"/confirm", `{}`, http.StatusOK, &again)
+	if again.SignToken == "" || again.HardwareBound {
+		t.Fatalf("new sign token restored the claim: %+v", again)
+	}
+	e.adminCall("POST", "/api/v1/admin/nodes/"+st4.NodeID+"/confirm", "", http.StatusOK, &again)
+	if again.HardwareBound {
+		t.Fatalf("empty confirm restored the claim: %+v", again)
+	}
+}
+
+// The list of pending enrollments is bounded: beyond it new requests wait.
+func TestPendingEnrollmentsAreBounded(t *testing.T) {
+	e := newEnv(t)
+	e.registerSigner()
+	ctx := context.Background()
+	for i := 0; i < 500; i++ {
+		var spki devicekey.SPKIHash
+		spki[0], spki[1] = byte(i>>8), byte(i)
+		if _, err := e.store.CreatePending(ctx, db.EnrollRequest{SPKI: spki, CertDER: []byte{1}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, b := e.nodeCall(e.device("one-too-many"), "POST", "/api/v1/node/enroll", `{"roles":["endpoint"]}`); code != http.StatusTooManyRequests {
+		t.Fatalf("enrollment beyond the bound: %d %s", code, b)
+	}
+}
+
+// The overlay pool must be private and must not lie inside a network a
+// router routes; a router prefix must not overlap the pool.
+func TestPoolAndRoutedPrefixesStayApart(t *testing.T) {
+	e := newEnv(t)
+	e.registerSigner()
+	r := e.device("router")
+	st := e.enroll(r, `{"name":"router","roles":["subnet-router"]}`)
+	e.adminCall("POST", "/api/v1/admin/nodes/"+st.NodeID+"/confirm", `{"roles":["subnet-router"],"prefixes":[{"prefix":"10.0.0.0/8","mode":"snat"}]}`, http.StatusConflict, nil)
+	e.approve(st.NodeID, `{"roles":["subnet-router","exit-node"],"prefixes":[{"prefix":"10.60.0.0/16","mode":"snat"},{"prefix":"0.0.0.0/0","mode":"snat"}]}`)
+	e.adminCall("PUT", "/api/v1/admin/settings/network", `{"pool":"10.60.8.0/24"}`, http.StatusConflict, nil)
+	e.adminCall("PUT", "/api/v1/admin/settings/network", `{"pool":"198.51.100.0/24"}`, http.StatusBadRequest, nil)
+	e.adminCall("PUT", "/api/v1/admin/settings/network", `{"pool":"10.22.0.0/16","renumber":true}`, http.StatusOK, nil)
 }
 
 // Changing the overlay pool with nodes in it: refused with the list of nodes

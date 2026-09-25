@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,9 +42,11 @@ type Node struct {
 	CertDER         []byte
 	Attrs           map[string]string
 	// Requested* are claims from the enrollment request.
-	RequestedRoles    []registry.Role
-	RequestedPrefixes []registry.Prefix
-	// Granted by an admin.
+	RequestedRoles      []registry.Role
+	RequestedPrefixes   []registry.Prefix
+	RequestedPublicAddr string
+	// Granted by an admin. PublicAddr is only ever what an admin set:
+	// peers route it around the overlay.
 	Kind       registry.Kind
 	Roles      []registry.Role
 	Prefixes   []registry.Prefix
@@ -75,7 +79,8 @@ type Node struct {
 const nodeCols = `id, name, hostname, platform, key_kind, hardware_bound, spki_hash, cert_der, attrs_json,
 	requested_roles_json, requested_prefixes_json, roles_json, prefixes_json, overlay_ip, public_addr,
 	status, requested_at, request_ip, confirmed_at, confirmed_by, approved_at, approved_by, revoked_at, revoked_by,
-	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at, kind, hardware_claimed, tags_json`
+	last_seen_at, last_snapshot_version, active_tunnels, key_version, binding_json, binding_sig, signed_by, signed_at, kind, hardware_claimed, tags_json,
+	requested_public_addr`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -87,7 +92,8 @@ func scanNode(s scanner) (Node, error) {
 	if err := s.Scan(&n.ID, &n.Name, &n.Hostname, &n.Platform, &n.KeyKind, &n.HardwareBound, &spki, &n.CertDER, &attrs,
 		&reqRoles, &reqPrefixes, &roles, &prefixes, &overlay, &n.PublicAddr,
 		&n.Status, &requestedAt, &n.RequestIP, &confirmedAt, &confirmedBy, &approvedAt, &approvedBy, &revokedAt, &revokedBy,
-		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt, &n.Kind, &n.HardwareClaimed, &tags); err != nil {
+		&lastSeen, &n.LastSnapshotVersion, &n.ActiveTunnels, &n.KeyVersion, &n.Binding, &n.Signature, &n.SignedBy, &signedAt, &n.Kind, &n.HardwareClaimed, &tags,
+		&n.RequestedPublicAddr); err != nil {
 		return n, err
 	}
 	n.SignedAt = parseTime(signedAt)
@@ -129,11 +135,13 @@ type EnrollRequest struct {
 	RequestIP     string
 	Roles         []registry.Role
 	Prefixes      []registry.Prefix
-	PublicAddr    string
+	PublicAddr    string // a request: stored as requested_public_addr
 }
 
 // CreatePending records an enrollment request. A key that is already known
 // (any status) is a conflict: the node must ask for its status instead.
+// Nothing the node sends is granted: roles, prefixes and the public address
+// are kept as requests for an admin to look at.
 func (d *DB) CreatePending(ctx context.Context, r EnrollRequest) (Node, error) {
 	id := NewID()
 	name := strings.TrimSpace(r.Name)
@@ -145,7 +153,7 @@ func (d *DB) CreatePending(ctx context.Context, r EnrollRequest) (Node, error) {
 	}
 	_, err := d.tx(ctx, false, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO nodes (id, name, hostname, platform, key_kind, hardware_claimed, spki_hash, cert_der, attrs_json,
-			requested_roles_json, requested_prefixes_json, public_addr, status, requested_at, request_ip)
+			requested_roles_json, requested_prefixes_json, requested_public_addr, status, requested_at, request_ip)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, 'pending', ?, ?)`,
 			id, name, r.Hostname, r.Platform, r.KeyKind, r.HardwareBound, r.SPKI[:], r.CertDER,
 			jsonOf(r.Roles), jsonOf(r.Prefixes), r.PublicAddr, now(), r.RequestIP)
@@ -227,15 +235,19 @@ func (d *DB) ApprovedNodes(ctx context.Context) ([]Node, error) {
 
 // Grant is what an admin decides about a node.
 type Grant struct {
-	Name       string        // optional rename
-	Kind       registry.Kind // "" keeps the current kind (new nodes: interactive)
-	Roles      []registry.Role
-	Prefixes   []registry.Prefix
-	OverlayIP  netip.Addr // zero = assign the next free address
-	PublicAddr string     // hubs; empty keeps what the node requested
-	// HardwareBound: nil takes the node's claim at confirm and keeps the
-	// grant on update. True needs the claim: an admin can distrust a
-	// reported hardware key, not invent one.
+	Name      string        // optional rename
+	Kind      registry.Kind // "" keeps the current kind (new nodes: interactive)
+	Roles     []registry.Role
+	Prefixes  []registry.Prefix
+	OverlayIP netip.Addr // zero = assign the next free address
+	// PublicAddr: nil keeps the node's (none at the first confirm: what the
+	// node requested is not taken over), "" clears it. Host:port, checked
+	// by CleanPublicAddr.
+	PublicAddr *string
+	// HardwareBound: nil takes the node's claim at the first confirm and
+	// keeps the grant afterwards (a confirmed node that is confirmed again,
+	// an update). True needs the claim: an admin can distrust a reported
+	// hardware key, not invent one.
 	HardwareBound *bool
 	// Tags: nil keeps the node's tags (none at the first confirm).
 	Tags *[]string
@@ -255,6 +267,9 @@ func (g Grant) Validate(pool netip.Prefix) error {
 		if err := p.Validate(); err != nil {
 			return err
 		}
+		if err := prefixClearOfPool(p.Prefix, pool); err != nil {
+			return err
+		}
 	}
 	if len(g.Prefixes) > 0 && !registry.HasRole(g.Roles, registry.RoleSubnetRouter) && !registry.HasRole(g.Roles, registry.RoleExitNode) {
 		return errors.New("prefixes need the subnet-router or exit-node role")
@@ -262,8 +277,73 @@ func (g Grant) Validate(pool netip.Prefix) error {
 	if g.OverlayIP.IsValid() && !pool.Contains(g.OverlayIP) {
 		return fmt.Errorf("overlay ip %s is outside the pool %s", g.OverlayIP, pool)
 	}
+	if g.PublicAddr != nil && *g.PublicAddr != "" {
+		if _, err := CleanPublicAddr(*g.PublicAddr); err != nil {
+			return err
+		}
+	}
 	return nil
 }
+
+// prefixClearOfPool refuses a node prefix that overlaps the overlay pool:
+// a router that announced 10.0.0.0/8 next to the pool 10.21.0.0/16 would
+// pull overlay addresses out of the overlay. A default route (0.0.0.0/0)
+// is what an exit node announces; the nodes keep pool addresses out of it
+// themselves.
+func prefixClearOfPool(p, pool netip.Prefix) error {
+	if p.Bits() == 0 || !p.Masked().Overlaps(pool) {
+		return nil
+	}
+	return fmt.Errorf("prefix %s overlaps the overlay pool %s; only a default route may contain it", p.Masked(), pool)
+}
+
+// CleanPublicAddr checks an address peers dial: host:port with a name, an
+// IPv4 address or a bracketed IPv6 address, a port 1-65535, and nothing
+// else (no scheme, no path). It returns the address trimmed.
+func CleanPublicAddr(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	bad := func(why string) (string, error) {
+		return "", fmt.Errorf("public_addr %q: %s (host:port, e.g. hub.example.com:443 or [2001:db8::1]:443)", s, why)
+	}
+	if len(s) > 255 {
+		return bad("too long")
+	}
+	for _, c := range s {
+		if c <= ' ' || c > '~' || c == '/' || c == '\\' || c == '@' || c == '?' || c == '#' {
+			return bad("not an address")
+		}
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || host == "" {
+		return bad("not host:port")
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+		return bad("the port must be 1-65535")
+	}
+	if a, err := netip.ParseAddr(host); err == nil {
+		if a.Zone() != "" || a.Is4In6() {
+			return bad("not an address")
+		}
+		if a.Is6() && !strings.HasPrefix(s, "[") {
+			return bad("an IPv6 address needs brackets")
+		}
+		return s, nil
+	}
+	if strings.HasPrefix(s, "[") {
+		return bad("not an address")
+	}
+	if len(host) > 253 {
+		return bad("the host name is too long")
+	}
+	for _, l := range strings.Split(strings.TrimSuffix(host, "."), ".") {
+		if !hostLabelRe.MatchString(l) {
+			return bad("not a host name")
+		}
+	}
+	return s, nil
+}
+
+var hostLabelRe = regexp.MustCompile(`^[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?$`)
 
 // ConfirmNode records the admin's grant for a pending (or already
 // confirmed) node and assigns the overlay address if none is set yet. The
@@ -300,18 +380,28 @@ func (d *DB) ConfirmNode(ctx context.Context, id, by string, g Grant, pool netip
 		if kind == "" {
 			kind = registry.KindInteractive
 		}
+		// the node's claim is the starting point of a first confirm only; a
+		// confirmed node keeps what an admin granted (confirming it again,
+		// e.g. for a new sign token, must not undo a refusal)
 		hw := cur.HardwareClaimed
+		if cur.Status == StatusConfirmed {
+			hw = cur.HardwareBound
+		}
 		if g.HardwareBound != nil {
 			hw = *g.HardwareBound
 		}
 		if hw && !cur.HardwareClaimed {
 			return fmt.Errorf("%w: %s", ErrConflict, errNoHardwareClaim)
 		}
+		var publicAddr any // NULL keeps the column
+		if g.PublicAddr != nil {
+			publicAddr = strings.TrimSpace(*g.PublicAddr)
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE nodes SET status = 'confirmed', confirmed_at = ?, confirmed_by = ?,
 			name = COALESCE(NULLIF(?, ''), name), kind = ?, hardware_bound = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?,
-			public_addr = COALESCE(NULLIF(?, ''), public_addr), tags_json = COALESCE(?, tags_json), binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL
+			public_addr = COALESCE(?, public_addr), tags_json = COALESCE(?, tags_json), binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL
 			WHERE id = ? AND status IN ('pending', 'confirmed')`,
-			now(), by, g.Name, string(kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), g.PublicAddr, tagsArg(g.Tags), id)
+			now(), by, g.Name, string(kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), ip.String(), publicAddr, tagsArg(g.Tags), id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, ip)
@@ -436,8 +526,14 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 	if !g.OverlayIP.IsValid() {
 		g.OverlayIP = cur.OverlayIP
 	}
-	if g.PublicAddr == "" {
-		g.PublicAddr = cur.PublicAddr
+	publicAddr := cur.PublicAddr
+	if g.PublicAddr != nil {
+		publicAddr = strings.TrimSpace(*g.PublicAddr)
+		if publicAddr != "" {
+			if _, err := CleanPublicAddr(publicAddr); err != nil {
+				return 0, false, fmt.Errorf("%w: %v", ErrConflict, err)
+			}
+		}
 	}
 	if g.Kind == "" {
 		g.Kind = cur.Kind
@@ -470,7 +566,7 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 		if demote {
 			q += `, status = 'confirmed', binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL, approved_at = NULL, approved_by = NULL`
 		}
-		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, g.PublicAddr, jsonOf(orEmptyTags(tags)), id)
+		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, publicAddr, jsonOf(orEmptyTags(tags)), id)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, g.OverlayIP)
@@ -587,6 +683,13 @@ func (d *DB) TouchNode(ctx context.Context, id string) {
 // tunnel count.
 func (d *DB) Heartbeat(ctx context.Context, id string, version uint64, tunnels int) {
 	_, _ = d.sql.ExecContext(ctx, `UPDATE nodes SET last_seen_at = ?, last_snapshot_version = ?, active_tunnels = ? WHERE id = ?`, now(), version, tunnels, id)
+}
+
+// CountNodes returns how many nodes have the status.
+func (d *DB) CountNodes(ctx context.Context, status string) (int, error) {
+	var n int
+	err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes WHERE status = ?`, status).Scan(&n)
+	return n, err
 }
 
 // ExpirePending deletes pending requests older than maxAge and returns how many.
