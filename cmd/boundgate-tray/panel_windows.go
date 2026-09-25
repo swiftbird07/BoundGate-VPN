@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -393,7 +394,7 @@ func (p *panelWin) font(f tray.Font) uintptr {
 // Measure implements tray.Measurer with GDI, in 96-dpi units.
 func (p *panelWin) Measure(text string, f tray.Font, width float64) (float64, float64) {
 	procSelectObject.Call(p.mdc, p.font(f))
-	s, _ := windows.UTF16FromString(text)
+	s := utf16z(text)
 	flags := uintptr(dtCalcRect | dtNoPrefix)
 	r := rect32{right: int32(math.Floor(width * p.scale))}
 	if width > 0 {
@@ -478,7 +479,7 @@ func (p *panelWin) draw(hdc uintptr, use func(mdc uintptr, bgra []byte)) {
 		case tray.Right:
 			flags |= dtRight
 		}
-		s, _ := windows.UTF16FromString(it.Text)
+		s := utf16z(it.Text)
 		procDrawTextW.Call(mdc, uintptr(unsafe.Pointer(&s[0])), uintptr(len(s)-1), uintptr(unsafe.Pointer(&r)), flags)
 	}
 	use(mdc, px)
@@ -533,4 +534,12 @@ func appsDark() bool {
 	defer k.Close()
 	v, _, err := k.GetIntegerValue("AppsUseLightTheme")
 	return err == nil && v == 0
+}
+
+// utf16z converts text for GDI, NUL-terminated and never empty: a NUL
+// inside the text (a name or an error the control plane sent) is dropped
+// instead of failing the conversion, which would leave nothing to point at.
+func utf16z(text string) []uint16 {
+	s, _ := windows.UTF16FromString(strings.ReplaceAll(text, "\x00", ""))
+	return s
 }

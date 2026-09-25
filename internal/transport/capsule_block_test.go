@@ -13,7 +13,7 @@ import (
 func TestWritePacketNeverWaitsForThePeer(t *testing.T) {
 	a, b := net.Pipe() // unbuffered: a write waits until the other end reads
 	defer b.Close()
-	l := newCapsuleLink(a, nil, time.Minute, 0)
+	l := newCapsuleLink(a, nil, time.Minute, 0, true)
 	pkt := make([]byte, 1200)
 	pkt[0], pkt[8] = 0x45, 64
 	done := make(chan struct{})
@@ -53,8 +53,8 @@ func TestWritePacketNeverWaitsForThePeer(t *testing.T) {
 func TestCloseDoesNotWaitForAReader(t *testing.T) {
 	a, b := net.Pipe()
 	defer b.Close()
-	l := newCapsuleLink(a, nil, time.Minute, 0)
-	sender := newCapsuleLink(b, nil, time.Minute, 0)
+	l := newCapsuleLink(a, nil, time.Minute, 0, true)
+	sender := newCapsuleLink(b, nil, time.Minute, 0, false)
 	defer sender.Close(quic.ApplicationErrorCode(0), "")
 	pkt := make([]byte, 100)
 	pkt[0] = 0x45

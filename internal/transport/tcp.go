@@ -114,7 +114,7 @@ func (s *Server) handleTCP(w http.ResponseWriter, r *http.Request, path string) 
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
-	link := newCapsuleLink(conn, rw.Reader, s.cfg.IdleTimeout, s.cfg.KeepAlive)
+	link := newCapsuleLink(conn, rw.Reader, s.cfg.IdleTimeout, s.cfg.KeepAlive, true)
 	t := &Tunnel{id: newTunnelID(), peer: peer, cfg: cfg, link: link, transport: "tcp", opened: time.Now()}
 	defer link.Close(0, "handler returned")
 	if len(cfg.Assigned) > 0 {
@@ -189,7 +189,7 @@ func DialTCP(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 		return nil, &DialError{Status: rsp.StatusCode, Err: errors.New("101 without the connect-ip upgrade")}
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &ClientTunnel{link: newCapsuleLink(conn, r, cfg.IdleTimeout, cfg.KeepAlive), transport: "tcp", cfg: cfg, dns: parseDNSHeader(rsp.Header.Get(DNSHeader))}, nil
+	return &ClientTunnel{link: newCapsuleLink(conn, r, cfg.IdleTimeout, cfg.KeepAlive, false), transport: "tcp", cfg: cfg, dns: parseDNSHeader(rsp.Header.Get(DNSHeader))}, nil
 }
 
 // templatePath is the request target for a CONNECT-IP template without

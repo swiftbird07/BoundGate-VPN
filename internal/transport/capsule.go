@@ -69,6 +69,7 @@ type capsuleLink struct {
 	done    chan struct{}
 	once    sync.Once
 	stopKA  chan struct{} // closed by Close: stops the keepalive and a read loop waiting to queue
+	server  bool
 
 	mu        sync.Mutex
 	err       error // why the stream ended (set before done is closed)
@@ -79,12 +80,14 @@ type capsuleLink struct {
 	gotRoutes chan struct{}
 }
 
-func newCapsuleLink(conn net.Conn, r *bufio.Reader, idle, keepAlive time.Duration) *capsuleLink {
+// server: the hub's end, which only sends ADDRESS_ASSIGN and
+// ROUTE_ADVERTISEMENT; what a client sends of them is skipped unread.
+func newCapsuleLink(conn net.Conn, r *bufio.Reader, idle, keepAlive time.Duration, server bool) *capsuleLink {
 	if r == nil {
 		r = bufio.NewReaderSize(conn, 64<<10)
 	}
 	l := &capsuleLink{
-		conn: conn, r: r, idleTimeout: idle, keepAlive: keepAlive,
+		conn: conn, r: r, idleTimeout: idle, keepAlive: keepAlive, server: server,
 		in: make(chan []byte, capsuleQueue), out: make(chan []byte, capsuleQueue), done: make(chan struct{}), stopKA: make(chan struct{}),
 		gotAssign: make(chan struct{}), gotRoutes: make(chan struct{}),
 	}
@@ -177,6 +180,13 @@ func (l *capsuleLink) readLoop() {
 			if n > maxControlLen {
 				err = fmt.Errorf("transport: control capsule of %d bytes", n)
 				return
+			}
+			if l.server && typ != capsuleBGClose {
+				if _, e := io.CopyN(io.Discard, l.r, int64(n)); e != nil {
+					err = e
+					return
+				}
+				continue
 			}
 			b := make([]byte, n)
 			if _, e := io.ReadFull(l.r, b); e != nil {
