@@ -99,3 +99,67 @@ func TestEngineLearnsOnlyWhatADynamicListHolds(t *testing.T) {
 		t.Fatal("*.github.com covers what is below it, not the name itself")
 	}
 }
+
+// A server name is whatever the client writes into its ClientHello. It may
+// stand in for a resolution only on the way to the internet: inside the
+// overlay, in a network a node announces or in a private range it would
+// open every TLS service to whoever types a permitted name.
+func TestDynamicListServerNameOnlyForPublicAddresses(t *testing.T) {
+	snap := lab(registry.Policy{ID: "ok", Name: "work", Cedar: `permit(principal, action, resource in BoundGate::List::"work");`})
+	snap.Lists = []registry.List{{Name: "work", Kind: "dynamic", Entries: []string{"myip.wtf"}}}
+	e := New(snap)
+	for _, c := range []struct {
+		dst   string
+		allow bool
+	}{
+		{"104.19.192.174", true},  // the internet, through an exit node
+		{"10.60.0.10", false},     // the hub's own network
+		{"192.168.178.20", false}, // a router's network
+		{"10.21.0.4", false},      // another node
+		{"172.16.5.5", false},     // a private range nobody announces
+		{"100.64.1.1", false},     // shared address space
+	} {
+		r := req("node-a", c.dst, 443, 6)
+		if d := e.Evaluate(r); d.Allow || d.PermitBySNI != c.allow {
+			t.Fatalf("%s before the hello: allow=%v probe=%v", c.dst, d.Allow, d.PermitBySNI)
+		}
+		r.SNI = "myip.wtf"
+		if d := e.Evaluate(r); d.Allow != c.allow {
+			t.Fatalf("%s with a permitted server name: allow=%v, want %v", c.dst, d.Allow, c.allow)
+		}
+		// what the node saw this device resolve still counts everywhere
+		r.Resolved = []string{"myip.wtf"}
+		if d := e.Evaluate(r); !d.Allow {
+			t.Fatalf("%s resolved by this device: %+v", c.dst, d)
+		}
+	}
+
+	// an sni list is the admin's explicit choice and keeps its meaning
+	snap.Lists = append(snap.Lists, registry.List{Name: "names", Kind: "sni", Entries: []string{"git.lab"}})
+	snap.Policies = append(snap.Policies, registry.Policy{ID: "sni", Name: "git", Cedar: `permit(principal, action, resource in BoundGate::List::"names");`})
+	e = New(snap)
+	r := req("node-a", "10.60.0.10", 443, 6)
+	r.SNI = "git.lab"
+	if !e.Evaluate(r).Allow {
+		t.Fatal("an sni list matches the server name wherever it points")
+	}
+}
+
+// Only a permit that reads the server name makes a denied SYN wait for the
+// ClientHello; an entity or a string that merely contains "sni" does not.
+func TestPermitsBySNIReadsTheAttributeNotTheLetters(t *testing.T) {
+	for cedarText, want := range map[string]bool{
+		`permit(principal, action, resource) when { resource.sni == "a.example" };`:             true,
+		`permit(principal, action, resource) when { context has sni && context.sni like "*" };`: true,
+		`permit(principal == BoundGate::Node::"snipe", action, resource);`:                      false,
+		`permit(principal, action, resource) when { resource.dns_name == "snide.example" };`:    false,
+	} {
+		e := New(lab(registry.Policy{ID: "p", Name: "p", Cedar: cedarText}))
+		if len(e.Errors()) != 0 {
+			t.Fatal(e.Errors())
+		}
+		if got := e.Evaluate(req("node-b", "10.60.0.10", 443, 6)).PermitBySNI; got != want {
+			t.Fatalf("%s: probe=%v, want %v", cedarText, got, want)
+		}
+	}
+}

@@ -97,3 +97,39 @@ func TestDNSAnswerRefusesWhatItMustNotLearn(t *testing.T) {
 		t.Fatal("a response is not a question")
 	}
 }
+
+// A flow a permit opened for a question carries questions: a message with
+// records in it, another opcode or a dot hidden inside a label is not one.
+func TestDNSQueryIsAPlainQuestion(t *testing.T) {
+	q := msg(0x0100, "api.github.com")
+	id, name, ok := DNSQuery(q)
+	if !ok || id != 0x1234 || name != "api.github.com" {
+		t.Fatalf("id %x name %q ok %v", id, name, ok)
+	}
+	withEDNS := append([]byte(nil), q...)
+	binary.BigEndian.PutUint16(withEDNS[10:12], 1)
+	if _, _, ok := DNSQuery(withEDNS); !ok {
+		t.Fatal("one additional record (EDNS) is a normal query")
+	}
+	cases := map[string][]byte{
+		"a query with an answer": msg(0x0100, "api.github.com", a("140.82.121.4", 60)),
+		"a notify":               msg(0x2100, "api.github.com"),
+		"two additional records": func() []byte { b := append([]byte(nil), q...); binary.BigEndian.PutUint16(b[10:12], 2); return b }(),
+		"a dot inside a label":   msg(0x0100, "x.github.com"),
+	}
+	// "x.github" as one label, then "com": reads as x.github.com
+	dotted := cases["a dot inside a label"]
+	copy(dotted[12:], []byte{8, 'x', '.', 'g', 'i', 't', 'h', 'u', 'b', 3, 'c', 'o', 'm', 0})
+	cases["a dot inside a label"] = dotted[:12+14+4]
+	for what, b := range cases {
+		if _, _, ok := DNSQuery(b); ok {
+			t.Fatalf("%s was read as a query", what)
+		}
+	}
+	if rid, ok := DNSResponseID(msg(0x8180, "api.github.com", a("140.82.121.4", 60))); !ok || rid != 0x1234 {
+		t.Fatalf("response id %x %v", rid, ok)
+	}
+	if _, ok := DNSResponseID(q); ok {
+		t.Fatal("a query has no response id")
+	}
+}

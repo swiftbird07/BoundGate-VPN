@@ -2,11 +2,13 @@ package flow
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/netparse"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
 
 func tcp(src, dst string, sport, dport uint16, flags uint8, payload []byte) []byte {
@@ -161,7 +163,8 @@ func TestDNSAndRelatedICMP(t *testing.T) {
 		calls++
 		return Result{Allow: e.DNSName != "evil.com"}
 	}
-	if out, e := tb.Handle(parse(t, pkt), pkt, peer, dec); out != Drop || e.DNSName != "evil.com" || calls != 1 {
+	// two questions to the policies: the address alone, then the name
+	if out, e := tb.Handle(parse(t, pkt), pkt, peer, dec); out != Drop || e.DNSName != "evil.com" || calls != 2 {
 		t.Fatalf("dns: %v %+v calls %d", out, e, calls)
 	}
 	// allowed UDP flow and an ICMP error about it
@@ -181,6 +184,19 @@ func TestDNSAndRelatedICMP(t *testing.T) {
 	if out, e := tb.Handle(parse(t, icmp), icmp, Origin{Local: true}, nil); out != Pass || e.Proto != netparse.ProtoUDP {
 		t.Fatalf("related icmp: %v %+v", out, e)
 	}
+	// an error about that flow addressed to anyone but its sender is no
+	// error about it
+	elsewhere := append([]byte{}, icmp...)
+	copy(elsewhere[16:20], ip4("10.60.0.99"))
+	if out, e := tb.Handle(parse(t, elsewhere), elsewhere, peer, dec); out != Pass || e.Proto != netparse.ProtoICMP {
+		t.Fatalf("icmp error to a third host rode the flow: %v %+v", out, e)
+	}
+	// nor is a redirect
+	redirect := append([]byte{}, icmp...)
+	redirect[20] = 5
+	if _, e := tb.Handle(parse(t, redirect), redirect, Origin{Local: true}, nil); e == nil || e.Proto != netparse.ProtoICMP {
+		t.Fatalf("a redirect passed as part of the flow: %+v", e)
+	}
 	// an unrelated ICMP error is a new flow of its own
 	other := append([]byte{}, icmp...)
 	binary.BigEndian.PutUint16(other[28+22:], 7000) // quoted dst port differs
@@ -192,19 +208,67 @@ func TestDNSAndRelatedICMP(t *testing.T) {
 func TestOverflow(t *testing.T) {
 	tb := New(Timeouts{}, nil)
 	allow := func(*Entry) Result { return Result{Allow: true} }
+	peers := MaxEntries / MaxPerPeer
 	for i := 0; i < MaxEntries; i++ {
+		principal := transport.DeviceID(fmt.Sprintf("p%d", i%peers))
 		p := udp("10.21.0.2", "10.60.0.10", uint16(i), uint16(i>>16+1), nil)
-		if i >= 1<<16 {
-			p = udp("10.21.0.3", "10.60.0.10", uint16(i), 1, nil)
-		}
-		tb.Handle(parse(t, p), p, Origin{Principal: "x"}, allow)
+		tb.Handle(parse(t, p), p, Origin{Principal: principal}, allow)
+	}
+	if tb.Len() != MaxEntries {
+		t.Fatalf("%d flows", tb.Len())
 	}
 	p := udp("10.21.0.9", "10.60.0.10", 1, 1, nil)
-	if out, _ := tb.Handle(parse(t, p), p, Origin{Principal: "x"}, allow); out != Drop || tb.Overflow() != 1 {
+	if out, _ := tb.Handle(parse(t, p), p, Origin{Principal: "late"}, allow); out != Drop || tb.Overflow() != 1 {
 		t.Fatal("table accepted beyond MaxEntries")
 	}
-	if n := tb.CloseWhere(func(e *Entry) bool { return e.Origin.Principal == "x" }, "peer gone"); n != MaxEntries || tb.Len() != 0 {
+	if n := tb.CloseWhere(func(e *Entry) bool { return true }, "peer gone"); n != MaxEntries || tb.Len() != 0 {
 		t.Fatalf("closed %d", n)
+	}
+}
+
+// One sender cannot take the table from the others.
+func TestOnePeerCannotFillTheTable(t *testing.T) {
+	tb := New(Timeouts{}, nil)
+	allow := func(*Entry) Result { return Result{Allow: true} }
+	for i := 0; i < MaxPerPeer+10; i++ {
+		p := udp("10.21.0.2", "10.60.0.10", uint16(i), 9, nil)
+		tb.Handle(parse(t, p), p, Origin{Principal: "greedy"}, allow)
+	}
+	if tb.Len() != MaxPerPeer || tb.Overflow() != 10 {
+		t.Fatalf("%d flows, %d refused", tb.Len(), tb.Overflow())
+	}
+	p := udp("10.21.0.3", "10.60.0.10", 1, 9, nil)
+	if out, _ := tb.Handle(parse(t, p), p, Origin{Principal: "other"}, allow); out != Pass {
+		t.Fatal("another peer was refused")
+	}
+	for i := 0; i < MaxLocal+1; i++ {
+		p := udp("10.60.0.10", "10.21.0.7", uint16(i), 7, nil)
+		tb.Handle(parse(t, p), p, Origin{Local: true}, nil)
+	}
+	if tb.Len() != MaxPerPeer+1+MaxLocal {
+		t.Fatalf("local flows: %d in the table", tb.Len())
+	}
+	// entries that leave give their share back
+	tb.CloseWhere(func(e *Entry) bool { return e.Origin.Principal == "greedy" }, "gone")
+	p = udp("10.21.0.2", "10.60.0.10", 1, 10, nil)
+	if out, _ := tb.Handle(parse(t, p), p, Origin{Principal: "greedy"}, allow); out != Pass {
+		t.Fatal("the quota was not given back")
+	}
+}
+
+// A SYN nobody answers holds its entry for a minute, not for the lifetime
+// of a TCP connection.
+func TestUnansweredSYNExpiresEarly(t *testing.T) {
+	tb := New(Timeouts{}, nil)
+	allow := func(*Entry) Result { return Result{Allow: true} }
+	syn := tcp("10.21.0.2", "10.60.0.10", 40000, 22, netparse.TCPSyn, nil)
+	tb.Handle(parse(t, syn), syn, Origin{Principal: "node-a"}, allow)
+	answered := tcp("10.21.0.2", "10.60.0.10", 40001, 22, netparse.TCPSyn, nil)
+	tb.Handle(parse(t, answered), answered, Origin{Principal: "node-a"}, allow)
+	synack := tcp("10.60.0.10", "10.21.0.2", 22, 40001, netparse.TCPSyn|netparse.TCPAck, nil)
+	tb.Handle(parse(t, synack), synack, Origin{Local: true}, nil)
+	if n := tb.Expire(time.Now().Add(2 * time.Minute)); n != 1 || tb.Len() != 1 {
+		t.Fatalf("expired %d, %d left", n, tb.Len())
 	}
 }
 
@@ -359,7 +423,11 @@ func TestFragmentsFollowTheirFirstFragment(t *testing.T) {
 
 // dnsMsg builds a query (qr=false) or an answer with one A record.
 func dnsMsg(name string, answer string) []byte {
-	b := []byte{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0}
+	return dnsMsgID(0x1234, name, answer)
+}
+
+func dnsMsgID(id uint16, name string, answer string) []byte {
+	b := []byte{byte(id >> 8), byte(id), 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0}
 	if answer != "" {
 		b[2], b[3] = 0x81, 0x80
 		b[7] = 1
@@ -392,8 +460,8 @@ func splitDots(s string) []string {
 	return out
 }
 
-// The Learner hears every answer that passes an allowed DNS flow, with the
-// name of the answer itself: one socket may ask several names.
+// The Learner hears the answer to every query that passed, with the name of
+// that query: one socket may ask several names.
 func TestLearnerSeesTheAnswersOfAnAllowedFlow(t *testing.T) {
 	tb := New(Timeouts{}, nil)
 	peer := Origin{Principal: "node-a"}
@@ -406,7 +474,8 @@ func TestLearnerSeesTheAnswersOfAnAllowedFlow(t *testing.T) {
 	tb.SetLearner(func(e *Entry, name string, addrs []netip.Addr, ttl time.Duration) {
 		got = append(got, learned{string(e.Origin.Principal), name, len(addrs), ttl})
 	})
-	allow := func(e *Entry) Result { return Result{Allow: e.DNSName != "evil.com"} }
+	// permitted by name only: the resolver's address alone is not
+	allow := func(e *Entry) Result { return Result{Allow: e.DNSName != "" && e.DNSName != "evil.com"} }
 
 	q := dnsMsg("api.github.com", "")
 	pkt := udp("10.21.0.2", "10.60.0.53", 5353, 53, q)
@@ -423,11 +492,41 @@ func TestLearnerSeesTheAnswersOfAnAllowedFlow(t *testing.T) {
 	if len(got) != 1 || got[0] != (learned{"node-a", "api.github.com", 1, time.Minute}) {
 		t.Fatalf("learned %+v", got)
 	}
-	// a second question over the same socket: the answer carries its own name
-	ans2 := udp("10.60.0.53", "10.21.0.2", 53, 5353, dnsMsg("other.example", "10.0.0.9"))
+	// the same answer again: its query was answered already
+	if out, _ := tb.Handle(parse(t, ans), ans, Origin{Local: true}, nil); out != Drop || len(got) != 1 {
+		t.Fatalf("a second answer to one query: %v, learned %+v", out, got)
+	}
+	// an answer nobody asked for passes nowhere and teaches nothing
+	ans2 := udp("10.60.0.53", "10.21.0.2", 53, 5353, dnsMsgID(0x4242, "other.example", "10.0.0.9"))
+	if out, _ := tb.Handle(parse(t, ans2), ans2, Origin{Local: true}, nil); out != Drop || len(got) != 1 {
+		t.Fatalf("an unsolicited answer: %v, learned %+v", out, got)
+	}
+	// a second question over the same socket: its answer, under its ID
+	q2 := udp("10.21.0.2", "10.60.0.53", 5353, 53, dnsMsgID(0x4242, "other.example", ""))
+	if out, _ := tb.Handle(parse(t, q2), q2, peer, allow); out != Pass {
+		t.Fatal("the second question was denied")
+	}
+	// an answer under that ID for another question is not its answer
+	wrong := udp("10.60.0.53", "10.21.0.2", 53, 5353, dnsMsgID(0x4242, "api.github.com", "10.0.0.66"))
+	if out, _ := tb.Handle(parse(t, wrong), wrong, Origin{Local: true}, nil); out != Drop || len(got) != 1 {
+		t.Fatalf("an answer to another question: %v, learned %+v", out, got)
+	}
 	tb.Handle(parse(t, ans2), ans2, Origin{Local: true}, nil)
 	if len(got) != 2 || got[1].name != "other.example" {
 		t.Fatalf("learned %+v", got)
+	}
+	// a refused question on the same socket is dropped alone
+	q3 := udp("10.21.0.2", "10.60.0.53", 5353, 53, dnsMsgID(0x5555, "evil.com", ""))
+	if out, _ := tb.Handle(parse(t, q3), q3, peer, allow); out != Drop {
+		t.Fatal("evil.com passed on a socket that asked a permitted name before")
+	}
+	if out, _ := tb.Handle(parse(t, q2), q2, peer, allow); out != Pass {
+		t.Fatal("the socket is still good for permitted names")
+	}
+	// data that is no query rides no permitted name
+	junk := udp("10.21.0.2", "10.60.0.53", 5353, 53, []byte("GET / HTTP/1.1\r\n\r\n"))
+	if out, _ := tb.Handle(parse(t, junk), junk, peer, allow); out != Drop {
+		t.Fatal("non-DNS data passed on a flow opened by a question")
 	}
 
 	// a denied flow teaches nothing, however its answer looks

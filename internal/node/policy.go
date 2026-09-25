@@ -60,8 +60,15 @@ func (s *session) decide(e *flow.Entry) flow.Result {
 	if r, ok := s.loginPassthrough(e); ok {
 		return r
 	}
-	names := s.dns.Names(e.Origin.Principal, e.Target.Addr(), time.Now())
-	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: e.DNSName, Resolved: names})
+	names := s.dns.Names(s.learner(e.Origin.Principal), e.Target.Addr(), time.Now())
+	question := e.DNSName
+	if question != "" && !s.knownResolver(e.Target.Addr()) {
+		// a question decides only on the way to a resolver this node knows:
+		// to any other address, a permitted name would open a UDP channel
+		// to whatever listens on port 53 there
+		question = ""
+	}
+	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: question, Resolved: names})
 	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI, Names: names}
 }
 
@@ -82,8 +89,20 @@ func (s *session) learnDNS(e *flow.Entry, name string, addrs []netip.Addr, ttl t
 		})
 		return
 	}
-	s.dns.Learn(e.Origin.Principal, name, addrs, ttl, time.Now())
+	s.dns.Learn(s.learner(e.Origin.Principal), name, addrs, ttl, time.Now())
 	s.n.log.Debug("learned a name for a peer", "peer", string(e.Origin.Principal), "name", name, "addrs", len(addrs), "ttl", ttl.String())
+}
+
+// learner is whom a learned name belongs to: the peer together with its
+// current user session. On a shared device the next user starts without
+// what the previous one resolved.
+func (s *session) learner(peer transport.DeviceID) transport.DeviceID {
+	if snap := s.n.holder.Load(); snap != nil {
+		if se, ok := snap.SessionFor(peer, time.Now()); ok {
+			return peer + "\x00" + transport.DeviceID(se.ID)
+		}
+	}
+	return peer
 }
 
 // trustedResolver: the resolvers this node hands out (Config.DNS), or the
@@ -97,6 +116,19 @@ func (s *session) trustedResolver(a netip.Addr) bool {
 	for _, r := range from {
 		if r == a {
 			return true
+		}
+	}
+	return false
+}
+
+// knownResolver: a resolver this node hands out (dns) or reads answers from
+// (dns_learn_from).
+func (s *session) knownResolver(a netip.Addr) bool {
+	for _, list := range [][]netip.Addr{s.n.cfg.DNS, s.n.cfg.DNSLearnFrom} {
+		for _, r := range list {
+			if r == a {
+				return true
+			}
 		}
 	}
 	return false
@@ -143,10 +175,14 @@ func (s *session) loginPassthrough(e *flow.Entry) (flow.Result, bool) {
 	return flow.Result{Reasons: []string{"no user session: only the login passthrough is open"}}, true
 }
 
-// flowSweeper expires idle flows.
+// flowSweeper expires idle flows. When the snapshot goes stale (the control
+// plane unreachable beyond max_age) it also closes the flows that are open:
+// decide denies everything then, and a stale snapshot must not keep old
+// permits alive for connections that were already running.
 func (s *session) flowSweeper() {
 	t := time.NewTicker(s.n.every(5*time.Second, 30*time.Second))
 	defer t.Stop()
+	stale := false
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -154,6 +190,13 @@ func (s *session) flowSweeper() {
 		case now := <-t.C:
 			s.flows.Expire(now)
 			s.dns.Expire(now)
+			isStale := s.n.holder.Stale(now)
+			if isStale && !stale {
+				if c := s.flows.Reevaluate(s.decide); c > 0 {
+					s.n.log.Warn("snapshot is stale: open flows closed until the control plane answers again", "closed", c)
+				}
+			}
+			stale = isStale
 		}
 	}
 }

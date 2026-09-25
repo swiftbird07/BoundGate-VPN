@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 
@@ -95,6 +96,14 @@ type Entry struct {
 	dnsDone  bool
 	closing  bool
 	denyOnly bool // cached deny, expires quickly
+	// dns: a UDP flow a peer opened to port 53. It is decided message by
+	// message (dnsPacket): each query under its own question, each response
+	// only as the answer to a query that passed.
+	dns        bool
+	dnsStarted bool       // the first message was decided
+	nameless   bool       // the destination is permitted without a question
+	queries    []dnsQuery // queries that passed and wait for their answer
+	lastDenied string     // one deny event per refused name, not per retry
 	// probing: a TCP flow denied at the SYN that a permit could still allow
 	// by server name. The handshake passes, the first payload from the
 	// originator is held back until it was read: a ClientHello with a name
@@ -102,6 +111,15 @@ type Entry struct {
 	// RSTs. The server sees a handshake, never a byte of payload.
 	probing bool
 }
+
+type dnsQuery struct {
+	id   uint16
+	name string
+}
+
+// maxQueries bounds the questions one DNS flow may have in flight; the
+// oldest is forgotten (its answer then no longer passes).
+const maxQueries = 32
 
 // Probing reports a flow waiting for its TLS server name to be decided.
 func (e *Entry) Probing() bool { return e.probing }
@@ -135,16 +153,31 @@ const (
 	Reset
 )
 
-// Timeouts of the table.
+// Timeouts of the table. Embryonic is a TCP flow the other side never
+// answered: a SYN to nowhere holds its entry for a minute, not half an hour.
 type Timeouts struct {
-	TCP, UDP, ICMP, Other, Closing, Deny time.Duration
+	TCP, UDP, ICMP, Other, Closing, Deny, Embryonic time.Duration
 }
 
 // DefaultTimeouts are used when a field is zero.
-var DefaultTimeouts = Timeouts{TCP: 30 * time.Minute, UDP: 2 * time.Minute, ICMP: 30 * time.Second, Other: 2 * time.Minute, Closing: 5 * time.Second, Deny: 10 * time.Second}
+var DefaultTimeouts = Timeouts{TCP: 30 * time.Minute, UDP: 2 * time.Minute, ICMP: 30 * time.Second, Other: 2 * time.Minute, Closing: 5 * time.Second, Deny: 10 * time.Second, Embryonic: time.Minute}
 
 // MaxEntries bounds the table (fail closed above it).
 const MaxEntries = 65536
+
+// The table is shared by everyone who sends through the node, so nobody
+// may take all of it: one peer holds at most MaxPerPeer flows, the node's
+// own host stack and LAN together at most MaxLocal. Above that, that
+// sender's new flows are dropped and everyone else's still open.
+const (
+	MaxPerPeer = 8192
+	MaxLocal   = 16384
+)
+
+// maxSNIBytes bounds what all flows together buffer of ClientHellos that
+// arrive in pieces. A flow that would go beyond it is read as one without
+// a server name: a permit waiting for the name then aborts it.
+const maxSNIBytes = 32 << 20
 
 // Table is the connection table.
 type Table struct {
@@ -156,6 +189,8 @@ type Table struct {
 	full     bool
 	overflow uint64
 	strays   uint64
+	perPeer  map[transport.DeviceID]int // flows per principal; "" = local
+	sniFree  int                        // bytes still free for split ClientHellos
 	// frags: the fragmented packets whose first fragment passed a moment ago
 	frags map[fragKey]fragState
 }
@@ -204,10 +239,14 @@ func New(t Timeouts, onEvent func(Event)) *Table {
 	if t.Deny == 0 {
 		t.Deny = d.Deny
 	}
+	if t.Embryonic == 0 {
+		t.Embryonic = d.Embryonic
+	}
 	if onEvent == nil {
 		onEvent = func(Event) {}
 	}
-	return &Table{m: make(map[Key]*Entry), frags: make(map[fragKey]fragState), t: t, onEvent: onEvent}
+	return &Table{m: make(map[Key]*Entry), frags: make(map[fragKey]fragState), t: t, onEvent: onEvent,
+		perPeer: make(map[transport.DeviceID]int), sniFree: maxSNIBytes}
 }
 
 // SetLearner installs the hook for DNS answers (nil switches it off).
@@ -305,13 +344,22 @@ func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 			rel.LastSeen = now
 			return Pass, rel
 		}
-		if len(t.m) >= MaxEntries {
+		limit := MaxPerPeer
+		if origin.Local {
+			limit = MaxLocal
+		}
+		if len(t.m) >= MaxEntries || t.perPeer[origin.Principal] >= limit {
 			t.overflow++
 			return Drop, nil
 		}
 		e = &Entry{ID: newID(), Key: key, Originator: src, Target: netip.AddrPortFrom(h.Dst, h.DstPort), Proto: h.Proto, Origin: origin, Opened: now, LastSeen: now}
 		t.m[key] = e
-		e.inspect(h, pkt, src)
+		t.perPeer[origin.Principal]++
+		if !origin.Local && h.Proto == netparse.ProtoUDP && h.DstPort == 53 {
+			e.dns, e.Decided = true, true
+			return t.dnsPacket(e, h, pkt, src, decide, now)
+		}
+		e.inspect(h, pkt, src, &t.sniFree)
 		if origin.Local {
 			e.Allowed = true
 			e.count(src, len(pkt))
@@ -342,6 +390,9 @@ func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 		return Pass, e
 	}
 	e.LastSeen = now
+	if e.dns {
+		return t.dnsPacket(e, h, pkt, src, decide, now)
+	}
 	if e.probing {
 		return t.probe(e, h, pkt, src, decide, now)
 	}
@@ -351,8 +402,7 @@ func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 	if h.Proto == netparse.ProtoTCP && h.TCPFlags&(netparse.TCPFin|netparse.TCPRst) != 0 {
 		e.closing = true
 	}
-	t.learned(e, h, pkt, src)
-	changed := e.inspect(h, pkt, src)
+	changed := e.inspect(h, pkt, src, &t.sniFree)
 	if changed && e.Decided {
 		e.decide(decide)
 		if !e.Allowed {
@@ -379,6 +429,22 @@ func (e *Entry) decide(decide Decider) {
 	e.Allowed = e.Result.Allow
 }
 
+// releaseSNI gives the buffered part of a ClientHello back to the table.
+func (e *Entry) releaseSNI(free *int) {
+	*free += len(e.sniBuf)
+	e.sniBuf = nil
+}
+
+// forget takes a removed entry off the table's accounts. t.mu is held.
+func (t *Table) forget(e *Entry) {
+	e.releaseSNI(&t.sniFree)
+	if t.perPeer[e.Origin.Principal] <= 1 {
+		delete(t.perPeer, e.Origin.Principal)
+	} else {
+		t.perPeer[e.Origin.Principal]--
+	}
+}
+
 func (e *Entry) count(src netip.AddrPort, n int) {
 	if src == e.Originator {
 		e.PacketsIn++
@@ -391,8 +457,9 @@ func (e *Entry) count(src netip.AddrPort, n int) {
 
 // inspect looks at the first payload from the originator for a TLS server
 // name (TCP) or a DNS question (UDP/53). It reports whether an attribute
-// was newly learned.
-func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort) bool {
+// was newly learned. free is what the table has left for ClientHellos that
+// arrive in pieces.
+func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort, free *int) bool {
 	if src != e.Originator || h.Payload < 0 || h.Payload >= len(pkt) {
 		return false
 	}
@@ -402,18 +469,22 @@ func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort) bool 
 		if e.sniDone {
 			return false
 		}
-		if len(e.sniBuf)+len(payload) > netparse.MaxClientHello {
+		if len(e.sniBuf)+len(payload) > netparse.MaxClientHello || len(payload) > *free {
+			e.releaseSNI(free)
 			e.sniDone = true
 			return false
 		}
+		*free -= len(payload)
 		e.sniBuf = append(e.sniBuf, payload...)
 		name, res := netparse.ClientHelloSNI(e.sniBuf)
 		switch res {
 		case netparse.SNIFound:
-			e.SNI, e.sniDone, e.sniBuf = name, true, nil
+			e.releaseSNI(free)
+			e.SNI, e.sniDone = name, true
 			return true
 		case netparse.SNINotTLS, netparse.SNINone:
-			e.sniDone, e.sniBuf = true, nil
+			e.releaseSNI(free)
+			e.sniDone = true
 		}
 	case netparse.ProtoUDP:
 		if e.dnsDone || h.DstPort != 53 {
@@ -428,20 +499,86 @@ func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort) bool 
 	return false
 }
 
-// learned passes a DNS answer on an allowed flow to the Learner. Answers
-// are read one by one and not from e.DNSName: a resolver client that keeps
-// one socket asks several names over it, and every answer carries the
-// question it belongs to.
-func (t *Table) learned(e *Entry, h netparse.Header, pkt []byte, src netip.AddrPort) {
-	if t.learn == nil || !e.Allowed || h.Proto != netparse.ProtoUDP || src != e.Target || src.Port() != 53 {
-		return
+// dnsPacket decides one message of a DNS flow from a peer. A resolver
+// client keeps one socket for many questions, so the first question does
+// not speak for the others: every query is decided under its own name, and
+// one that no permit takes is dropped alone (the flow stays for the next).
+// What does not read as a query is decided under no name, as plain UDP to
+// that address. A response passes only as the answer to a query that
+// passed (same message ID, same question), and only such an answer is
+// handed to the Learner; anything else from the resolver's side passes only
+// when the address itself is permitted.
+func (t *Table) dnsPacket(e *Entry, h netparse.Header, pkt []byte, src netip.AddrPort, decide Decider, now time.Time) (Outcome, *Entry) {
+	var payload []byte
+	if h.Payload >= 0 && h.Payload < len(pkt) {
+		payload = pkt[h.Payload:]
 	}
-	if h.Payload < 0 || h.Payload >= len(pkt) {
-		return
+	if src != e.Originator {
+		if id, ok := netparse.DNSResponseID(payload); ok {
+			for i, q := range e.queries {
+				if q.id != id {
+					continue
+				}
+				name, addrs, ttl, answered := netparse.DNSAnswer(payload)
+				if answered && name != q.name {
+					break // another question under the same ID: not this answer
+				}
+				e.queries = append(e.queries[:i], e.queries[i+1:]...)
+				if answered && t.learn != nil {
+					t.learn(e, name, addrs, ttl)
+				}
+				e.count(src, len(pkt))
+				return Pass, e
+			}
+		}
+		if e.nameless {
+			e.count(src, len(pkt))
+			return Pass, e
+		}
+		return Drop, e
 	}
-	if name, addrs, ttl, ok := netparse.DNSAnswer(pkt[h.Payload:]); ok {
-		t.learn(e, name, addrs, ttl)
+
+	id, name, query := netparse.DNSQuery(payload)
+	first := !e.dnsStarted
+	if first {
+		e.dnsStarted = true
+		// whether the address alone is permitted decides what the other
+		// side may send besides answers
+		e.DNSName = ""
+		e.nameless = decide != nil && decide(e).Allow
 	}
+	e.DNSName = name
+	var res Result
+	if decide != nil {
+		res = decide(e)
+	}
+	if !res.Allow {
+		if first || name != e.lastDenied {
+			d := *e
+			d.Allowed, d.Result, d.queries = false, res, nil
+			t.onEvent(Event{Type: EventDeny, Entry: d, At: now})
+		}
+		e.lastDenied = name
+		if !e.Allowed {
+			e.denyOnly = true
+		}
+		return Drop, e
+	}
+	e.lastDenied = ""
+	if query {
+		if len(e.queries) == maxQueries {
+			e.queries = e.queries[1:]
+		}
+		e.queries = append(e.queries, dnsQuery{id: id, name: name})
+	}
+	e.Result = res
+	e.denyOnly = false
+	if !e.Allowed {
+		e.Allowed = true
+		t.onEvent(Event{Type: EventOpen, Entry: *e, At: now})
+	}
+	e.count(src, len(pkt))
+	return Pass, e
 }
 
 // probe handles a packet of a flow that waits for its server name.
@@ -453,7 +590,7 @@ func (t *Table) probe(e *Entry, h netparse.Header, pkt []byte, src netip.AddrPor
 		return Pass, e // the handshake, acknowledgements, the end
 	}
 	if src == e.Originator {
-		e.inspect(h, pkt, src)
+		e.inspect(h, pkt, src, &t.sniFree)
 		if !e.sniDone {
 			// a ClientHello split over segments: hold this one back too; the
 			// client retransmits it once the name is known and permitted
@@ -484,13 +621,18 @@ func (t *Table) relatedLocked(h netparse.Header, pkt []byte) *Entry {
 	if len(pkt) < ihl+8+20 {
 		return nil
 	}
-	switch pkt[ihl] { // ICMP type
-	case 3, 4, 5, 11, 12:
+	switch pkt[ihl] { // ICMP type: unreachable, source quench, time exceeded, parameter problem
+	case 3, 4, 11, 12:
 	default:
-		return nil
+		return nil // a redirect (5) is never passed on: nobody routes by the overlay's word
 	}
 	inner, ok := netparse.Parse(pkt[ihl+8:])
 	if !ok {
+		return nil
+	}
+	// an error goes back to whoever sent the packet it quotes; to anyone
+	// else it would carry a peer's bytes to a host no flow of its reaches
+	if h.Dst != inner.Src {
 		return nil
 	}
 	e := t.m[KeyOf(inner)]
@@ -507,6 +649,7 @@ func (t *Table) Expire(now time.Time) int {
 	for k, e := range t.m {
 		if now.Sub(e.LastSeen) > t.timeout(e) {
 			delete(t.m, k)
+			t.forget(e)
 			closed = append(closed, e)
 		}
 	}
@@ -533,6 +676,8 @@ func (t *Table) timeout(e *Entry) time.Duration {
 		return t.t.Deny
 	case e.closing:
 		return t.t.Closing
+	case e.Proto == netparse.ProtoTCP && e.PacketsOut == 0:
+		return t.t.Embryonic
 	case e.Proto == netparse.ProtoTCP:
 		return t.t.TCP
 	case e.Proto == netparse.ProtoUDP:
@@ -551,6 +696,7 @@ func (t *Table) CloseWhere(pred func(*Entry) bool, reason string) int {
 	for k, e := range t.m {
 		if pred(e) {
 			delete(t.m, k)
+			t.forget(e)
 			closed = append(closed, e)
 		}
 	}
@@ -570,7 +716,7 @@ func (t *Table) Snapshot() []Entry {
 	out := make([]Entry, 0, len(t.m))
 	for _, e := range t.m {
 		c := *e
-		c.sniBuf = nil
+		c.sniBuf, c.queries = nil, nil
 		out = append(out, c)
 	}
 	sortEntries(out)
@@ -578,11 +724,7 @@ func (t *Table) Snapshot() []Entry {
 }
 
 func sortEntries(es []Entry) {
-	for i := 1; i < len(es); i++ {
-		for j := i; j > 0 && es[j].Opened.After(es[j-1].Opened); j-- {
-			es[j], es[j-1] = es[j-1], es[j]
-		}
-	}
+	sort.Slice(es, func(i, j int) bool { return es[i].Opened.After(es[j].Opened) })
 }
 
 func newID() string {
@@ -601,6 +743,15 @@ func (t *Table) Reevaluate(decide Decider) int {
 	for _, e := range t.m {
 		if !e.Decided || !e.Allowed {
 			continue
+		}
+		if e.dns {
+			// the next query decides itself; what was allowed before must
+			// not answer or pass under the old rules
+			e.queries = nil
+			name := e.DNSName
+			e.DNSName = ""
+			e.nameless = decide != nil && decide(e).Allow
+			e.DNSName = name
 		}
 		e.decide(decide)
 		if !e.Allowed {

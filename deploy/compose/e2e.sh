@@ -116,8 +116,8 @@ policy lab-allow-all 'permit(principal, action, resource);'
 policy_rm vpn-users
 wait_for 15 reach 192.168.178.10 target-lan || fail "LAN unreachable after restoring allow-all"
 
-echo "== 4e. dynamic access list: one list of names and addresses; the name opens the query, what the answer named, and TLS by server name"
-LIST_ID=$($S api POST /api/v1/admin/lists '{"name":"lab-dynamic","kind":"dynamic","entries":["target.lab","public.lab","192.168.178.10:80"]}' | jq -r .id)
+echo "== 4e. dynamic access list: one list of names and addresses; the name opens the query, what the answer named, never a server name alone inside the overlay"
+LIST_ID=$($S api POST /api/v1/admin/lists '{"name":"lab-dynamic","kind":"dynamic","entries":["target.lab","tls.lab","public.lab","192.168.178.10:80"]}' | jq -r .id)
 [ -n "$LIST_ID" ] && [ "$LIST_ID" != "null" ] || fail "dynamic list not created"
 policy lab-allow-all 'permit(principal, action, resource) when { principal.kind == "workload" };'
 policy dyn-list 'permit(principal in BoundGate::Group::"vpn-users", action, resource in BoundGate::List::"lab-dynamic");'
@@ -129,9 +129,14 @@ if x node-a timeout 4 nslookup other.example 10.60.0.53 >/dev/null 2>&1; then fa
 # the question in the list goes through, and the answer teaches the hub
 x node-a timeout 5 nslookup target.lab 10.60.0.53 2>/dev/null | grep -q 10.60.0.10 || fail "the resolver did not answer target.lab through the tunnel"
 wait_for 10 reach 10.60.0.10 target || fail "the address the name resolved to stayed closed"
-# TLS without any resolution: the server name decides, as with an sni list
-reach_tls public.lab 10.60.0.11 || fail "public.lab blocked although the list holds the name"
+# a server name alone does not open an address of the overlay's networks:
+# anyone could write a permitted name into a ClientHello (it does on the
+# internet, which the lab has none of; see the unit tests)
+if reach_tls public.lab 10.60.0.11; then fail "a server name alone opened an address inside the overlay's networks"; fi
 if x node-a curl -sf --max-time 2 http://10.60.0.11 >/dev/null 2>&1; then fail "a port nothing in the list names was open"; fi
+# resolved through the trusted resolver, the same address opens under its name
+x node-a timeout 5 nslookup tls.lab 10.60.0.53 2>/dev/null | grep -q 10.60.0.11 || fail "the resolver did not answer tls.lab"
+wait_for 10 reach_tls tls.lab 10.60.0.11 || fail "tls.lab stayed closed after it was resolved"
 # a plain address entry of the same list, enforced where the traffic enters the LAN
 wait_for 10 reach 192.168.178.10 target-lan || fail "the address entry of the list did not open the LAN target"
 # the flow log says which name opened the connection

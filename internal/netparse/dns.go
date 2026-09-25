@@ -11,19 +11,43 @@ import (
 // addresses than this is read up to here and no further.
 const maxDNSAnswers = 64
 
-// DNSQueryName returns the lower-cased name of the first question in a DNS
-// query message (UDP payload). Responses and malformed messages yield
-// ok=false. Compression pointers are not followed in a question name.
+// DNSQueryName returns the lower-cased name of the question in a DNS query
+// message (UDP payload). Responses and malformed messages yield ok=false.
+// Compression pointers are not followed in a question name.
 func DNSQueryName(payload []byte) (string, bool) {
+	_, name, ok := DNSQuery(payload)
+	return name, ok
+}
+
+// DNSQuery reads a standard query the way a stub resolver sends it: one
+// question, no answer or authority records, at most one additional record
+// (the EDNS OPT). It returns the message ID and the lower-cased question
+// name. Anything else yields ok=false: a flow that a permit opened for a
+// question must carry questions, not other data to port 53.
+func DNSQuery(payload []byte) (id uint16, name string, ok bool) {
 	if len(payload) < 12 {
-		return "", false
+		return 0, "", false
 	}
 	flags := binary.BigEndian.Uint16(payload[2:4])
-	if flags&0x8000 != 0 { // QR: response
-		return "", false
+	if flags&0x8000 != 0 || flags&0x7800 != 0 { // QR: a response; OPCODE: not a query
+		return 0, "", false
 	}
-	name, _, ok := questionName(payload)
-	return name, ok
+	if binary.BigEndian.Uint16(payload[4:6]) != 1 || // QDCOUNT
+		binary.BigEndian.Uint16(payload[6:8]) != 0 || // ANCOUNT
+		binary.BigEndian.Uint16(payload[8:10]) != 0 || // NSCOUNT
+		binary.BigEndian.Uint16(payload[10:12]) > 1 { // ARCOUNT
+		return 0, "", false
+	}
+	name, _, ok = questionName(payload)
+	return binary.BigEndian.Uint16(payload[0:2]), name, ok
+}
+
+// DNSResponseID returns the message ID of a DNS response (QR set).
+func DNSResponseID(payload []byte) (uint16, bool) {
+	if len(payload) < 12 || binary.BigEndian.Uint16(payload[2:4])&0x8000 == 0 {
+		return 0, false
+	}
+	return binary.BigEndian.Uint16(payload[0:2]), true
 }
 
 // DNSAnswer reads a DNS response: the name of its question, the addresses
@@ -117,7 +141,9 @@ func questionName(payload []byte) (string, int, bool) {
 			sb.WriteByte('.')
 		}
 		for _, c := range payload[off : off+l] {
-			if c < 0x21 || c > 0x7e {
+			// a dot inside a label would read as a label boundary: the
+			// name on the wire is another than the one a list sees
+			if c < 0x21 || c > 0x7e || c == '.' {
 				return "", 0, false
 			}
 			sb.WriteByte(c)

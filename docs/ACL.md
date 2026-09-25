@@ -34,7 +34,7 @@ Policies talk about these entities:
 | `BoundGate::Host::"<ip>"` (resource: the destination of a flow) | `ip` (ipaddr), `port`, `protocol` (`tcp`/`udp`/`icmp`/number), `sni` (only when a TLS ClientHello was seen), `dns_name` (only for DNS queries), `resolved_names` (set; the names this node resolved to the address for this principal, see the dynamic access list) | `BoundGate::Network::"<prefix>"` for the overlay pool and every announced prefix containing the address; `BoundGate::Node::"<owner>"` (the node with that overlay address, or the announcer of the longest matching prefix) |
 | `BoundGate::Network::"<prefix>"` | `prefix` (ipaddr) | the announcing node(s) |
 | `BoundGate::Tag::"<tag>"` | | none. A destination is `in` the tags of the node that owns it, through that node |
-| `BoundGate::List::"<name>"` (Lists in the admin UI) | `name`, `kind` (`ip`, `dns`, `sni`, `dynamic`) | none. A destination is `in` an `ip` list when its address is inside one of the list's prefixes, in a `dns` list when the DNS query name matches one of its names, in an `sni` list when the TLS server name does, and in a `dynamic` list when any of the three matches or one of its address entries contains the destination |
+| `BoundGate::List::"<name>"` (Lists in the admin UI) | `name`, `kind` (`ip`, `dns`, `sni`, `dynamic`) | none. A destination is `in` an `ip` list when its address is inside one of the list's prefixes, in a `dns` list when the DNS query name matches one of its names (a query to a resolver the node knows), in an `sni` list when the TLS server name does (wherever the connection goes: the client writes that name, so pair an `sni` list with an address or port condition for services inside the overlay), and in a `dynamic` list when the question matches, when the principal resolved one of its names to the address, when the server name matches and the address is public, or when one of its address entries contains the destination |
 | `BoundGate::Action::"connect"` | | the only action |
 
 `context` carries `protocol`, `port`, `has_session`, and when present `sni`,
@@ -87,7 +87,10 @@ A permit that names such a list does three things at once:
 1. **The DNS query is answered.** The destination of a query whose question
    is in the list is in the list, so the resolution goes through and comes
    back (a hub lets DNS to the resolvers it offers through anyway, see
-   `dns` in `DEPLOY.md`).
+   `dns` in `DEPLOY.md`). The question counts only on the way to a resolver
+   the node knows (`dns`, `dns_learn_from`): to any other address a permitted
+   name would open UDP to whatever listens on port 53 there, so a query to
+   `8.8.8.8` needs an address permit like any other traffic.
 2. **What the answer names is open.** The node reads the answers it
    forwards and remembers, *for the device that asked*, which addresses the
    name resolved to (`internal/node/dnsmap`). The connection that follows is
@@ -96,22 +99,34 @@ A permit that names such a list does three things at once:
    long as the answer's time to live says (at least a minute, at most an
    hour, plus five minutes, because devices cache longer than they are
    told).
-3. **The TLS server name still works, as the fallback.** A device that
-   resolves elsewhere — DNS over HTTPS in a browser, a hard-coded resolver,
-   an address typed by hand — teaches the node nothing. A TLS connection is
-   then still decided by the name in its ClientHello, exactly like an `sni`
-   list: the handshake is allowed, the first payload held back, and the
-   connection opened or reset with the name (see Flows below).
+3. **The TLS server name still works, as the fallback — on the way to the
+   internet.** A device that resolves elsewhere — DNS over HTTPS in a
+   browser, a hard-coded resolver, an address typed by hand — teaches the
+   node nothing. A TLS connection to a public address is then still decided
+   by the name in its ClientHello, exactly like an `sni` list: the handshake
+   is allowed, the first payload held back, and the connection opened or
+   reset with the name (see Flows below). The name in a ClientHello is
+   whatever the client writes there, so it never stands in for a resolution
+   inside the overlay: not for an address of the pool, of a network a node
+   announces, or of a private range (RFC 1918, 100.64/10). There, a name
+   opens a connection only when the node saw this device resolve it to that
+   address, or when an address entry of the list names it.
 
-Two conditions guard what a node believes, both fail closed:
+Three conditions guard what a node believes, all fail closed:
 
 * Only answers from a **resolver the node trusts** are read: the resolvers
   it offers its spokes (`dns`), or the ones `dns_learn_from` names. A device
   that asks some other resolver still gets its answer, but must not be able
   to name an address itself — otherwise it would forge a mapping from a
   permitted name to any address it likes (R115).
+* Only the **answer to a query that passed** is read: same message ID, same
+  question, on the flow the query left on. An answer nobody asked for is
+  dropped, whoever manages to send it with the resolver's address.
 * Only names a **dynamic list actually holds** are remembered. Everything
   else passes unremembered.
+
+What is learned belongs to the device *and its user session*: the next user
+of a shared device starts without the previous user's resolutions.
 
 What the node learned is visible: the flow log and `boundgatectl flows`
 carry `resolved_names` for a flow decided that way, so a permit that came
@@ -120,9 +135,20 @@ policy editor takes the same names (`resolved_names` in
 `POST /admin/acl/evaluate`).
 
 A node that sees no DNS at all (a spoke whose device resolves over DoH
-only) matches a dynamic list by server name and by its address entries; the
-names it never saw resolved simply do not match. Nothing is remembered
-across a restart.
+only) matches a dynamic list by server name (public addresses) and by its
+address entries; the names it never saw resolved simply do not match.
+Nothing is remembered across a restart.
+
+### DNS flows are decided query by query
+
+A resolver client keeps one socket for many questions, so the first question
+of a UDP flow to port 53 does not speak for the others. Every query is
+decided under its own name (in a `dns` or `dynamic` list, or `dns_name` in a
+policy); one that no permit takes is dropped alone, and the socket stays
+usable for the next. A response passes only as the answer to a query that
+passed. What does not read as a plain query (one question, no records but an
+EDNS option) is decided without a name, as UDP to that address: a permit by
+name carries questions, not other data.
 
 ### A list as a file: import, export, and a source it follows
 

@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,11 +123,21 @@ type Engine struct {
 	networks []network
 	errs     []PolicyError
 	count    int
-	// permitsBySNI: at least one permit statement mentions `sni`, or a list
-	// of server names
+	// permitsBySNI: at least one permit statement reads `sni`, or names a
+	// list of server names
 	permitsBySNI bool
-	lists        []list
+	// permitsDynamic: at least one permit statement names a dynamic list,
+	// whose server-name fallback applies to public addresses only
+	permitsDynamic bool
+	lists          []list
+	// internal is what the overlay itself reaches: the pool and every
+	// network a node announces (default routes aside)
+	internal []netip.Prefix
 }
+
+// sniAttr finds a policy that reads the server name: resource.sni,
+// context.sni, `has sni`, ["sni"].
+var sniAttr = regexp.MustCompile(`\.sni\b|\bhas\s+sni\b|\["sni"\]`)
 
 // list is a compiled registry.List: a destination is `in` the list when
 // its address is inside one of the prefixes (kind ip), or its DNS query
@@ -175,8 +186,10 @@ func compileList(l registry.List) list {
 	return c
 }
 
-// has reports whether the flow's destination is in the list.
-func (c *list) has(r Request) bool {
+// has reports whether the flow's destination is in the list. sniFallback
+// says whether a dynamic list may match by the TLS server name alone
+// (Engine.sniFallback).
+func (c *list) has(r Request, sniFallback bool) bool {
 	switch c.kind {
 	case "ip":
 		for _, p := range c.prefixes {
@@ -195,7 +208,7 @@ func (c *list) has(r Request) bool {
 				return true
 			}
 		}
-		if c.hasName(r.DNSName) || c.hasName(r.SNI) {
+		if c.hasName(r.DNSName) || sniFallback && c.hasName(r.SNI) {
 			return true
 		}
 		for _, n := range r.Resolved {
@@ -237,15 +250,19 @@ func New(snap *registry.Snapshot) *Engine {
 	if snap == nil {
 		return e
 	}
-	sniLists := map[string]bool{}
+	sniLists, dynamicLists := map[string]bool{}, map[string]bool{}
 	for _, l := range snap.Lists {
 		c := compileList(l)
 		e.lists = append(e.lists, c)
 		e.base[c.uid] = types.Entity{UID: c.uid, Attributes: types.NewRecord(types.RecordMap{"kind": types.String(l.Kind), "name": types.String(l.Name)})}
-		if l.Kind == "sni" || l.Kind == "dynamic" {
-			// a dynamic list matches the server name too, so a permit that
-			// names one is worth waiting for the ClientHello
+		switch l.Kind {
+		case "sni":
 			sniLists[`BoundGate::List::"`+l.Name+`"`] = true
+		case "dynamic":
+			// a dynamic list matches the server name too (of a public
+			// address), so a permit that names one is worth waiting for the
+			// ClientHello
+			dynamicLists[`BoundGate::List::"`+l.Name+`"`] = true
 		}
 	}
 	for _, p := range snap.Policies {
@@ -268,12 +285,17 @@ func New(snap *registry.Snapshot) *Engine {
 			e.count++
 			if pol.Effect() == cedar.Permit {
 				text := pol.MarshalCedar()
-				if bytes.Contains(text, []byte("sni")) {
+				if sniAttr.Match(text) {
 					e.permitsBySNI = true
 				}
 				for ref := range sniLists {
 					if bytes.Contains(text, []byte(ref)) {
 						e.permitsBySNI = true
+					}
+				}
+				for ref := range dynamicLists {
+					if bytes.Contains(text, []byte(ref)) {
+						e.permitsDynamic = true
 					}
 				}
 			}
@@ -332,6 +354,7 @@ func (e *Engine) buildEntities() {
 	}
 	if s.Pool.IsValid() {
 		addNet(s.Pool, "")
+		e.internal = append(e.internal, s.Pool.Masked())
 	}
 	for _, n := range nodes {
 		if n.ID == "" {
@@ -346,6 +369,9 @@ func (e *Engine) buildEntities() {
 		}
 		for _, p := range n.Prefixes {
 			addNet(p.Prefix, n.ID)
+			if p.Prefix.Bits() > 0 {
+				e.internal = append(e.internal, p.Prefix.Masked())
+			}
 		}
 		e.base[nodeUID(n.ID)] = e.nodeEntity(n, nil)
 	}
@@ -489,10 +515,48 @@ func (l layered) Get(uid types.EntityUID) (types.Entity, bool) {
 // consulting the policies.
 func (e *Engine) Evaluate(r Request) Decision {
 	d := e.evaluate(r)
-	if !d.Allow && r.SNI == "" && r.Proto == 6 && e.permitsBySNI {
+	if !d.Allow && r.SNI == "" && r.Proto == 6 && (e.permitsBySNI || e.permitsDynamic && e.sniFallback(r.Dst)) {
 		d.PermitBySNI = true
 	}
 	return d
+}
+
+// sniFallback reports whether a dynamic list may match a connection to dst
+// by its TLS server name alone, without a resolution the node saw. Only for
+// a public address: the name in a ClientHello is whatever the client writes
+// there, so inside the overlay, in a network a node announces or in any
+// private range it would open every TLS service to anyone who can type a
+// permitted name. There, a name counts only when the node saw it resolve to
+// the address (Request.Resolved), or an address entry names it.
+func (e *Engine) sniFallback(dst netip.Addr) bool {
+	dst = dst.Unmap()
+	if !dst.IsGlobalUnicast() || dst.IsPrivate() || !publicV4(dst) {
+		return false
+	}
+	for _, p := range e.internal {
+		if p.Contains(dst) {
+			return false
+		}
+	}
+	return true
+}
+
+// nonPublicV4 are IPv4 ranges IsPrivate leaves out that are not the
+// internet either.
+var nonPublicV4 = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"), // shared address space (CGNAT)
+	netip.MustParsePrefix("192.0.0.0/24"),  // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),   // reserved
+}
+
+func publicV4(a netip.Addr) bool {
+	for _, p := range nonPublicV4 {
+		if p.Contains(a) {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) evaluate(r Request) Decision {
@@ -534,8 +598,9 @@ func (e *Engine) evaluate(r Request) Decision {
 		d.Owner = &owner
 		parents = append(parents, nodeUID(owner.ID))
 	}
+	sniFallback := r.SNI != "" && e.sniFallback(r.Dst)
 	for i := range e.lists {
-		if e.lists[i].has(r) {
+		if e.lists[i].has(r, sniFallback) {
 			parents = append(parents, e.lists[i].uid)
 		}
 	}
