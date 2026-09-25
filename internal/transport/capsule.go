@@ -68,7 +68,7 @@ type capsuleLink struct {
 	dropped atomic.Uint64
 	done    chan struct{}
 	once    sync.Once
-	stopKA  chan struct{}
+	stopKA  chan struct{} // closed by Close: stops the keepalive and a read loop waiting to queue
 
 	mu        sync.Mutex
 	err       error // why the stream ended (set before done is closed)
@@ -170,8 +170,8 @@ func (l *capsuleLink) readLoop() {
 			}
 			select {
 			case l.in <- b[m:]:
-			case <-l.done:
-				return
+			case <-l.stopKA:
+				return // closed while nobody reads the queue: Close waits for this loop
 			}
 		case capsuleAssign, capsuleRoutes, capsuleBGClose:
 			if n > maxControlLen {
