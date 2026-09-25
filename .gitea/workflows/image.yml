@@ -27,6 +27,10 @@ concurrency:
   group: image-${{ gitea.ref }}
   cancel-in-progress: true
 
+env:
+  # the Go that setup-go installs, never one that go.mod would download
+  GOTOOLCHAIN: local
+
 jobs:
   image:
     runs-on: ubuntu-latest
@@ -41,9 +45,20 @@ jobs:
       - name: admin SPA (embedded into boundgate-control)
         run: cd web && npm ci --no-audit --no-fund && npm run build
 
+      # the toolchain of go.mod's `toolchain` line, exactly (release.yml says why)
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.26.7'
+          check-latest: false
+          cache: false
+      - name: toolchain
+        run: |
+          want=$(sed -n 's/^toolchain //p' go.mod)
+          have=$(go env GOVERSION)
+          [ -n "$want" ] && [ "$have" = "$want" ] || { echo "Go is $have, go.mod's toolchain line says ${want:-nothing}: change both together"; exit 1; }
+      # reachable known vulnerabilities stop the image (release.yml does the same for releases)
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: binaries for every platform
         run: |
           # One go build per platform: the packages are loaded once and the four

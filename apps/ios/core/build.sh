@@ -17,9 +17,13 @@ VERSION=${VERSION:-dev}
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 OUT=build/apple
 [ -x "$GO" ] || { echo "apple-core: no Go toolchain at $GO (docs/IOS.md, 'Building the core')" >&2; exit 1; }
-want=$(sed -n 's/^go \([0-9.]*\).*/\1/p' go.mod)
+# the toolchain go.mod pins (its `toolchain` line), as CI and the box use:
+# the standard library is linked in, its patch level decides which of its
+# vulnerabilities the core carries
+want=$(sed -n 's/^toolchain \(go[0-9.]*\)$/\1/p' go.mod)
 have=$("$GO" env GOVERSION)
-echo "apple-core: $have (go.mod asks for go $want), version $VERSION"
+[ -n "$want" ] && [ "$have" = "$want" ] || { echo "apple-core: $GO is $have, go.mod pins ${want:-no toolchain}: install that one (docs/IOS.md, 'Building the core')" >&2; exit 1; }
+echo "apple-core: $have, version $VERSION"
 
 rm -rf vendor "$OUT"
 box go mod vendor

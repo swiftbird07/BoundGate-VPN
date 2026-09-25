@@ -83,6 +83,9 @@ cmp -s "$KEYS" deploy/prod/release_keys || die "$KEYS and deploy/prod/release_ke
 [ -z "$(git status --porcelain)" ] || die "uncommitted changes; a release is a commit"
 git fetch -q --tags origin
 HEAD=$(git rev-parse HEAD)
+# every Go binary of a release is built with go.mod's toolchain line (CI records its Go in build.json)
+GO_WANT=$(sed -n 's/^toolchain \(go[0-9.]*\)$/\1/p' go.mod)
+[ -n "$GO_WANT" ] || die "go.mod has no toolchain line: a release pins its Go"
 
 V=${1:-${VERSION:-}}
 [ -n "$V" ] && [ "$V" != dev ] || V=$(next_version "${BUMP:-patch}")
@@ -105,6 +108,10 @@ if [ -n "${NO_MAC:-}" ]; then MAC=none
 elif [ -f "$ZIP" ] && [ -f "$DMG" ] && [ "$(cat dist/.release-built 2>/dev/null)" = "$V $HEAD" ]; then MAC=built
 else
   MAC=build
+  # the daemon and CLI inside the app are built in the box: with the same Go as CI's
+  command -v box >/dev/null || die "box is missing: the Mac app's Go binaries are built in it"
+  have=$(box go env GOVERSION) || die "cannot ask the box for its Go"
+  [ "$have" = "$GO_WANT" ] || die "the box has $have, go.mod pins $GO_WANT: bring them together first"
   case "${SIGN_IDENTITY:-}" in
     "") security find-identity -v -p codesigning | grep -q '"Developer ID Application: ' || die "no \"Developer ID Application\" identity in the keychain (an \"Apple Development\" one cannot be notarized); NO_MAC=1 releases without the Mac app" ;;
     "Developer ID Application: "*) ;;
@@ -183,6 +190,7 @@ B=$OUT.build.json
 [ -s "$B" ] || die "could not download build.json"
 [ "$(jq -r .version "$B")" = "$V" ] || die "CI built $(jq -r .version "$B"), not $V"
 [ "$(jq -r .commit "$B")" = "$HEAD" ] || die "CI built commit $(jq -r .commit "$B"), the tag here is $HEAD"
+[ "$(jq -r '.go // empty' "$B")" = "$GO_WANT" ] || die "CI built with $(jq -r '.go // "a Go it did not record"' "$B"), go.mod pins $GO_WANT: not signing this"
 n=0
 for name in $(jq -r '.assets[].name' "$B"); do
   [ -f "$OUT/$name" ] || die "$name is in CI's build record but not in the draft"

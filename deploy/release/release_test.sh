@@ -20,6 +20,8 @@ ssh-keygen -q -t ed25519 -N '' -C test-release-key -f private/release_signing_ke
 { echo "# test keys"; cat private/release_signing_key.pub; } > internal/update/release_keys
 cp internal/update/release_keys deploy/prod/release_keys
 printf 'private/\ndist/\n' > .gitignore
+GO_WANT=$(sed -n 's/^toolchain //p' "$SRC/go.mod"); [ -n "$GO_WANT" ] || fail "go.mod has no toolchain line"
+printf 'module example.test/r\n\ngo 1.26.0\n\ntoolchain %s\n' "$GO_WANT" > go.mod
 git add -A; git commit -qm init
 git remote add origin "$T/origin.git"; git push -q -u origin main
 
@@ -88,7 +90,7 @@ ci_draft() {
   rm -rf "$G/assets" "$G/uploaded" "$G/calls" "$G/deleted" "$G/patched" "$G"/gh-*; mkdir -p "$G/assets" "$G/uploaded" "$G/gh-uploaded"; echo '[]' > "$G/gh-releases.json"
   for a in amd64 arm64; do echo "linux $a $1" > "$G/assets/boundgate-$V-linux-$a.tar.gz"; done
   echo "windows $1" > "$G/assets/boundgate-$V-windows-amd64.zip"
-  COMMIT=$HEAD sh deploy/release/manifest.sh $V "$G/assets" registry.test/boundgate sha256:$(printf %064d 7) | jq '.type = "boundgate-build"' > "$T/build.json"
+  COMMIT=$HEAD sh deploy/release/manifest.sh $V "$G/assets" registry.test/boundgate sha256:$(printf %064d 7) | jq --arg go "$GO_WANT" '.type = "boundgate-build" | .go = $go' > "$T/build.json"
   cp "$T/build.json" "$G/assets/build.json"
   jq -n --arg v $V '{id:7, tag_name:$v, draft:true, assets:[
     {id:1, name:"boundgate-\($v)-linux-amd64.tar.gz", browser_download_url:"http://gitea.test/dl/boundgate-\($v)-linux-amd64.tar.gz"},
@@ -158,6 +160,13 @@ grep -q "does not have the hash CI recorded" "$T/out" || fail "wrong reason: $(c
 # ---- 4. CI built another commit than the one tagged here ----
 ci_draft one; mac_built; jq '.commit = "0000"' "$G/assets/build.json" > "$T/b" && mv "$T/b" "$G/assets/build.json"
 if $R $V > "$T/out" 2>&1; then fail "accepted a build of another commit"; fi
+
+# ---- 4b. CI built with another Go than go.mod's toolchain line, or did not say ----
+for go in go1.26.0 ""; do
+  ci_draft one; mac_built; jq --arg go "$go" 'if $go == "" then del(.go) else .go = $go end' "$G/assets/build.json" > "$T/b" && mv "$T/b" "$G/assets/build.json"
+  if $R $V > "$T/out" 2>&1; then fail "accepted a build made with Go '${go:-unrecorded}'"; fi
+  grep -q "go.mod pins $GO_WANT" "$T/out" && [ ! -e "$G/patched" ] || fail "Go '${go:-unrecorded}': $(cat "$T/out")"
+done
 
 # ---- 5. refusals before anything happens ----
 if $R v0.1.5 > "$T/out" 2>&1; then fail "went back to v0.1.5"; fi

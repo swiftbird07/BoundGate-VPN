@@ -31,6 +31,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # the Go that setup-go installs, never one that go.mod would download
+  GOTOOLCHAIN: local
   IMAGE: gitlab.net407.com/sbh/boundgate
   PUBLIC_IMAGE: ghcr.io/swiftbird07/boundgate
   VPKG: gitlab.net407.com/SBH/BoundGate-VPN/internal/version
@@ -47,11 +49,31 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: admin SPA (embedded into boundgate-control)
         run: cd web && npm ci --no-audit --no-fund && npm run build
+      # Exactly the toolchain of go.mod's `toolchain` line (the `go` line is only
+      # the minimum, and go-version-file would install that): the standard
+      # library is linked into every binary, so its patch level is the one
+      # that fixes or leaves its vulnerabilities. The next step refuses a drift.
+      # No cache: a build cache on a shared runner would feed this build
+      # objects that nothing here checks.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.26.7'
+          check-latest: false
+          cache: false
+      - name: toolchain
+        run: |
+          want=$(sed -n 's/^toolchain //p' go.mod)
+          have=$(go env GOVERSION)
+          [ -n "$want" ] && [ "$have" = "$want" ] || { echo "Go is $have, go.mod's toolchain line says ${want:-nothing}: change both together"; exit 1; }
       - name: tests
         run: go vet ./... && GOOS=windows go vet ./... && go test ./...
+      # Known vulnerabilities that the code can reach, in the standard library
+      # and in the modules, for the Linux and the Windows builds: any finding
+      # stops the release. golang.org/x/vuln pinned (released 2026-09-08).
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+          go run -exec 'env GOOS=windows' golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: binaries
         run: |
           V=${{ gitea.ref_name }}
@@ -113,8 +135,9 @@ jobs:
           V=${{ gitea.ref_name }}
           API=${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}
           # the record the maintainer's side checks its downloads against
+          # (with the Go that built it: release.sh refuses a draft built with another one)
           COMMIT=${{ gitea.sha }} deploy/release/manifest.sh "$V" dist/release "$PUBLIC_IMAGE" "${{ steps.image.outputs.digest }}" \
-            | jq '.type = "boundgate-build"' > build.json
+            | jq --arg go "$(go env GOVERSION)" '.type = "boundgate-build" | .go = $go' > build.json
           cat build.json
           auth() { curl -fsS -H "Authorization: token $TOKEN" "$@"; }
           # the network between runner and server has bad moments (a name that does not resolve, once):

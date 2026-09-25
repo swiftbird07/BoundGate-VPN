@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge boundgate-embedtest
 
-.PHONY: test-arrival test-lib apple-core ios-project android image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin build-windows windows-zip test test-race vet fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: test-arrival test-lib apple-core ios-project android image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin build-windows windows-zip test test-race vet vuln fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -204,6 +204,15 @@ test-race:
 
 vet:
 	box go vet ./...
+
+# Known vulnerabilities the code can reach (standard library and modules), for
+# the Linux and the Windows builds; CI runs the same before every image and
+# release. The box's Go is the toolchain that is checked: keep it at go.mod's
+# `toolchain` line.
+GOVULNCHECK = golang.org/x/vuln/cmd/govulncheck@v1.8.0
+vuln:
+	box go run $(GOVULNCHECK) ./...
+	box go run -exec 'env GOOS=windows' $(GOVULNCHECK) ./...
 
 fuzz:
 	box go test -run=^$$ -fuzz=FuzzParse -fuzztime=30s ./internal/netparse

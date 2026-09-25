@@ -2,6 +2,8 @@ module gitlab.net407.com/SBH/BoundGate-VPN
 
 go 1.26.0
 
+toolchain go1.26.7
+
 require (
 	fyne.io/systray v1.12.0
 	github.com/cedar-policy/cedar-go v1.8.0

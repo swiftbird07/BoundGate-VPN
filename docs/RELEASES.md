@@ -15,9 +15,21 @@ Two halves, and the signing keys are all in one of them:
 | | where | what |
 |---|---|---|
 | 1 | here | checks (clean tree, HEAD is `origin/main`, the release key is one the builds know, the version is newer than every tag), tags, pushes the tag |
-| 2 | CI, `.gitea/workflows/release.yml` | tests, Linux binaries, the image; parks them in a **draft** release with `build.json`, a record of what it built. CI signs nothing and holds no signing key |
+| 2 | CI, `.gitea/workflows/release.yml` | tests, `govulncheck` (a known vulnerability the code can reach stops the release), Linux and Windows binaries, the image; parks them in a **draft** release with `build.json`, a record of what it built and with which Go. CI signs nothing and holds no signing key |
 | 3 | here, while CI works | the Mac app: universal, signed with your Developer ID, notarized, stapled (`apps/macos/build-app.sh`, `notarize.sh`; the credentials stay in your keychain) |
-| 4 | here | downloads CI's files, compares them with `build.json` and the tagged commit, writes the manifest over everything, **signs it with the release key**, checks the signature the way clients will |
+| 4 | here | downloads CI's files, compares them with `build.json`, the tagged commit and go.mod's toolchain, writes the manifest over everything, **signs it with the release key**, checks the signature the way clients will |
+
+**One Go for everything.** The standard library is linked into every binary,
+so its patch level decides which of its vulnerabilities a release carries.
+`go.mod` pins it (`toolchain go1.26.7`; the `go` line is only the minimum the
+code needs). CI installs exactly that version with `GOTOOLCHAIN=local` and
+stops if `go env GOVERSION` differs, and writes it into `build.json` (`"go"`);
+step 4 refuses a draft built with another Go, step 3 refuses a box with
+another Go, and `make apple-core` refuses a `~/.local/go-apple` with another
+one. A new Go is therefore one commit: the `toolchain` line, the
+`go-version` in both workflows, the box image, and the tarball in
+`~/.local/go-apple` and `apps/android/Dockerfile.core`. `make vuln` runs the
+same `govulncheck` as CI in the box, for the Linux and the Windows build.
 | 5 | here | uploads Mac app, manifest and signature, publishes the draft, confirms that `releases/latest` answers the new version |
 | 6 | here, `deploy/release/mirror-github.sh` | puts the same files on **GitHub**, where updaters look by default: checks them once more against the signed manifest, waits for the tag (it comes with Gitea's push mirror, and must be the tag made here), draft, upload, publish, and then looks at `releases/latest` the way a visitor does |
 
