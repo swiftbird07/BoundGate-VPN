@@ -70,6 +70,11 @@ type Trust struct {
 	Version uint64   `json:"version"`
 	Hash    string   `json:"hash"` // hex SHA-256 of the canonical set
 	Keys    []string `json:"keys"`
+	// Genesis is the hash of the chain's first set: the network's identity,
+	// which bindings name (Binding.Deployment). Learned with the pin, or
+	// later by following the chain's previous-hashes back from the pinned
+	// set.
+	Genesis string `json:"genesis,omitempty"`
 }
 
 // Errors from chain verification. All of them leave the verifier's trust
@@ -238,7 +243,11 @@ func verifyLink(l SignedSet, allowed []string) (SignerSet, Trust, ssh.PublicKey,
 	if err := sig.Verify([]byte(l.Set)); err != nil {
 		return SignerSet{}, Trust{}, nil, fmt.Errorf("%w: %v", ErrSetSignature, err)
 	}
-	return set, Trust{Version: set.Version, Hash: HashSet([]byte(l.Set)), Keys: set.Keys}, sig.PublicKey, nil
+	t := Trust{Version: set.Version, Hash: HashSet([]byte(l.Set)), Keys: set.Keys}
+	if set.Version == 1 {
+		t.Genesis = t.Hash
+	}
+	return set, t, sig.PublicKey, nil
 }
 
 // VerifyChain advances cur along chain and returns the new trust. chain is
@@ -306,9 +315,39 @@ func VerifyChain(cur Trust, chain []SignedSet, genesis string) (Trust, error) {
 		if err != nil {
 			return cur, fmt.Errorf("link %d (version %d): %w", i+1, set.Version, err)
 		}
+		if next.Genesis == "" {
+			next.Genesis = run.Genesis
+		}
 		run = next
 	}
+	if run.Genesis == "" {
+		run.Genesis = genesisOf(run, chain)
+	}
 	return run, nil
+}
+
+// genesisOf follows the previous-hashes from the trusted set back to version
+// 1. Each step is a hash the set before it committed to, so the result is as
+// trustworthy as the pin; "" when the chain does not reach back that far.
+func genesisOf(t Trust, chain []SignedSet) string {
+	byHash := make(map[string]SignerSet, len(chain))
+	for _, l := range chain {
+		if set, err := ParseSignerSet([]byte(l.Set)); err == nil {
+			byHash[HashSet([]byte(l.Set))] = set
+		}
+	}
+	h := t.Hash
+	for range len(chain) + 1 {
+		set, ok := byHash[h]
+		if !ok {
+			return ""
+		}
+		if set.Version == 1 {
+			return h
+		}
+		h = set.Prev
+	}
+	return ""
 }
 
 // SignSet signs canonical set bytes (tests and the CLI's key-file path).

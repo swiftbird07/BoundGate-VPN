@@ -57,18 +57,18 @@ type capsuleLink struct {
 	idleTimeout time.Duration
 	keepAlive   time.Duration
 
-	wmu    sync.Mutex
-	wbuf   []byte
-	in     chan []byte
+	wmu  sync.Mutex
+	wbuf []byte
+	in   chan []byte
 	// out holds datagram capsules for writeLoop. WritePacket never waits
 	// for the peer: a full queue drops the packet, as a congested QUIC path
 	// would. The hub writes into every link from one goroutine, so one peer
 	// that stops reading must not stop the others.
 	out     chan []byte
 	dropped atomic.Uint64
-	done   chan struct{}
-	once   sync.Once
-	stopKA chan struct{}
+	done    chan struct{}
+	once    sync.Once
+	stopKA  chan struct{}
 
 	mu        sync.Mutex
 	err       error // why the stream ended (set before done is closed)

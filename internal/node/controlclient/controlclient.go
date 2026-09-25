@@ -506,6 +506,17 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 			}
 			continue
 		}
+		if cur := holder.Load(); cur != nil && snap.Version < cur.Version {
+			// a control plane that goes back to an older snapshot could
+			// bring back what a newer one took away; the node keeps the one
+			// it has and fails closed when that one ages out (a control
+			// plane restored from a backup must count past it again)
+			c.log.Error("snapshot older than the one in use refused", "version", snap.Version, "in_use", cur.Version)
+			if !c.pause(ctx) {
+				return nil
+			}
+			continue
+		}
 		since = snap.Version
 		if c.verify != nil {
 			if err := c.verify(snap); err != nil {

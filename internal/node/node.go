@@ -290,6 +290,7 @@ type Node struct {
 	hosts   *hosts
 
 	trust *trustStore
+	seen  *history // newest binding and revocation per node (binding.Guard)
 
 	acl     atomic.Pointer[acl.Engine]
 	ship    *shipper
@@ -473,6 +474,9 @@ func (n *Node) init(enclave bool) (*Node, error) {
 	if n.trust, err = loadTrust(cfg.StateDir, strings.ToLower(strings.TrimSpace(cfg.SignersGenesis))); err != nil {
 		return nil, err
 	}
+	if n.seen, err = loadHistory(cfg.StateDir, n.trust); err != nil {
+		return nil, err
+	}
 	// filePin never learns by itself (Enroll asks), so nothing to report here
 	var onLearn func(devicekey.SPKIHash)
 	n.hosts = newHosts(cfg.Log)
@@ -584,7 +588,12 @@ func (n *Node) applyEnrollStatus(st api.EnrollStatus) {
 // binding fails the snapshot is refused and the overlay goes down.
 func (n *Node) verifySnapshot(s *registry.Snapshot) error {
 	n.followSigners(s.SignerChain) // first: bindings are judged by the list this snapshot brings, if it is legitimate
-	rejected, err := binding.VerifySnapshot(s, n.signers())
+	rejected, err := binding.VerifySnapshot(s, n.signers(), n.seen)
+	if err == nil {
+		// what was seen must be on disk before it is relied on, or a
+		// restart would forget what the node already refused to go back to
+		err = n.seen.save()
+	}
 	if err == nil && s.Self.SPKI != n.spki {
 		// another node's record, validly signed: taking it would give this
 		// machine that node's address, roles and networks

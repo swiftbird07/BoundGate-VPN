@@ -67,15 +67,16 @@ func (ts *trustStore) apply(chain []binding.SignedSet) (moved, first bool, err e
 	if err != nil {
 		return false, false, err
 	}
-	if next.Hash == ts.cur.Hash {
+	if next.Hash == ts.cur.Hash && next.Genesis == ts.cur.Genesis {
 		return false, false, nil
 	}
 	if err := writeFileAtomic(ts.path, next); err != nil {
 		return false, false, fmt.Errorf("store admin trust: %w", err) // not adopted: what is not on disk does not count
 	}
 	first = !ts.cur.Pinned()
+	moved = next.Hash != ts.cur.Hash // else only the network's identity was learned
 	ts.cur = next
-	return true, first, nil
+	return moved, first, nil
 }
 
 func writeFileAtomic(path string, v any) error {

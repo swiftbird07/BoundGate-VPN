@@ -3,8 +3,10 @@ package controlclient
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -132,3 +134,50 @@ func TestPollAsksOnlyWhenDueOrTold(t *testing.T) {
 		t.Fatalf("%d requests, want 3", n)
 	}
 }
+
+// A control plane that goes back to an older snapshot could bring back
+// what a newer one took away: the node keeps the newer one.
+func TestOlderSnapshotIsRefused(t *testing.T) {
+	versions := []uint64{5, 3, 6}
+	var calls atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := int(calls.Add(1))
+		if n > len(versions) {
+			<-r.Context().Done()
+			return
+		}
+		snap := registry.Snapshot{Version: versions[n-1], Pool: netipPool}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snap)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	c := New(Config{Addr: strings.TrimPrefix(srv.URL, "https://"), TLS: &tls.Config{InsecureSkipVerify: true}, Poll: time.Millisecond})
+	defer c.Close()
+	var holder registry.Holder
+	var applied []uint64
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = c.Run(ctx, &holder, func(_ registry.Diff, s *registry.Snapshot) {
+			applied = append(applied, s.Version)
+			if s.Version == 6 {
+				cancel()
+			}
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		cancel()
+		t.Fatal("never got to version 6")
+	}
+	if len(applied) != 2 || applied[0] != 5 || applied[1] != 6 {
+		t.Fatalf("applied %v", applied)
+	}
+}
+
+var netipPool = netip.MustParsePrefix("10.21.0.0/16")

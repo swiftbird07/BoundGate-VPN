@@ -223,7 +223,7 @@ func TestVerifyNodeAndSnapshot(t *testing.T) {
 	}
 
 	snap := &registry.Snapshot{Self: self, Peers: []registry.Node{hub, unsigned, byStranger, promoted, swapped, widened, rekinded, copied}, Pool: netip.MustParsePrefix("10.21.0.0/16")}
-	rejected, err := VerifySnapshot(snap, signers)
+	rejected, err := VerifySnapshot(snap, signers, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +232,11 @@ func TestVerifyNodeAndSnapshot(t *testing.T) {
 	}
 	// own binding invalid: the node must not operate
 	snap.Self.Roles = append(snap.Self.Roles, registry.RoleHub)
-	if _, err := VerifySnapshot(snap, signers); err == nil {
+	if _, err := VerifySnapshot(snap, signers, nil); err == nil {
 		t.Fatal("tampered self accepted")
 	}
 	// no pinned keys: nothing verifies
-	if _, err := VerifySnapshot(&registry.Snapshot{Self: self}, nil); err == nil {
+	if _, err := VerifySnapshot(&registry.Snapshot{Self: self}, nil, nil); err == nil {
 		t.Fatal("no signers accepted")
 	}
 }

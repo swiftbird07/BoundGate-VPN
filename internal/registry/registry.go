@@ -207,10 +207,20 @@ type Snapshot struct {
 	// binding verifies it). The control plane only forwards it: every link is
 	// signed by an admin key of the link before.
 	SignerChain []SignerLink `json:"signer_chain,omitempty"`
+	// Revocations are the admin-signed revocations of nodes (binding.
+	// Revocation); every node gets all of them and keeps what it verified.
+	Revocations []SignedRevocation `json:"revocations,omitempty"`
 
 	bySPKI map[devicekey.SPKIHash]*Node
 	byID   map[transport.DeviceID]*Node
 	sessBy map[transport.DeviceID]*Session
+}
+
+// SignedRevocation is the canonical JSON of a binding.Revocation and its
+// SSHSIG; only package binding interprets it.
+type SignedRevocation struct {
+	Revocation string `json:"revocation"`
+	Signature  string `json:"signature"`
 }
 
 // SignerLink is one signed version of the admin key list: the canonical

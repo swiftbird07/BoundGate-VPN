@@ -50,6 +50,17 @@ type Binding struct {
 	// itself. Left out when empty: bindings signed before tags existed stay
 	// valid and mean "no tags".
 	Tags []string `json:"tags,omitempty"`
+	// Deployment is the hash of the genesis admin key list of the network
+	// the binding is for (Trust.Genesis). The same admin key may sign for a
+	// lab and for production; a node refuses a binding for another network.
+	// Left out in bindings signed before it existed.
+	Deployment string `json:"deployment,omitempty"`
+	// Issued is when the binding was made for signing (unix seconds). A node
+	// remembers the newest binding it saw per node and refuses an older one,
+	// and a signed revocation (Revocation) outranks every binding issued
+	// before it: a control plane cannot bring back a grant it stored
+	// earlier. 0 in bindings signed before it existed.
+	Issued int64 `json:"issued,omitempty"`
 }
 
 // FromNode builds the binding a node record must be signed for.
@@ -118,7 +129,26 @@ func (b Binding) Validate() error {
 	if !b.OverlayIP.IsValid() || !b.OverlayIP.Is4() {
 		return errors.New("binding: overlay_ip must be an IPv4 address")
 	}
+	if b.Deployment != "" && !isHash(b.Deployment) {
+		return errors.New("binding: deployment must be a hex SHA-256")
+	}
+	if b.Issued < 0 {
+		return errors.New("binding: issued must not be negative")
+	}
 	return nil
+}
+
+// isHash: 64 lowercase hex digits, the form HashSet writes.
+func isHash(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func roleNames(rs []registry.Role) []string {
@@ -297,17 +327,67 @@ func Verify(raw []byte, armored string, signers Signers) (ssh.PublicKey, error) 
 // VerifyNode checks a node record: the canonical binding it carries must be
 // signed by a pinned admin key and must say exactly what the record says.
 func VerifyNode(n registry.Node, signers Signers) (ssh.PublicKey, error) {
+	_, pub, err := verifyNode(n, signers)
+	return pub, err
+}
+
+func verifyNode(n registry.Node, signers Signers) (Binding, ssh.PublicKey, error) {
 	if n.Binding == "" {
-		return nil, ErrNoSignature
+		return Binding{}, nil, ErrNoSignature
 	}
 	b, err := Parse([]byte(n.Binding))
 	if err != nil {
-		return nil, err
+		return Binding{}, nil, err
 	}
 	if err := b.Matches(n); err != nil {
-		return nil, err
+		return Binding{}, nil, err
 	}
-	return Verify([]byte(n.Binding), n.Signature, signers)
+	pub, err := Verify([]byte(n.Binding), n.Signature, signers)
+	return b, pub, err
+}
+
+// Guard is what a verifier remembers from one snapshot to the next
+// (internal/node keeps it on disk): the network it belongs to, the newest
+// binding it saw of every node, and the revocations it verified. Without
+// it a control plane could serve any binding it ever stored — a node's
+// grant before it was narrowed, a node before it was revoked.
+type Guard interface {
+	// Deployment is the hash of this network's genesis admin key list, ""
+	// while it is not known.
+	Deployment() string
+	// Check refuses a binding older than one seen for the same node, or
+	// not newer than a revocation of it.
+	Check(b Binding) error
+	// Saw records a binding that verified.
+	Saw(b Binding)
+	// Revoke records a revocation that verified.
+	Revoke(r Revocation)
+}
+
+// Errors from the guard.
+var (
+	ErrOtherDeployment = errors.New("binding: signed for another network")
+	ErrNoDeployment    = errors.New("binding: does not name its network, but this node's own binding does")
+	ErrRolledBack      = errors.New("binding: older than one already seen for this node")
+	ErrRevoked         = errors.New("binding: the node was revoked after this binding was issued")
+)
+
+// guarded runs the guard's checks on a binding whose signature verified.
+// strict: the verifier's own binding names its network, so every binding
+// must (bindings made before the field existed are refused then).
+func guarded(g Guard, b Binding, strict bool) error {
+	if g == nil {
+		return nil
+	}
+	if dep := g.Deployment(); dep != "" {
+		switch {
+		case b.Deployment != "" && b.Deployment != dep:
+			return ErrOtherDeployment
+		case b.Deployment == "" && strict:
+			return ErrNoDeployment
+		}
+	}
+	return g.Check(b)
 }
 
 // Rejected is a peer that was dropped from a snapshot.
@@ -321,23 +401,58 @@ type Rejected struct {
 // must not operate) and removes every peer whose binding does not verify.
 // It returns the rejected peers. The snapshot must be re-indexed afterwards
 // (Holder.Store does that).
-func VerifySnapshot(s *registry.Snapshot, signers Signers) ([]Rejected, error) {
+//
+// With a Guard, the snapshot's revocations are verified and recorded first,
+// and every binding must be for this network and not older than what the
+// guard saw of that node.
+func VerifySnapshot(s *registry.Snapshot, signers Signers, g Guard) ([]Rejected, error) {
 	if len(signers) == 0 {
 		return nil, errors.New("binding: no admin keys pinned; re-enroll this node")
 	}
-	if s.Self.ID != "" {
-		if _, err := VerifyNode(s.Self, signers); err != nil {
-			return nil, fmt.Errorf("own binding: %w", err)
+	var rejected []Rejected
+	if g != nil {
+		// a revocation that does not verify is not applied; it changes
+		// nothing else (a control plane can always withhold one)
+		for _, r := range s.Revocations {
+			if rv, err := VerifyRevocation(r, signers, g); err != nil {
+				rejected = append(rejected, Rejected{ID: rv.NodeID, Name: "revocation", Err: err})
+			}
 		}
 	}
-	var rejected []Rejected
+	strict := false
+	var self Binding
+	if s.Self.ID != "" {
+		b, _, err := verifyNode(s.Self, signers)
+		if err == nil {
+			strict = b.Deployment != ""
+			err = guarded(g, b, strict)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("own binding: %w", err)
+		}
+		self = b
+	}
+	var seen []Binding
 	kept := s.Peers[:0]
 	for _, p := range s.Peers {
-		if _, err := VerifyNode(p, signers); err != nil {
+		b, _, err := verifyNode(p, signers)
+		if err == nil {
+			err = guarded(g, b, strict)
+		}
+		if err != nil {
 			rejected = append(rejected, Rejected{ID: string(p.ID), Name: p.Name, Err: err})
 			continue
 		}
+		seen = append(seen, b)
 		kept = append(kept, p)
+	}
+	if g != nil {
+		if s.Self.ID != "" {
+			g.Saw(self)
+		}
+		for _, b := range seen {
+			g.Saw(b)
+		}
 	}
 	for i := len(kept); i < len(s.Peers); i++ {
 		s.Peers[i] = registry.Node{}
