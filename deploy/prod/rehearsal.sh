@@ -4,7 +4,7 @@
 # VM), and a client in its own container that enrolls, is approved and
 # reaches the hub through the shared port. Nothing on the Mac is touched.
 # The compose file is the shipped one; only the image is the locally built
-# boundgate:local (make image) instead of the registry's :latest.
+# boundgate:local (make image) instead of a released image's digest.
 #
 #   make rehearsal              (= make image && deploy/prod/rehearsal.sh)
 #   deploy/prod/rehearsal.sh down
@@ -34,8 +34,18 @@ fi
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "no image $IMAGE: run make image"
 "$0" down >/dev/null
-rm -rf "$W"; mkdir -p "$W"; cp -R deploy/prod/all-in-one/. "$W/"
+rm -rf "$W"; mkdir -p "$W/admin"; cp -R deploy/prod/all-in-one/. "$W/"
 GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
+# The image has no curl (and the kit's containers a read-only root): what the
+# rehearsal needs beyond the kit runs from the image plus curl - the admin's
+# machine (API calls, signing, on the VM's host network) and the client.
+TOOLS=$P-tools:local
+printf 'FROM %s\nRUN apk add --no-cache curl\n' "$IMAGE" | docker build -q -t "$TOOLS" - >/dev/null || fail "the rehearsal's tools image ($IMAGE + curl)"
+admin() { docker run --rm -i --network host --add-host bg.test:127.0.0.1 -v "$W/admin:/admin" -w /admin "$TOOLS" "$@"; }
+# the directories belong to the users the containers run as, as setup.sh leaves them
+mkdir -p "$W/state/control" "$W/state/certs" "$W/state/hub" "$W/logs/control" "$W/logs/hub"
+docker run --rm --network none -v "$W:/kit" -w /kit --entrypoint chown "$IMAGE" -R 65532:65532 state/control state/certs logs/control || fail "chown"
+docker run --rm --network none -v "$W:/kit" -w /kit --entrypoint chown "$IMAGE" -R 0:0 state/hub logs/hub || fail "chown"
 
 echo "== 0. configuration: one address, port 443 for everything (the VM's host network; clients come in over $GW)"
 sed -e 's/bg\.example\.com/bg.test/g' "$W/mux.yaml.example" > "$W/mux.yaml"
@@ -89,18 +99,15 @@ hub() { $C exec -T hub "$@"; }
 wait_for 30 test -s "$W/state/control/bootstrap.token" || fail "control plane did not start: $($C logs control | tail -3)"
 TOKEN=$(cat "$W/state/control/bootstrap.token")
 # every admin call goes through the mux: TCP/443, SNI bg.test, PROXY protocol
-api() { m=$1; p=$2; shift 2; hub curl -sS -k --resolve bg.test:443:127.0.0.1 -X "$m" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "https://bg.test$p" "$@"; }
-wait_for 30 sh -c "$C exec -T hub curl -sk --resolve bg.test:443:127.0.0.1 https://bg.test/api/v1/admin/auth/status | grep -q passkeys" || fail "admin API not reachable through the mux"
+api() { m=$1; p=$2; shift 2; admin curl -sS -k --resolve bg.test:443:127.0.0.1 -X "$m" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "https://bg.test$p" "$@"; }
+wait_for 30 sh -c "docker run --rm --network host $TOOLS curl -sk --resolve bg.test:443:127.0.0.1 https://bg.test/api/v1/admin/auth/status | grep -q passkeys" || fail "admin API not reachable through the mux"
 echo "   admin API answers on TCP/443 through the mux"
 
 echo "== 2. signing key, overlay pool, policy"
-rm -f "$W/state/hub/signer" "$W/state/hub/signer.pub"; mkdir -p "$W/state/hub"
-ssh-keygen -q -t ed25519 -N '' -C rehearsal -f "$W/signer"
-hub sh -c 'cat > /var/lib/boundgate/signer; chmod 600 /var/lib/boundgate/signer' < "$W/signer"
-hub sh -c 'cat > /var/lib/boundgate/control.crt' < "$W/state/control/control.crt"
-hub sh -c 'grep -q bg.test /etc/hosts || echo "127.0.0.1 bg.test" >> /etc/hosts'
-stok=$(api POST /api/v1/admin/signers -d "$(jq -cn --arg k "$(cat "$W/signer.pub")" '{name:"rehearsal",public_key:$k}')" | jq -r .sign_token)
-hub boundgatectl -json admin sign-signers --control https://bg.test:443 --cacert /var/lib/boundgate/control.crt --token "$stok" --key /var/lib/boundgate/signer --yes --pin-dir /var/lib/boundgate/signer-pins | jq -e '.version == 1' >/dev/null || fail "first admin key list"
+ssh-keygen -q -t ed25519 -N '' -C rehearsal -f "$W/admin/signer"
+cp "$W/state/control/control.crt" "$W/admin/control.crt" || fail "the control plane's certificate"
+stok=$(api POST /api/v1/admin/signers -d "$(jq -cn --arg k "$(cat "$W/admin/signer.pub")" '{name:"rehearsal",public_key:$k}')" | jq -r .sign_token)
+admin boundgatectl -json admin sign-signers --control https://bg.test:443 --cacert /admin/control.crt --token "$stok" --key /admin/signer --yes --pin-dir /admin/signer-pins | jq -e '.version == 1' >/dev/null || fail "first admin key list"
 api PUT /api/v1/admin/settings/network -d '{"pool":"100.96.0.0/16"}' >/dev/null
 api POST /api/v1/admin/policies -d '{"name":"allow-all","cedar":"permit(principal, action, resource);","enabled":true,"scope":[]}' | jq -e .id >/dev/null || fail "policy"
 
@@ -108,7 +115,7 @@ approve() {  # approve ENROLL_JSON GRANT
   id=$(printf '%s' "$1" | jq -r .node_id); fp=$(printf '%s' "$1" | jq -r .fingerprint)
   tok=$(api POST "/api/v1/admin/nodes/$id/confirm" -d "{\"fingerprint\":\"$fp\",$2}" | jq -r .sign_token)
   [ -n "$tok" ] && [ "$tok" != null ] || fail "confirm $id"
-  hub boundgatectl -json admin sign --control https://bg.test:443 --cacert /var/lib/boundgate/control.crt --node "$id" --fingerprint "$fp" --token "$tok" --key /var/lib/boundgate/signer \
+  admin boundgatectl -json admin sign --control https://bg.test:443 --cacert /admin/control.crt --node "$id" --fingerprint "$fp" --token "$tok" --key /admin/signer \
     | jq -r '"   \(.name): \(.status) as \(.roles | join("+")), overlay \(.overlay_ip)"'
 }
 
@@ -121,7 +128,7 @@ if $C logs hub 2>&1 | grep -q 'falling back to TCP'; then fail "the hub fell bac
 HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
 
 echo "== 4. a client in its own network namespace: same address, same port, other server name"
-docker run -d --name $P-client --cap-add NET_ADMIN --device /dev/net/tun -v "$W/client.yaml:/etc/boundgate/node.yaml:ro" "$IMAGE" boundgate-node -config /etc/boundgate/node.yaml >/dev/null
+docker run -d --name $P-client --cap-add NET_ADMIN --device /dev/net/tun -v "$W/client.yaml:/etc/boundgate/node.yaml:ro" "$TOOLS" boundgate-node -config /etc/boundgate/node.yaml >/dev/null
 cl() { docker exec $P-client "$@"; }
 wait_for 30 cl boundgatectl -json enroll -accept-new-pin || fail "client cannot enroll: $(docker logs $P-client 2>&1 | tail -3)"
 approve "$(cl boundgatectl -json enroll -accept-new-pin)" '"kind":"workload","roles":["endpoint"]'
@@ -133,7 +140,7 @@ echo "   client reaches the hub ($HUBIP) through a tunnel on the shared UDP/443"
 
 echo "== 5. the hub sees the client's real address, not the mux"
 CLIENTIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $P-client)
-wait_for 40 sh -c "$C exec -T hub curl -sS -k --resolve bg.test:443:127.0.0.1 -H 'Authorization: Bearer $TOKEN' 'https://bg.test/api/v1/admin/tunnels?active=1' | jq -e --arg ip '$CLIENTIP' '.[] | select(.peer_addr == \$ip or (.peer_addr | startswith(\$ip + \":\")))'" \
+wait_for 40 sh -c "docker run --rm --network host $TOOLS curl -sS -k --resolve bg.test:443:127.0.0.1 -H 'Authorization: Bearer $TOKEN' 'https://bg.test/api/v1/admin/tunnels?active=1' | jq -e --arg ip '$CLIENTIP' '.[] | select(.peer_addr == \$ip or (.peer_addr | startswith(\$ip + \":\")))'" \
   || fail "tunnel peer address is not $CLIENTIP: $(api GET '/api/v1/admin/tunnels?active=1' | jq -c '[.[].peer_addr]')"
 echo "   peer address $CLIENTIP"
 
@@ -151,7 +158,7 @@ cl boundgatectl down >/dev/null && wait_for 30 cl boundgatectl up || fail "clien
 wait_for 60 sh -c "docker exec $P-client boundgatectl -json status | jq -e '[.hubs[] | select(.state == \"connected\" and .transport == \"tcp\")] | length == 1'" || fail "no TCP fallback tunnel: $(cl boundgatectl status | tail -4)"
 wait_for 10 cl ping -c 1 -W 2 "$HUBIP" || fail "hub $HUBIP not reachable over the TCP fallback"
 echo "   tunnel up over TCP, hub reachable"
-wait_for 40 sh -c "$C exec -T hub curl -sS -k --resolve bg.test:443:127.0.0.1 -H 'Authorization: Bearer $TOKEN' 'https://bg.test/api/v1/admin/tunnels?active=1' | jq -e --arg ip '$CLIENTIP' '.[] | select(.transport == \"tcp\" and (.peer_addr == \$ip or (.peer_addr | startswith(\$ip + \":\"))))'" \
+wait_for 40 sh -c "docker run --rm --network host $TOOLS curl -sS -k --resolve bg.test:443:127.0.0.1 -H 'Authorization: Bearer $TOKEN' 'https://bg.test/api/v1/admin/tunnels?active=1' | jq -e --arg ip '$CLIENTIP' '.[] | select(.transport == \"tcp\" and (.peer_addr == \$ip or (.peer_addr | startswith(\$ip + \":\"))))'" \
   || fail "the hub does not see the client's address on the TCP tunnel (PROXY protocol through the mux)"
 echo "   the hub sees the client's real address on TCP too"
 cl nft delete table ip blk

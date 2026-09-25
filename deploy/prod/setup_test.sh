@@ -34,6 +34,12 @@ grep -q 'sni: \[vpn.example.org, nodes.vpn.example.org\]' "$D/mux.yaml" && grep 
 ! grep -q 's3cret' "$T/out" "$D"/*.yaml "$D/.env" || fail "the secret shows up outside its file"
 grep -q '^COMPOSE_PROFILES=mux$' "$D/.env" && grep -q '^BOUNDGATE_IMAGE=pinned@' "$D/.env" || fail ".env: $(cat "$D/.env")"
 grep -q '^update.sh pin$' "$T/log" && grep -q '^docker compose up -d$' "$T/log" && ! grep -q 'compose pull' "$T/log" || fail "calls: $(cat "$T/log")"
+# the directories go to the users the containers run as (not root: through the pinned image), before the start
+grep -q "^docker run .*-v $D:/kit .*--entrypoint chown pinned@sha256:abc -R 65532:65532 state/control state/certs logs/control\$" "$T/log" \
+  && grep -q "^docker run .*--entrypoint chown pinned@sha256:abc -R 0:0 state/hub logs/hub\$" "$T/log" \
+  && [ "$(grep -n 'compose up' "$T/log" | cut -d: -f1)" -gt "$(grep -n 'chown.*0:0' "$T/log" | cut -d: -f1)" ] || fail "ownership: $(cat "$T/log")"
+grep -q 'docker compose exec control cat /var/lib/boundgate/bootstrap.token' "$T/out" || fail "bootstrap token hint: $(cat "$T/out")"
+! grep -q 'the OIDC client secret: one line' "$T/out" || fail "asked for a secret that was given"
 [ -x "$D/update.sh" ] && cmp -s "$D/release_keys" deploy/prod/release_keys || fail "update.sh / release_keys"
 grep -q 'bootstrap.token' "$T/out" || fail "no next steps: $(cat "$T/out")"
 
@@ -50,7 +56,8 @@ run 2 "$D" router7 vpn.example.org 1 10.20.30.0/24 routed 2 n || { cat "$T/out";
 grep -q '^name: router7$' "$D/node.yaml" && grep -q '^  server_name: nodes.vpn.example.org$' "$D/node.yaml" && grep -q '^roles: \[subnet-router\]$' "$D/node.yaml" \
   && grep -q '^  - {prefix: 10.20.30.0/24, mode: routed}$' "$D/node.yaml" || fail "node.yaml: $(cat "$D/node.yaml")"
 grep -q '^BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:latest$' "$D/.env" && ! grep -q 'COMPOSE_PROFILES' "$D/.env" || fail ".env: $(cat "$D/.env")"
-[ ! -s "$T/log" ] || fail "something was started or pinned: $(cat "$T/log")"
+[ "$(cat "$T/log")" = "docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH -v $D:/kit -w /kit --entrypoint chown ghcr.io/swiftbird07/boundgate:latest -R 0:0 state logs" ] \
+  || fail "something other than the ownership was done: $(cat "$T/log")"
 grep -q 'docker compose pull && docker compose up -d' "$T/out" || fail "next steps"
 
 echo "== 4. the other roles; answers that make no sense are asked again"

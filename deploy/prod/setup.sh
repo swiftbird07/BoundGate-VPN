@@ -69,6 +69,20 @@ CIDR_RE='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
 write_new() {
   if [ -e "$1" ]; then say "   kept    $1"; cat >/dev/null; else cat > "$1"; say "   wrote   $1"; fi
 }
+# the user the control plane (and lego) run as in the all-in-one kit; nodes and
+# the hub run as root, but without CAP_DAC_OVERRIDE, so root must own their files
+CONTROL_UID=65532
+# own UID DIR...: hands directories (relative to the kit directory) to UID. As
+# root with chown; otherwise with the kit's image, since whoever may use docker
+# may do that anyway
+own() {
+  u=$1; shift
+  if [ "$(id -u)" = 0 ]; then chown -R "$u:$u" "$@" || die "cannot hand $* to user $u"; return; fi
+  img=$(sed -n 's/^BOUNDGATE_IMAGE=//p' .env | tail -1)
+  [ -n "$img" ] || die "no BOUNDGATE_IMAGE in $DIR/.env"
+  docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH -v "$DIR:/kit" -w /kit --entrypoint chown "$img" -R "$u:$u" "$@" \
+    || die "cannot hand $* to user $u (run this as root, or: sudo chown -R $u:$u $*)"
+}
 # kit PATH-IN-deploy/prod: downloads to $GOT. Not in a pipeline: a failed download must stop everything
 kit() {
   GOT=$TMPD/$(basename "$1")
@@ -116,7 +130,8 @@ main() {
   say "  1  signed releases: update.sh checks the release signature on this server and pins the image"
   say "     by its digest; a nightly cron job, or you, run it (recommended)"
   say "  2  the image tag 'latest': docker compose pull, Dockhand, Watchtower. Simple; this server then"
-  say "     trusts the registry and whoever can push to it, and checks no signature"
+  say "     runs whatever the tag points at: it trusts the registry and whoever can push to it, and"
+  say "     checks no signature (docs/SECURITY.md R99). Only if you have a reason"
   ask UPD "How should this server be updated?" 1 '^[12]$' "1 or 2"
   if [ "$UPD" = 1 ]; then
     for t in jq ssh-keygen; do command -v $t >/dev/null 2>&1 || die "update.sh needs $t (packages jq and openssh-client): install it and run this again, or choose 2"; done
@@ -133,6 +148,16 @@ main() {
       printf '# BoundGate: signed updates (%s/update.sh). Output is mailed by cron only when something was updated or failed.\n%d 3 * * * root cd %s && ./update.sh -q\n' "$DIR" "$(( $(date +%s) % 60 ))" "$DIR" > /etc/cron.d/boundgate-update
       say "   wrote   /etc/cron.d/boundgate-update"
     fi
+  fi
+
+  # the containers do not run with root's privileges over files (docker-compose.yml):
+  # their directories must belong to the user each one runs as
+  HAVE_SECRET=; [ ! -s state/control/oidc.secret ] || HAVE_SECRET=1
+  if [ "$KIND" = 1 ]; then
+    own "$CONTROL_UID" state/control state/certs logs/control
+    own 0 state/hub logs/hub
+  else
+    own 0 state logs
   fi
 
   say ""
@@ -229,9 +254,9 @@ next_steps() {
   if [ "$KIND" = 1 ]; then
     say "  * DNS: $NAME must point at this server. Firewall: TCP 443 and UDP 443 open."
     say "  * identity provider: redirect URL https://$NAME/api/v1/oidc/callback; administrators in the group \"$GROUP\""
-    [ -s state/control/oidc.secret ] || say "  * the OIDC client secret: one line in $DIR/state/control/oidc.secret (chmod 600), then docker compose restart control"
-    say "  * open https://$NAME, sign in, and register the first admin passkey with the token in"
-    say "    $DIR/state/control/bootstrap.token"
+    [ -n "$HAVE_SECRET" ] || say "  * the OIDC client secret: one line in $DIR/state/control/oidc.secret (chmod 600, owner $CONTROL_UID), then docker compose restart control"
+    say "  * open https://$NAME, sign in, and register the first admin passkey with the token that"
+    say "    docker compose exec control cat /var/lib/boundgate/bootstrap.token   prints"
     say "  * Admins > Admin signing keys: add your signing key (a FIDO2 SSH key) and run the command the page shows;"
     say "    Settings > Overlay network: choose the pool before the first node. Then enroll the hub:"
     say "      cd $DIR && docker compose exec hub boundgatectl enroll"

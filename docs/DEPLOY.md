@@ -1,8 +1,12 @@
 # Deploying with Docker (control plane, hubs, nodes)
 
 Everything server-side runs as containers from **one prebuilt image**,
-`ghcr.io/swiftbird07/boundgate:latest` (control plane, node, CLI and mux
-in one image; amd64 and arm64). Two compose kits under `deploy/prod/`:
+`ghcr.io/swiftbird07/boundgate` (control plane, node, CLI and mux in one
+image; amd64 and arm64), pinned **by the digest a signed release names**:
+`BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate@sha256:…` in `.env`, written
+by `update.sh` after it checked the release signature. The kits have no
+default image; a tag (`latest`, `v0.1.12`) is something you choose, knowing
+what it trusts (below). Two compose kits under `deploy/prod/`:
 
 | Kit | Runs | For |
 |---|---|---|
@@ -37,8 +41,13 @@ front, two addresses, certificates by DNS challenge). Tested by
 
 | | how | what the server trusts |
 |---|---|---|
-| signed releases | `./update.sh` (cron): verifies the release signature here, pins the image by digest in `.env` | the release keys next to `update.sh`, nothing else ([RELEASES.md](RELEASES.md)) |
-| the tag `latest` | `docker compose pull && docker compose up -d`, Dockhand, Watchtower: `BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:latest` (the kits' default) | the registry and whoever can push to it (R99). CI moves `latest` only to the image of a published, signed release |
+| signed releases (recommended, `setup.sh`'s default) | `./update.sh` (cron): verifies the release signature here, pins the image by digest in `.env` | the release keys next to `update.sh`, nothing else ([RELEASES.md](RELEASES.md)) |
+| the tag `latest` (opt-in) | `docker compose pull && docker compose up -d`, Dockhand, Watchtower: `BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:latest` in `.env`, set by you | the registry, the GitHub account that owns the package and whoever holds CI's push token: whatever the tag points at runs, with `NET_ADMIN` on the host's network, and nothing checks a signature (R99). CI moves `latest` only to the image of a published, signed release, which protects against mistakes, not against someone with that token |
+
+If you build and publish your own images and releases (your own Gitea and
+registry), who can push a `v*` tag or to `main` there is who can ship code
+to these servers: protect both, and scope the registry tokens CI holds to
+that one package ([RELEASES.md](RELEASES.md), "Setting it up", 4 and 5).
 
 ## What you need
 
@@ -213,27 +222,68 @@ TCP-in-TCP for the tunnel. Do not run that way on purpose.
 
 ```bash
 scp -r deploy/prod/all-in-one root@SERVER:/opt/boundgate        # the compose file and the three examples
+scp deploy/prod/update.sh deploy/prod/release_keys root@SERVER:/opt/boundgate/
 ssh root@SERVER
 cd /opt/boundgate
 for f in mux control hub; do cp $f.yaml.example $f.yaml; done            # replace bg.example.com everywhere, fill in oidc
-echo COMPOSE_PROFILES=mux > .env                                        # one address: the mux owns 443. Two addresses: skip, see the compose file
-mkdir -p state/control && umask 077 && printf '%s\n' 'THE-OIDC-CLIENT-SECRET' > state/control/oidc.secret
+echo COMPOSE_PROFILES=mux > .env && chmod 600 .env                      # one address: the mux owns 443. Two addresses: skip, see the compose file
+(umask 077; mkdir -p state/control state/certs state/hub; printf '%s\n' 'THE-OIDC-CLIENT-SECRET' > state/control/oidc.secret)
+mkdir -p logs/control logs/hub
+chown -R 65532:65532 state/control state/certs logs/control              # the control plane (and lego) run as 65532
+chown -R 0:0 state/hub logs/hub                                          # the hub as root, but without the right to override file permissions
 sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000          # QUIC wants larger UDP buffers; persist in /etc/sysctl.d
-docker compose pull
+./update.sh pin                                                          # checks the latest release's signature, pulls its image by digest, writes BOUNDGATE_IMAGE to .env
 docker compose up -d mux control
 docker compose logs -f control
 ```
 
-Compose does not build anything: it pulls `:latest`, which the CI job
-(`.gitea/workflows/image.yml`) pushes for every commit on `main`, tagged
-also `sha-<commit>`, and every `v*` tag as `:<tag>`. Pin one of those in
-`.env` (`BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:v0.1.2`) when
-"whatever is on main" is not what you want on a server. Updating is
-`docker compose pull && docker compose up -d`. Without a CI runner,
-`make image-push` on the Mac does the same build (both architectures,
-buildx from the `docker:cli` image because Colima ships none; `docker
-login gitlab.net407.com` first with a token that has `write:package`).
-`make image` builds `boundgate:local` for this machine only.
+Compose does not build anything, and it pulls nothing by tag: it runs the
+image `BOUNDGATE_IMAGE` names, and without it refuses to start. `update.sh
+pin` writes `BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate@sha256:…` and
+`BOUNDGATE_RELEASE` after checking the release's signed manifest (needs
+`curl`, `jq`, `ssh-keygen`); `./update.sh` later moves both to the next
+signed release. By hand, without `update.sh`: take the digest from the
+release's `manifest.json` (`.image`), check the signature as RELEASES.md
+shows, and write it yourself. CI also pushes the image of every commit on
+`main` to `gitlab.net407.com/sbh/boundgate` (`:latest`, `:sha-<commit>`);
+that is for testing, it is not signed. Without a CI runner, `make
+image-push` on the Mac does the same build (both architectures, buildx from
+a pinned `docker:cli` image because Colima ships none; `docker login
+gitlab.net407.com` first with a token that has `write:package`). `make
+image` builds `boundgate:local` for this machine only.
+
+**What the containers may do.** None of them runs with Docker's default
+privileges. The mux runs as user 65534 with `NET_BIND_SERVICE` only, the
+control plane as 65532 with no capability at all (it listens on loopback
+behind the mux), lego as 65532 as well, the hub and every node as root with
+`NET_ADMIN` only (`NET_BIND_SERVICE` too in the node kit, for a hub on
+`:443`): no `NET_RAW`, no `DAC_OVERRIDE`, so root in the container reaches
+only files root owns. All of them with `no-new-privileges` and a read-only
+root file system; what they write is their volume and a small tmpfs (`/tmp`,
+the node's socket in `/run/boundgate`). The directories therefore belong to
+those users, as above; `setup.sh` does that. With **two addresses** instead
+of the mux, control plane and hub listen on `:443` themselves: add
+`NET_BIND_SERVICE` to their `cap_add` in the compose file.
+
+### An install from before 2026-09-25
+
+`update.sh` changes only `.env`, never the compose file, so an existing
+install keeps running as it was. To take the new compose files (the
+hardening above, lego pinned, no default image), in the kit directory:
+
+```bash
+./update.sh pin                     # if .env has no BOUNDGATE_IMAGE yet (the old files defaulted to :latest)
+docker compose down
+cp …/deploy/prod/all-in-one/docker-compose.yml .     # from the release you run
+chown -R 65532:65532 state/control state/certs logs/control
+chown -R 0:0 state/hub logs/hub                      # node kit: chown -R 0:0 state logs
+grep -E '^(LEGO_|[A-Z0-9_]+_(API_KEY|TOKEN|USERNAME|PASSWORD|SECRET)=)' .env   # dns-acme only: move these lines to lego.env (chmod 600)
+docker compose up -d
+```
+
+The bootstrap token and other files under `state/control` then belong to
+65532: read them with `sudo`, or `docker compose exec control cat
+/var/lib/boundgate/bootstrap.token`.
 
 On its first start the control plane creates its database, the long-lived
 node-channel key (`state/control/nodes.key`: **back it up**, every node pins
@@ -249,7 +299,7 @@ set `acme.directory_url` to the staging directory first.
 | | When | How |
 |---|---|---|
 | **Built-in, TLS-ALPN-01** (default) | port 443 is reachable from the internet | `acme.enabled: true`; nothing else. Validation is a TLS handshake on 443 with ALPN `acme-tls/1`, which passes through the mux or an SNI-passthrough proxy |
-| **DNS-01 through the `acme-dns` service** | the CA cannot reach 443: geo-blocking, `admin_allow`, a firewall that admits only your addresses | `acme.enabled: false`, `tls_cert`/`tls_key` pointing at `/var/lib/boundgate/certs/certificates/<name>.crt|.key`; in `.env`: `BG_DOMAIN`, `LEGO_EMAIL`, `LEGO_DNS=<provider>` and the provider's own variables (`HETZNER_API_KEY`, `CLOUDFLARE_DNS_API_TOKEN`, `INWX_USERNAME`/`INWX_PASSWORD`, …, see [lego's provider list](https://go-acme.github.io/lego/dns/)); start with `--profile dns-acme` (or `COMPOSE_PROFILES=mux,dns-acme`). lego issues, renews 30 days before expiry, and the control plane reloads the files within 30 s of a change (log line "admin certificate reloaded") |
+| **DNS-01 through the `acme-dns` service** | the CA cannot reach 443: geo-blocking, `admin_allow`, a firewall that admits only your addresses | `acme.enabled: false`, `tls_cert`/`tls_key` pointing at `/var/lib/boundgate/certs/certificates/<name>.crt|.key`; in `.env`: `BG_DOMAIN`; in `lego.env` (`chmod 600`; lego gets this file and `state/certs`, nothing else): `LEGO_EMAIL`, `LEGO_DNS=<provider>` and the provider's own variables (`HETZNER_API_KEY`, `CLOUDFLARE_DNS_API_TOKEN`, `INWX_USERNAME`/`INWX_PASSWORD`, …, see [lego's provider list](https://go-acme.github.io/lego/dns/)); start with `--profile dns-acme` (or `COMPOSE_PROFILES=mux,dns-acme`). lego issues, renews 30 days before expiry, and the control plane reloads the files within 30 s of a change (log line "admin certificate reloaded"). lego (v4.35.2) is pinned by digest in the compose file and changes with the kit, not with `update.sh`; give its DNS token only the zone of the admin name, if the provider can |
 | **Your own files** | an existing wildcard, an internal CA, certbot/acme.sh on the host | `acme.enabled: false`, `tls_cert`/`tls_key`; renewals are picked up the same way |
 
 Let's Encrypt validates TLS-ALPN-01 from several vantage points in
@@ -290,7 +340,8 @@ machine, and the UI is reachable only from approved devices from then on.
    must be in the `admins` group). The session is `oidc_only`: it can do
    nothing yet.
 2. Register a passkey. The very first one needs the bootstrap token:
-   `cat state/control/bootstrap.token`. After that the token is dead
+   `docker compose exec control cat /var/lib/boundgate/bootstrap.token`
+   (the file belongs to the control plane's user). After that the token is dead
    (ADMIN-AUTH.md); further administrators are approved by an existing one.
 3. *Admins › Admin signing keys*: add the public key of your signing key
    (`~/.ssh/id_ed25519_sk.pub`). The list of signing keys is itself signed:
@@ -367,12 +418,14 @@ in `node.yaml` (the example has a block per role: subnet router with its
 LAN prefix, exit node, a second hub, a workload endpoint), then
 
 ```bash
-docker compose pull && docker compose up -d
+(umask 077; mkdir -p state); mkdir -p logs; chown -R 0:0 state logs
+./update.sh pin && docker compose up -d                 # update.sh and release_keys next to the compose file
 docker compose exec node boundgatectl enroll        # confirm + sign in the UI; auto_up brings it up
 docker compose exec node boundgatectl status
 ```
 
-Host network, `NET_ADMIN` and `/dev/net/tun` are what a node needs; a
+Host network, `NET_ADMIN` and `/dev/net/tun` are what a node needs (plus
+`NET_BIND_SERVICE` for a hub on `:443`; nothing else, on a read-only root); a
 router additionally `net.ipv4.ip_forward=1` on the host (Docker sets it
 itself); the `DOCKER-USER` rules above it writes itself. A VM with a
 vTPM (Proxmox: add a TPM 2.0 device) passes `/dev/tpmrm0` into the
@@ -396,7 +449,9 @@ A VPN that owns the overlay range stops `Connect` with an explanation (R66).
 ## Rehearsal
 
 `make rehearsal` builds `boundgate:local` and runs the shipped all-in-one
-compose file with it in the local Docker VM (`deploy/prod/rehearsal.sh`):
+compose file with it in the local Docker VM (`deploy/prod/rehearsal.sh`;
+the admin's side and the client run from that image plus curl, which the
+image itself does not have):
 mux, control plane and hub on one address and port 443, a client in its own
 container that enrolls over HTTP/3, is approved and signed, brings a tunnel
 up on the shared UDP port and pings the hub; it checks that the hub sees

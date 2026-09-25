@@ -3,20 +3,34 @@
 # control plane runs elsewhere (deploy/prod/all-in-one). Host network: the
 # tunnel device, routes and NAT the node installs belong to the host.
 #
+# The image is the one BOUNDGATE_IMAGE in .env names, pinned by digest by
+# `./update.sh pin` after it checked the release signature; there is no
+# default tag.
+#
 #   cp node.yaml.example node.yaml               # name, control plane, roles
-#   docker compose pull && docker compose up -d
+#   ./update.sh pin && docker compose up -d
 #   docker compose exec node boundgatectl enroll   # then confirm + sign in the admin UI
 #   docker compose exec node boundgatectl status
 #
-# Updating: docker compose pull && docker compose up -d
+# The node runs as root with NET_ADMIN (routes, nftables, the TUN device) and
+# NET_BIND_SERVICE (a hub on :443), nothing else, on a read-only root; ./state
+# and ./logs belong to root (docs/DEPLOY.md).
+#
+# Updating: ./update.sh (signed releases, docs/RELEASES.md)
 name: boundgate-node
 
 services:
   node:
-    image: ${BOUNDGATE_IMAGE:-ghcr.io/swiftbird07/boundgate:latest}
+    image: ${BOUNDGATE_IMAGE:?BOUNDGATE_IMAGE is not set in .env - run ./update.sh pin (docs/DEPLOY.md)}
     network_mode: host
     restart: unless-stopped
-    cap_add: [NET_ADMIN]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /run/boundgate:size=1m,mode=0755     # the daemon's socket
+      - /tmp:size=16m,mode=1777
     devices:
       - /dev/net/tun:/dev/net/tun
       # TPM or vTPM (key_kind: tpm2 in node.yaml, docs/TPM.md); on Proxmox add a vTPM to the VM:
