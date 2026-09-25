@@ -11,7 +11,13 @@ import BoundGateCore
 /// to the node through provider messages carrying the daemon's API requests.
 final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     private let logger = Logger(subsystem: AppConfig.subsystem, category: "core")
-    private var engine: CoreEngine?
+    // Read from the path monitor, the start timer and app messages on other
+    // queues while stopTunnel clears it: every access goes through lock.
+    private var runningEngine: CoreEngine?
+    private var engine: CoreEngine? {
+        get { lock.lock(); defer { lock.unlock() }; return runningEngine }
+        set { lock.lock(); runningEngine = newValue; lock.unlock() }
+    }
     private var monitor: NWPathMonitor?
     private let lock = NSLock()
     private var pendingStart: ((Error?) -> Void)?
@@ -95,8 +101,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         TunnelLog.shared.write("tunnel: stop, reason \(reason.rawValue)")
         lock.lock(); stopping = true; lock.unlock()
         monitor?.cancel()
-        engine?.stop()
+        // cleared first, so no new request starts; one in flight gets an
+        // error from the stopped core
+        let e = engine
         engine = nil
+        e?.stop()
         finishStart(CoreError("stopped"))
         completionHandler()
     }

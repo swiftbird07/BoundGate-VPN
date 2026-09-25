@@ -95,12 +95,41 @@ if ($svc -and $svc.Status -ne 'Stopped') {
     Stop-Service -Name BoundGate
 }
 Get-Process -Name boundgate-tray -ErrorAction SilentlyContinue | Stop-Process -Force
+# The service runs these programs (and wintun.dll) as SYSTEM: only SYSTEM and
+# Administrators may write where they live. %ProgramFiles% is like that; a
+# directory of your own choosing may not be (under C:\ Authenticated Users
+# may create and modify). An existing directory is taken only when nobody
+# else could have written into it; then it gets a protected DACL of its own.
+$trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')  # SYSTEM, Administrators, TrustedInstaller
+$writeBits = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000  # write/append/EA/delete child/attributes/delete/WRITE_DAC/WRITE_OWNER/GENERIC_ALL/GENERIC_WRITE
+if (Test-Path -LiteralPath $InstallDir) {
+    $item = Get-Item -LiteralPath $InstallDir -Force
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "$InstallDir is not a plain directory (a file, link or junction); choose another -InstallDir"
+    }
+    $acl = Get-Acl -LiteralPath $InstallDir
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $others = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+        $_.AccessControlType -eq 'Allow' -and
+        -not ($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
+        ([int64]$_.FileSystemRights -band $writeBits) -ne 0 -and
+        $trusted -notcontains $_.IdentityReference.Value
+    })
+    if ($trusted -notcontains $owner -or $others.Count -gt 0) {
+        throw "$InstallDir exists and others than SYSTEM and Administrators own it or may write into it ($($others.IdentityReference -join ', ')); the service would run what they put there. Remove it, or choose another -InstallDir"
+    }
+}
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetAccessRuleProtection($true, $false)
+$acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+foreach ($r in @(@('S-1-5-18', 'FullControl'), @('S-1-5-32-544', 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'))) {
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule ([Security.Principal.SecurityIdentifier]$r[0]), $r[1], 'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+}
+Set-Acl -LiteralPath $InstallDir -AclObject $acl
 foreach ($e in $exes) { Copy-Item -Force (Join-Path $here $e) $InstallDir }
 if ($wintun) { Copy-Item -Force $wintun (Join-Path $InstallDir 'wintun.dll') }
 if ($tmp) { Remove-Item -Recurse -Force $tmp }
-# Program Files is writable for administrators only, which keeps the service's
-# executable (it runs as SYSTEM) out of reach of a standard user.
 
 # --- group for the tray
 if (-not (Get-LocalGroup -Name $group -ErrorAction SilentlyContinue)) {

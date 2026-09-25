@@ -43,11 +43,22 @@ type engine struct {
 }
 
 // cPlatform calls the app's callbacks. The struct lives in C memory: Go
-// must not keep pointers into the app's copy.
+// must not keep pointers into the app's copy. Every call passes g, and free
+// closes it before the copy goes: after that the callbacks are not called.
 type cPlatform struct {
 	p    *C.bg_platform
+	g    *gate
 	kind string
 	hw   bool
+}
+
+var errStopped = errors.New("the engine is stopped")
+
+// free waits for the callbacks in flight, refuses all later ones and
+// releases the copy of bg_platform; the app may then free ctx.
+func (c *cPlatform) free() {
+	c.g.close()
+	C.free(unsafe.Pointer(c.p))
 }
 
 func takeErr(cerr *C.char, what string) error {
@@ -63,6 +74,10 @@ func (c *cPlatform) Apply(s netcfg.NetworkSettings) (int, error) {
 	if err != nil {
 		return -1, err
 	}
+	if !c.g.enter() {
+		return -1, errStopped
+	}
+	defer c.g.leave()
 	cs := C.CString(string(b))
 	defer C.free(unsafe.Pointer(cs))
 	var cerr *C.char
@@ -73,9 +88,19 @@ func (c *cPlatform) Apply(s netcfg.NetworkSettings) (int, error) {
 	return int(fd), nil
 }
 
-func (c *cPlatform) Release() { C.bg_call_release(c.p) }
+func (c *cPlatform) Release() {
+	if !c.g.enter() {
+		return
+	}
+	defer c.g.leave()
+	C.bg_call_release(c.p)
+}
 
 func (c *cPlatform) PublicKey() ([]byte, error) {
+	if !c.g.enter() {
+		return nil, errStopped
+	}
+	defer c.g.leave()
 	buf := (*C.uint8_t)(C.malloc(512))
 	defer C.free(unsafe.Pointer(buf))
 	var cerr *C.char
@@ -87,6 +112,10 @@ func (c *cPlatform) PublicKey() ([]byte, error) {
 }
 
 func (c *cPlatform) Sign(digest []byte) ([]byte, error) {
+	if !c.g.enter() {
+		return nil, errStopped
+	}
+	defer c.g.leave()
 	d := C.CBytes(digest)
 	defer C.free(d)
 	buf := (*C.uint8_t)(C.malloc(256))
@@ -103,6 +132,10 @@ func (c *cPlatform) KeyKind() string     { return c.kind }
 func (c *cPlatform) HardwareBound() bool { return c.hw }
 
 func (c *cPlatform) Log(level int, line string) {
+	if !c.g.enter() {
+		return
+	}
+	defer c.g.leave()
 	cs := C.CString(line)
 	defer C.free(unsafe.Pointer(cs))
 	C.bg_call_log(c.p, C.int32_t(level), cs)
@@ -111,6 +144,10 @@ func (c *cPlatform) Log(level int, line string) {
 // StatusChanged implements embed.StatusNotifier; an app without the
 // callback hears nothing.
 func (c *cPlatform) StatusChanged(statusJSON string) {
+	if !c.g.enter() {
+		return
+	}
+	defer c.g.leave()
 	if c.p.status_changed == nil {
 		return
 	}
@@ -139,13 +176,13 @@ func bg_start(configJSON *C.char, platform *C.bg_platform, err **C.char) C.int64
 	cp := (*C.bg_platform)(C.malloc(C.size_t(unsafe.Sizeof(C.bg_platform{}))))
 	*cp = *platform
 	cp.key_kind = nil // Go keeps its own copy of the string
-	p := &cPlatform{p: cp, hw: platform.hardware_bound != 0}
+	p := &cPlatform{p: cp, g: newGate(), hw: platform.hardware_bound != 0}
 	if platform.key_kind != nil {
 		p.kind = C.GoString(platform.key_kind)
 	}
 	e, startErr := embed.Start(cfg, p)
 	if startErr != nil {
-		C.free(unsafe.Pointer(cp))
+		p.free() // its logger may already be the standard log's
 		setErr(err, startErr)
 		return 0
 	}
@@ -199,7 +236,7 @@ func bg_stop(h C.int64_t) {
 		return
 	}
 	en.e.Stop()
-	C.free(unsafe.Pointer(en.p.p))
+	en.p.free()
 }
 
 //export bg_utun_fd

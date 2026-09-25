@@ -65,7 +65,9 @@ char *bg_request(int64_t engine, const char *method, const char *path, const uin
 // The device moved to another network (Wi-Fi <-> cellular).
 void bg_network_changed(int64_t engine);
 
-// Takes the overlay down and releases the state directory.
+// Takes the overlay down and releases the state directory. Once it returns,
+// no callback of the engine runs again (a request still in flight gets
+// errors instead), so the app may free ctx.
 void bg_stop(int64_t engine);
 
 // macOS/iOS network extension: the descriptor of the extension's utun
