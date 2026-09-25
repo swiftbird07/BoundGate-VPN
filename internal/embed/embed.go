@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
@@ -161,6 +162,7 @@ func Start(cfg Config, p Platform) (*Engine, error) {
 		debug.SetMemoryLimit(int64(cfg.MemoryLimitMiB) << 20)
 	}
 	log := slog.New(newPlatformHandler(p, parseLevel(cfg.LogLevel)))
+	logging.ThrottleStdLog(log)
 	flow := slog.New(discard{})
 	if cfg.FlowLog {
 		flow = log
@@ -296,7 +298,16 @@ func (e *Engine) resetToSetup() {
 
 // Request serves one request of the daemon's API (internal/node/ipc) and
 // returns the status code and the JSON answer.
-func (e *Engine) Request(method, path string, body []byte) (int, []byte) {
+//
+// It runs on the app's thread through cgo: a panic would take the whole
+// network extension down with it, so it is answered as an error instead.
+func (e *Engine) Request(method, path string, body []byte) (status int, answer []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.log.Error("request panicked", "method", method, "path", path, "panic", fmt.Sprint(r))
+			status, answer = http.StatusInternalServerError, []byte(`{"error":"internal error"}`)
+		}
+	}()
 	e.mu.Lock()
 	h, stopped := e.handler, e.stopped
 	e.mu.Unlock()

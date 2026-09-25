@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -416,7 +417,7 @@ func (c *Client) LoginStart(ctx context.Context) (api.LoginStart, error) {
 // LoginStatus polls a flow, waiting up to wait for a result.
 func (c *Client) LoginStatus(ctx context.Context, flowID string, wait time.Duration) (api.LoginStatus, error) {
 	var out api.LoginStatus
-	_, err := c.do(ctx, http.MethodGet, "/api/v1/node/login/"+flowID+"?wait="+wait.String(), nil, &out, wait+20*time.Second)
+	_, err := c.do(ctx, http.MethodGet, "/api/v1/node/login/"+url.PathEscape(flowID)+"?wait="+wait.String(), nil, &out, wait+20*time.Second)
 	return out, err
 }
 

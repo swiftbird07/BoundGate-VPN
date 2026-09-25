@@ -23,6 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -269,6 +270,9 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			return dump(st)
 		}
 		if !asJSON {
+			if err := printableURL(st.URL); err != nil {
+				return fmt.Errorf("the control plane sent a sign-in address this tool will not show: %w", err)
+			}
 			fmt.Printf("Open this URL in your browser and log in:\n\n  %s\n\n", st.URL)
 		}
 		if *noWait {
@@ -487,4 +491,23 @@ func byteCount(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGTPE"[exp])
+}
+
+// printableURL accepts an http(s) address without control characters: the
+// sign-in URL comes from the control plane, and a terminal would act on an
+// escape sequence hidden in it.
+func printableURL(s string) error {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return errors.New("it contains control characters")
+		}
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" && u.Scheme != "http" || u.Host == "" {
+		return fmt.Errorf("not an http(s) address: %q", u.Scheme)
+	}
+	return nil
 }

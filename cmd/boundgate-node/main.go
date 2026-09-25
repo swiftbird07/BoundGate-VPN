@@ -178,6 +178,7 @@ func run(ctx context.Context, cfgPath string) error {
 	}
 	defer logs.Close()
 	slog.SetDefault(logs.System)
+	logging.ThrottleStdLog(logs.System)
 
 	// A configuration file that names the control plane is final. Without
 	// one, the user decides (boundgatectl configure, or the app): setup mode
