@@ -27,7 +27,7 @@ export interface Tunnel { id: string; hub_id: string; hub_name?: string; peer_id
 export interface LogEvent { id: number; ts: string; stream: string; actor?: string; device_id?: string; session_id?: string; message: string; attrs?: Record<string, unknown> }
 export interface NetworkSettings { pool: string; max_age_seconds?: number }
 export interface Passkey { id: string; subject: string; email?: string; label?: string; status: 'pending' | 'active' | 'revoked'; created_at: string; approved_at?: string; approved_by?: string; last_used_at?: string; revoked_at?: string; revoked_by?: string }
-export interface ApiToken { id: string; name: string; created_by?: string; created_at: string; expires_at?: string; last_used_at?: string; revoked_at?: string; revoked_by?: string; token?: string }
+export interface ApiToken { id: string; name: string; created_by?: string; created_at: string; expires_at?: string; last_used_at?: string; revoked_at?: string; revoked_by?: string; bootstrap?: boolean; token?: string }
 export interface AuthStatus { level: 'none' | 'oidc_only' | 'full'; subject?: string; email?: string; name?: string; via?: string; own_passkeys: number; own_pending: number; total_passkeys: number; bootstrap_active: boolean; oidc_configured: boolean; passkeys_enabled: boolean; rp_id?: string; error?: string }
 export interface Overview { nodes: Record<string, number>; active_sessions: number; active_tunnels: number; policies: number; policies_enabled: number; denied_last_24h: number; pending_passkeys: number; signers: number; snapshot_version: number }
 

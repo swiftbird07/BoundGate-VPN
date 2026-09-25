@@ -22,9 +22,9 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | GET | `/api/v1/admin/auth/login?next=/path` | (no auth) | 302 to the IdP; sets the flow cookie `bg_login`; `next` must be a local path (single leading `/`, no backslash, control character or whitespace; otherwise `/`); 429 beyond 10/min per client, 503 with 1000 logins pending |
 | POST | `/api/v1/admin/auth/logout` | cookie | 204; revokes the session |
 | POST | `/api/v1/admin/auth/passkey/register/begin` | cookie (`oidc_only` ok) | `{label, bootstrap_token?}` → `{mode (first\|self\|pending), options}` (WebAuthn creation options JSON); 403 first passkey without the bootstrap token |
-| POST | `/api/v1/admin/auth/passkey/register/finish` | cookie | the browser's `PublicKeyCredential` JSON → 201 `{id, status (active\|pending), level}`; 409 credential already registered |
+| POST | `/api/v1/admin/auth/passkey/register/finish` | cookie | the browser's `PublicKeyCredential` JSON → 201 `{id, status (active\|pending), level}`, and for an active passkey a new session cookie (the old id is revoked); 409 credential already registered |
 | POST | `/api/v1/admin/auth/passkey/login/begin` | cookie | `{}` → `{options}`; 409 `{error, pending}` without an active passkey |
-| POST | `/api/v1/admin/auth/passkey/login/finish` | cookie | assertion JSON → `{level: "full"}`; 403 on a bad assertion |
+| POST | `/api/v1/admin/auth/passkey/login/finish` | cookie | assertion JSON → `{level: "full"}` and a new session cookie (the old id is revoked); 403 on a bad assertion or a signature counter that went backwards (a cloned key) |
 | GET | `/api/v1/admin/passkeys` | | `[PasskeyView]` of every admin |
 | POST | `/api/v1/admin/passkeys/{id}/approve` | | `PasskeyView`; 403 own passkey; 409 not pending |
 | DELETE | `/api/v1/admin/passkeys/{id}` | | 204 (revoke) |
@@ -115,7 +115,9 @@ logout | expired | replaced)`.
 `PasskeyView`: `id, subject, email, label, status (pending | active |
 revoked), created_at, approved_at/by, last_used_at, revoked_at/by`.
 `TokenView`: `id, name, created_by, created_at, expires_at, last_used_at,
-revoked_at/by` (+ `token` once at creation).
+revoked_at/by, bootstrap` (+ `token` once at creation). `bootstrap`: minted
+with the bootstrap token; such a token is revoked when the first passkey is
+registered.
 
 Levels: a cookie session is `oidc_only` until a passkey assertion; at that
 level only `/admin/auth/*` and `/admin/me` answer, everything else is 403

@@ -138,10 +138,38 @@ func (d *DB) AdminSessionByID(ctx context.Context, id string) (AdminSession, err
 	return s, nil
 }
 
-// SetAdminSessionLevel raises (or lowers) the level.
-func (d *DB) SetAdminSessionLevel(ctx context.Context, id string, level AdminLevel) error {
-	_, err := d.sql.ExecContext(ctx, `UPDATE admin_sessions SET level = ? WHERE id = ?`, level, id)
-	return err
+// RaiseAdminSession replaces a live session by a new one at level, with a
+// new id (the cookie value) and the same identity and expiry; the old id
+// is revoked. An id a browser carried before the passkey assertion must
+// not be the one that carries full rights afterwards (session fixation).
+func (d *DB) RaiseAdminSession(ctx context.Context, id string, level AdminLevel) (AdminSession, error) {
+	var s AdminSession
+	_, err := d.tx(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		s, err = scanAdminSession(tx.QueryRowContext(ctx, `SELECT `+adminSessionCols+` FROM admin_sessions WHERE id = ?`, id))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !s.RevokedAt.IsZero() || !time.Now().Before(s.ExpiresAt) {
+			return ErrTokenExpired
+		}
+		s.ID, _ = NewToken("bgadm")
+		s.Level, s.Ceremony = level, ""
+		if s.Groups == nil {
+			s.Groups = []string{}
+		}
+		groups, _ := json.Marshal(s.Groups)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO admin_sessions (`+adminSessionCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')`,
+			s.ID, s.Subject, s.Email, s.Name, string(groups), s.Level, s.LoginIP, s.CreatedAt.UTC().Format(timeFormat), s.ExpiresAt.UTC().Format(timeFormat), now()); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at = ?, ceremony_json = '' WHERE id = ?`, now(), id)
+		return err
+	})
+	return s, err
 }
 
 // SetAdminCeremony stores WebAuthn session data for the session ("" clears).
@@ -323,15 +351,18 @@ type APIToken struct {
 	LastUsedAt time.Time
 	RevokedAt  time.Time
 	RevokedBy  string
+	// Bootstrap: minted with the bootstrap token; it dies with it, when the
+	// first passkey is active (R54).
+	Bootstrap bool
 }
 
-const apiTokenCols = `id, name, created_by, created_at, expires_at, last_used_at, revoked_at, revoked_by`
+const apiTokenCols = `id, name, created_by, created_at, expires_at, last_used_at, revoked_at, revoked_by, bootstrap`
 
 func scanAPIToken(sc scanner) (APIToken, error) {
 	var t APIToken
 	var created string
 	var expires, used, revokedAt, revokedBy sql.NullString
-	if err := sc.Scan(&t.ID, &t.Name, &t.CreatedBy, &created, &expires, &used, &revokedAt, &revokedBy); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.CreatedBy, &created, &expires, &used, &revokedAt, &revokedBy, &t.Bootstrap); err != nil {
 		return t, err
 	}
 	t.CreatedAt = parseTime(sql.NullString{String: created, Valid: true})
@@ -339,20 +370,23 @@ func scanAPIToken(sc scanner) (APIToken, error) {
 	return t, nil
 }
 
-// CreateAPIToken mints a token; the secret is returned once.
-func (d *DB) CreateAPIToken(ctx context.Context, name, by string, expires time.Time) (APIToken, string, error) {
+// CreateAPIToken mints a token; the secret is returned once. bootstrap
+// says it was minted with the bootstrap token.
+func (d *DB) CreateAPIToken(ctx context.Context, name, by string, expires time.Time, bootstrap bool) (APIToken, string, error) {
 	secret, hash := NewToken("bgapi")
-	t := APIToken{ID: NewID(), Name: name, CreatedBy: by, CreatedAt: time.Now().UTC(), ExpiresAt: expires}
+	t := APIToken{ID: NewID(), Name: name, CreatedBy: by, CreatedAt: time.Now().UTC(), ExpiresAt: expires, Bootstrap: bootstrap}
 	var exp any
 	if !expires.IsZero() {
 		exp = expires.UTC().Format(timeFormat)
 	}
-	_, err := d.sql.ExecContext(ctx, `INSERT INTO api_tokens (id, name, token_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, hash, by, t.CreatedAt.Format(timeFormat), exp)
+	_, err := d.sql.ExecContext(ctx, `INSERT INTO api_tokens (id, name, token_hash, created_by, created_at, expires_at, bootstrap) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, hash, by, t.CreatedAt.Format(timeFormat), exp, bootstrap)
 	return t, secret, err
 }
 
-// LookupAPIToken resolves a presented bearer token.
+// LookupAPIToken resolves a presented bearer token. A token minted with
+// the bootstrap token is dead while a passkey is active, like the
+// bootstrap token itself (RevokeBootstrapAPITokens revokes it for good).
 func (d *DB) LookupAPIToken(ctx context.Context, secret string) (APIToken, error) {
 	t, err := scanAPIToken(d.sql.QueryRowContext(ctx, `SELECT `+apiTokenCols+` FROM api_tokens WHERE token_hash = ?`, HashToken(secret)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -364,8 +398,36 @@ func (d *DB) LookupAPIToken(ctx context.Context, secret string) (APIToken, error
 	if !t.RevokedAt.IsZero() || (!t.ExpiresAt.IsZero() && !time.Now().Before(t.ExpiresAt)) {
 		return t, ErrTokenExpired
 	}
+	if t.Bootstrap {
+		if n, err := d.CountActivePasskeys(ctx); err != nil {
+			return t, err
+		} else if n > 0 {
+			return t, ErrTokenExpired
+		}
+	}
 	_, _ = d.sql.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE id = ?`, now(), t.ID)
 	return t, nil
+}
+
+// RevokeBootstrapAPITokens revokes every live token minted with the
+// bootstrap token; the first passkey calls it.
+func (d *DB) RevokeBootstrapAPITokens(ctx context.Context, by string) (int64, error) {
+	res, err := d.sql.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ?, revoked_by = ? WHERE bootstrap = 1 AND revoked_at IS NULL`, now(), by)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// RevokeAllPasskeys revokes every pending and active passkey: the way back
+// in for the operator of the control-plane host after the only passkey was
+// lost (boundgate-control rotate-bootstrap-token -revoke-passkeys).
+func (d *DB) RevokeAllPasskeys(ctx context.Context, by string) (int64, error) {
+	res, err := d.sql.ExecContext(ctx, `UPDATE admin_passkeys SET status = 'revoked', revoked_at = ?, revoked_by = ? WHERE status <> 'revoked'`, now(), by)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // ListAPITokens returns every token, revoked ones included.

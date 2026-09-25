@@ -70,14 +70,45 @@ type config struct {
 
 func main() {
 	cfgPath := flag.String("config", "/etc/boundgate/control.yaml", "configuration file")
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "usage: boundgate-control [-config file]                      run the control plane\n"+
+			"       boundgate-control [-config file] rotate-bootstrap-token [-revoke-passkeys]\n")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
-	if err := run(*cfgPath); err != nil {
+	if err := run(*cfgPath, flag.Args()); err != nil {
 		fmt.Fprintln(os.Stderr, "boundgate-control:", err)
 		os.Exit(1)
 	}
 }
 
-func run(cfgPath string) error {
+// rotateBootstrap is the way back in on the control-plane host: a new
+// bootstrap token in the token file, and with -revoke-passkeys no passkey
+// left, so that the token works (docs/ADMIN-AUTH.md, R12).
+func rotateBootstrap(dbPath, tokenFile string, args []string) error {
+	fs := flag.NewFlagSet("rotate-bootstrap-token", flag.ContinueOnError)
+	revoke := fs.Bool("revoke-passkeys", false, "revoke every admin passkey first (after the only one was lost)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("rotate-bootstrap-token: unexpected %q", fs.Arg(0))
+	}
+	file, revoked, active, err := control.RotateBootstrapToken(context.Background(), dbPath, tokenFile, *revoke)
+	if err != nil {
+		return err
+	}
+	if revoked > 0 {
+		fmt.Printf("revoked %d passkey(s)\n", revoked)
+	}
+	fmt.Printf("new bootstrap token in %s\n", file)
+	if active > 0 {
+		fmt.Printf("note: %d admin passkey(s) are active, so the token is refused until they are revoked (-revoke-passkeys)\n", active)
+	}
+	return nil
+}
+
+func run(cfgPath string, args []string) error {
 	var cfg config
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -97,6 +128,14 @@ func run(cfgPath string) error {
 	def(&cfg.NodeCert, "/var/lib/boundgate/nodes.crt")
 	def(&cfg.NodeKey, "/var/lib/boundgate/nodes.key")
 	def(&cfg.DBPath, "/var/lib/boundgate/control.db")
+	if len(args) > 0 {
+		switch args[0] {
+		case "rotate-bootstrap-token":
+			return rotateBootstrap(cfg.DBPath, cfg.BootstrapTokenFile, args[1:])
+		default:
+			return fmt.Errorf("unknown command %q", args[0])
+		}
+	}
 	logs, err := logging.Open(logging.Options{Dir: cfg.LogDir, Stdout: cfg.LogStdout || cfg.LogDir == "", Component: "control"})
 	if err != nil {
 		return err

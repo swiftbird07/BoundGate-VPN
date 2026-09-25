@@ -61,8 +61,9 @@ type Config struct {
 	NodeCert string
 	NodeKey  string
 	DBPath   string
-	// BootstrapTokenFile, if set, receives the bootstrap token on first
-	// start (0600). Otherwise the token is only printed to the system log.
+	// BootstrapTokenFile receives the bootstrap token on first start and on
+	// rotation (0600); default "bootstrap-token" next to the database. The
+	// token never goes into a log.
 	BootstrapTokenFile string
 	PendingTTL         time.Duration
 	LogRetention       time.Duration
@@ -188,14 +189,12 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if created {
-		if cfg.BootstrapTokenFile != "" {
-			if err := os.WriteFile(cfg.BootstrapTokenFile, []byte(token+"\n"), 0o600); err != nil {
-				return fmt.Errorf("control: write bootstrap token: %w", err)
-			}
-			log.Info("bootstrap token created", "file", cfg.BootstrapTokenFile)
-		} else {
-			log.Info("bootstrap token created; it is shown only once", "token", token)
+		// never into the log: logs are shipped and kept for months
+		path := bootstrapTokenPath(cfg.DBPath, cfg.BootstrapTokenFile)
+		if err := writeSecretFile(path, token); err != nil {
+			return fmt.Errorf("control: write bootstrap token: %w", err)
 		}
+		log.Info("bootstrap token created; it works until the first admin passkey is registered", "file", path)
 	}
 
 	var adminCert tls.Certificate
@@ -359,6 +358,66 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		return err
 	}
+}
+
+// bootstrapTokenPath is where the bootstrap token is written: the
+// configured file, or "bootstrap-token" in the state directory.
+func bootstrapTokenPath(dbPath, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	return filepath.Join(filepath.Dir(dbPath), "bootstrap-token")
+}
+
+// writeSecretFile writes a secret that only the owner can read, also when
+// the file exists already with wider permissions.
+func writeSecretFile(path, secret string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.WriteString(secret + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// RotateBootstrapToken replaces the bootstrap token and writes the new one
+// like the first (boundgate-control rotate-bootstrap-token, on the
+// control-plane host). The token works only while no passkey is active, so
+// after the last passkey was lost revokePasskeys revokes every passkey
+// first: whoever can run this owns the database anyway. It returns the file
+// and how many passkeys it revoked and are still active.
+func RotateBootstrapToken(ctx context.Context, dbPath, tokenFile string, revokePasskeys bool) (file string, revoked int64, active int, err error) {
+	store, err := db.Open(ctx, dbPath)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	defer store.Close()
+	if revokePasskeys {
+		if revoked, err = store.RevokeAllPasskeys(ctx, "host: rotate-bootstrap-token"); err != nil {
+			return "", 0, 0, err
+		}
+	}
+	token, err := store.RotateBootstrapToken(ctx)
+	if err != nil {
+		return "", revoked, 0, err
+	}
+	file = bootstrapTokenPath(dbPath, tokenFile)
+	if err := writeSecretFile(file, token); err != nil {
+		return "", revoked, 0, fmt.Errorf("write bootstrap token: %w", err)
+	}
+	if active, err = store.CountActivePasskeys(ctx); err != nil {
+		return file, revoked, 0, err
+	}
+	store.InsertLog(ctx, db.LogEvent{Stream: logging.StreamAdminAuth, Actor: "host", Message: "bootstrap token rotated",
+		Attrs: map[string]any{"file": file, "passkeys_revoked": revoked, "passkeys_active": active}})
+	return file, revoked, active, nil
 }
 
 // expireSessions ends user sessions past their lifetime and lets nodes

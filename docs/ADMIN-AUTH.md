@@ -40,17 +40,40 @@ cookie `bg_admin` is `HttpOnly`, `Secure`, `SameSite=Lax`, path `/`.
 Revoking a passkey (any full admin, including one's own) makes it unusable
 for new assertions; existing sessions keep their level until they expire or
 log out. Passkey credentials (public key, sign counter, flags) are stored
-as JSON in `admin_passkeys`; the counter is updated on every login and a
-cloned authenticator (counter going backwards) is refused by go-webauthn.
+as JSON in `admin_passkeys`; the counter is updated on every login. A
+counter that does not move forward (and is not zero on both sides, as
+synced passkeys send) means two copies of the key are in use: go-webauthn
+only flags this (`CloneWarning`), the control plane refuses the login
+("passkey login refused: cloned authenticator" in the admin-auth log) and
+leaves the stored counter alone. An admin whose key is refused this way
+revokes it and registers a new one; another admin approves it.
+
+When a passkey raises a session to `full` (an assertion, or registering an
+active passkey), the session gets a **new id** and a new cookie; the id the
+browser had at `oidc_only` is revoked. An id that leaked or was planted
+before the passkey step therefore never carries full rights (session
+fixation).
 
 ### The bootstrap token
 
-Written to `bootstrap_token_file` on first start. It authenticates as a
-`full` admin **only while `CountActivePasskeys() == 0`**. The moment the
-first passkey is active it answers 401 with "the bootstrap token is
-disabled" wherever it is used. There is no way to re-enable it short of
-revoking every passkey. The lab (`setup-dev.sh`, `e2e.sh`) drives the API
-with it, which is why the lab never registers a passkey.
+Written on first start to `bootstrap_token_file`, by default
+`bootstrap-token` next to the database (mode 0600); only its path goes into
+the log. It authenticates as a `full` admin **only while
+`CountActivePasskeys() == 0`**. The moment the first passkey is active it
+answers 401 with "the bootstrap token is disabled" wherever it is used,
+and every API token minted with it is revoked at that moment (and refused
+while a passkey is active, should one have slipped through): automation
+that the bootstrap token created must not outlive it. The lab
+(`setup-dev.sh`, `e2e.sh`) drives the API with it, which is why the lab
+never registers a passkey.
+
+On the control-plane host, `boundgate-control -config … rotate-bootstrap-token`
+writes a new token to the same file; the old one is dead. The token still
+works only while no passkey is active, so after the only passkey was lost
+add `-revoke-passkeys`: every passkey is revoked (by `host:
+rotate-bootstrap-token`, in the admin-auth log), and the first admin who
+signs in registers a new one with the new token. Whoever can run this can
+read and write the database anyway (R12).
 
 ### API tokens
 

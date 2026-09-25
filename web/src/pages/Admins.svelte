@@ -153,7 +153,7 @@
       <tbody>
         {#each tokens.filter((t) => showRevoked || !t.revoked_at) as t (t.id)}
           <tr>
-            <td><b>{t.name}</b>{#if t.revoked_at} <Badge status="revoked" />{/if}<div class="faint small">by {t.created_by}</div></td>
+            <td><b>{t.name}</b>{#if t.revoked_at} <Badge status="revoked" />{/if}<div class="faint small">by {t.created_by}{#if t.bootstrap} · dies with the bootstrap token at the first passkey{/if}</div></td>
             <td><Time at={t.created_at} /></td><td>{#if t.expires_at}<Time at={t.expires_at} />{:else}<span class="faint">never</span>{/if}</td><td><Time at={t.last_used_at} /></td>
             <td style="text-align:right">{#if !t.revoked_at}<button class="btn sm danger" onclick={() => revokeToken(t)}>Revoke</button>{/if}</td>
           </tr>

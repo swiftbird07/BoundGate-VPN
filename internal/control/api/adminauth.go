@@ -537,15 +537,42 @@ func (h *Handlers) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request)
 		fail(w, err, h.d.Logs.System)
 		return
 	}
+	if c.Mode == "first" {
+		// the bootstrap token is dead now; what was minted with it dies too
+		if n, err := h.d.DB.RevokeBootstrapAPITokens(r.Context(), "first passkey"); err != nil {
+			fail(w, err, h.d.Logs.System)
+			return
+		} else if n > 0 {
+			h.audit(r.Context(), h.d.Logs.AdminAuth, logging.StreamAdminAuth, a.Subject, "api tokens of the bootstrap token revoked", "", map[string]any{"count": n})
+		}
+	}
 	if status == "active" {
 		// user verification happened on the authenticator: the session is full
-		if err := h.d.DB.SetAdminSessionLevel(r.Context(), a.SessionID, db.AdminLevelFull); err != nil {
-			fail(w, err, h.d.Logs.System)
+		if !h.raiseSession(w, r, a) {
 			return
 		}
 	}
 	h.audit(r.Context(), h.d.Logs.AdminAuth, logging.StreamAdminAuth, a.Subject, "passkey registered", "", map[string]any{"passkey": pk.ID, "label": pk.Label, "status": status, "mode": c.Mode, "src": remoteIP(r)})
 	writeJSON(w, http.StatusCreated, map[string]any{"id": pk.ID, "status": status, "level": levelAfter(status)})
+}
+
+// raiseSession makes the caller's session full under a new id and sets the
+// new cookie: the id the browser had at oidc_only is revoked, so one that
+// leaked or was planted before the passkey step does not gain full rights
+// (session fixation).
+func (h *Handlers) raiseSession(w http.ResponseWriter, r *http.Request, a Admin) bool {
+	s, err := h.d.DB.RaiseAdminSession(r.Context(), a.SessionID, db.AdminLevelFull)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrTokenExpired) {
+			writeError(w, http.StatusUnauthorized, errNoAuth.Error())
+			return false
+		}
+		fail(w, err, h.d.Logs.System)
+		return false
+	}
+	http.SetCookie(w, &http.Cookie{Name: cookieSession, Value: s.ID, Path: "/", HttpOnly: true, Secure: h.secureCookie(r), SameSite: http.SameSiteLaxMode,
+		MaxAge: max(1, int(time.Until(s.ExpiresAt).Seconds()))})
+	return true
 }
 
 func levelAfter(status string) db.AdminLevel {
@@ -611,10 +638,19 @@ func (h *Handlers) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range own {
 		if p.Status == "active" && string(p.CredentialID) == string(cred.ID) {
+			// go-webauthn only flags a signature counter that did not move
+			// forward (and was not zero on both sides, as synced passkeys
+			// send): two copies of the private key are in use. The flag is
+			// ours to act on; the stored counter stays as it was.
+			if cred.Authenticator.CloneWarning {
+				h.audit(r.Context(), h.d.Logs.AdminAuth, logging.StreamAdminAuth, a.Subject, "passkey login refused: cloned authenticator", "",
+					map[string]any{"passkey": p.ID, "label": p.Label, "sign_count": cred.Authenticator.SignCount, "src": remoteIP(r)})
+				writeError(w, http.StatusForbidden, "passkey refused: its signature counter went backwards, the key may have been copied; ask another admin to check it")
+				return
+			}
 			raw, _ := json.Marshal(cred)
 			_ = h.d.DB.UpdatePasskeyCredential(r.Context(), p.ID, raw)
-			if err := h.d.DB.SetAdminSessionLevel(r.Context(), a.SessionID, db.AdminLevelFull); err != nil {
-				fail(w, err, h.d.Logs.System)
+			if !h.raiseSession(w, r, a) {
 				return
 			}
 			h.audit(r.Context(), h.d.Logs.AdminAuth, logging.StreamAdminAuth, a.Subject, "admin login (passkey)", "", map[string]any{"passkey": p.ID, "label": p.Label, "src": remoteIP(r)})
@@ -718,12 +754,14 @@ type TokenView struct {
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 	RevokedBy  string     `json:"revoked_by,omitempty"`
+	// Bootstrap: minted with the bootstrap token, dead once a passkey is active.
+	Bootstrap bool `json:"bootstrap,omitempty"`
 	// Token is the secret, returned once at creation.
 	Token string `json:"token,omitempty"`
 }
 
 func tokenView(t db.APIToken) TokenView {
-	v := TokenView{ID: t.ID, Name: t.Name, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, RevokedBy: t.RevokedBy}
+	v := TokenView{ID: t.ID, Name: t.Name, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, RevokedBy: t.RevokedBy, Bootstrap: t.Bootstrap}
 	if !t.ExpiresAt.IsZero() {
 		v.ExpiresAt = &t.ExpiresAt
 	}
@@ -773,7 +811,7 @@ func (h *Handlers) adminCreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 		expires = time.Now().Add(d)
 	}
-	t, secret, err := h.d.DB.CreateAPIToken(r.Context(), name, a.Subject, expires)
+	t, secret, err := h.d.DB.CreateAPIToken(r.Context(), name, a.Subject, expires, a.Via == "bootstrap")
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
 		return
