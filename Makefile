@@ -94,9 +94,10 @@ test-lib:
 # reply_via_arrival with a real kernel: a privileged throwaway container
 # rewires its own network (veth, netns, tun, nftables, ip rules). Not part of
 # `test`: needs Docker.
+ALPINE = alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 test-arrival:
 	box sh -c 'CGO_ENABLED=0 go test -c -o bin/netcfg.test ./internal/node/netcfg/'
-	docker run --rm --privileged -v $(CURDIR)/bin:/t:ro -e BOUNDGATE_TEST_ARRIVAL=1 alpine:3.20 \
+	docker run --rm --privileged -v $(CURDIR)/bin:/t:ro -e BOUNDGATE_TEST_ARRIVAL=1 $(ALPINE) \
 	  sh -c 'apk add -q --no-cache iproute2 nftables netcat-openbsd && /t/netcfg.test -test.run Arrival -test.v'
 
 # TPM-backed device keys against a software TPM (swtpm) on the default
@@ -178,20 +179,28 @@ mac-sekey:
 # against the VM's socket (builder "boundgate", a docker-container driver
 # with the VM's binfmt for the foreign architecture). Pushing needs a
 # `docker login gitlab.net407.com` on this Mac first (token with package:write).
+# That image gets the Docker socket (root in the VM) and the registry
+# credentials, so it is pinned by digest, as is the BuildKit image the
+# builder runs (both at least 14 days old when pinned):
+#   docker:29.8.0-cli  2026-09-04   moby/buildkit:v0.32.2  2026-08-04
+# A builder created before these pins keeps its old BuildKit image:
+# remove it once: the BUILDX command below with `rm boundgate`.
 IMAGE ?= gitlab.net407.com/sbh/boundgate
 IMAGE_TAG ?= latest
 PLATFORMS ?= linux/amd64,linux/arm64
 REVISION := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DOCKER_CLI = docker:29.8.0-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66
+BUILDKIT = moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 BUILDX = docker run --rm -e DOCKER_HOST=unix:///var/run/docker.sock \
   -v /var/run/docker.sock:/var/run/docker.sock -v boundgate-buildx:/root/.docker/buildx \
-  -v "$(HOME)/.docker/config.json:/root/.docker/config.json:ro" -v "$(CURDIR)":/work -w /work docker:cli buildx
+  -v "$(HOME)/.docker/config.json:/root/.docker/config.json:ro" -v "$(CURDIR)":/work -w /work $(DOCKER_CLI) buildx
 
 image: build-linux
 	docker build --build-arg TARGETARCH=$(GOARCH) --build-arg REVISION=$(REVISION) -t boundgate:local -f deploy/Dockerfile .
 
 image-push:
 	@for a in $$(echo "$(PLATFORMS)" | tr ',' ' ' | sed 's#linux/##g'); do $(MAKE) -o web build-linux GOARCH=$$a || exit 1; done
-	@$(BUILDX) inspect boundgate >/dev/null 2>&1 || $(BUILDX) create --name boundgate --driver docker-container >/dev/null
+	@$(BUILDX) inspect boundgate >/dev/null 2>&1 || $(BUILDX) create --name boundgate --driver docker-container --driver-opt image=$(BUILDKIT) >/dev/null
 	$(BUILDX) build --builder boundgate --platform $(PLATFORMS) --build-arg REVISION=$(REVISION) \
 	  -t $(IMAGE):$(IMAGE_TAG) -t $(IMAGE):sha-$(REVISION) -f deploy/Dockerfile --push .
 
