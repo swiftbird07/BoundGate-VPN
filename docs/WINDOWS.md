@@ -33,8 +33,20 @@ Status 2026-09-21:
 | Logs | `%ProgramData%\BoundGate\logs` |
 | Socket | `%ProgramData%\BoundGate\node.sock` |
 
-`%ProgramData%\BoundGate` gets a protected DACL: SYSTEM and Administrators
-only, nothing inherited. By default every user may read ProgramData.
+`%ProgramData%\BoundGate` belongs to Administrators and has a protected
+DACL: SYSTEM and Administrators only, nothing inherited. By default every
+user may read ProgramData, and create directories in it: a standard user
+who made `%ProgramData%\BoundGate` before the first install would own it,
+and an owner can always change the permissions again. So
+`boundgate-node protect` (install.ps1 runs it before it writes anything
+there) creates the directory already protected, or takes an existing one
+over only if SYSTEM, Administrators or TrustedInstaller own it and
+everything in it, without links or junctions; it then sets owner and DACL
+on every entry. Anything else is refused with the path and its owner:
+look at it, remove the directory as administrator, run install.ps1 again.
+The service checks owner and DACL of the directory at every start and
+does not start otherwise (event log: "boundgate-node does not start");
+running install.ps1 again repairs a directory that is merely unprotected.
 
 ## Install
 
@@ -53,8 +65,15 @@ address, then "Request access" shows its key for comparison. With
 
 `install.ps1` does the following:
 
-* Checks `wintun.dll`: Authenticode valid, signer WireGuard LLC.
+* Checks Wintun: the zip's SHA-256 must be the one www.wintun.net publishes
+  for `wintun-0.14.1.zip`
+  (`07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51`, pinned
+  in the script), and the DLL for this architecture in it must have a valid
+  Authenticode signature whose subject has exactly `CN=WireGuard LLC` and
+  `O=WireGuard LLC`. A DLL on its own is not accepted.
 * Copies the programs to Program Files.
+* Creates or checks `%ProgramData%\BoundGate` (`boundgate-node protect`,
+  see Paths) before it writes anything into it.
 * Creates the group `BoundGate Users` and adds the installing account.
 * Writes `node.yaml` if none exists, and lists the installing account in
   `socket_users`: the group only reaches it at the next sign-in, the tray
@@ -73,9 +92,10 @@ state too, identity included; then revoke the node in the admin UI. At the
 end it checks that no Wintun adapter is left.
 
 Wintun is not in the zip. It is the one file from outside the release: its
-license allows redistribution, but its signature is checked on the target
-instead of trusting whatever the zip carries. Download it from
-https://www.wintun.net.
+license allows redistribution, but it is checked on the target (hash of
+the zip, signature of the DLL) instead of trusting whatever the release
+zip would carry. Download it from https://www.wintun.net. A new Wintun
+version means a new hash in install.ps1, taken from that page.
 
 ## Device key
 

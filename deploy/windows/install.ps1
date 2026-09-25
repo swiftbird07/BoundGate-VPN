@@ -8,9 +8,10 @@
     .\install.ps1 -WintunZip C:\Users\me\Downloads\wintun-0.14.1.zip [-Control vpn.example.org]
 
   * copies boundgate-node.exe, boundgatectl.exe, boundgate-tray.exe and
-    wintun.dll to %ProgramFiles%\BoundGate (wintun.dll only after its
-    Authenticode signature was checked: WireGuard LLC)
-  * creates %ProgramData%\BoundGate (SYSTEM and Administrators only) with
+    wintun.dll to %ProgramFiles%\BoundGate (wintun.dll only from the zip with
+    the published SHA-256, and with a valid signature of WireGuard LLC)
+  * creates %ProgramData%\BoundGate (owner Administrators, SYSTEM and
+    Administrators only; refuses one that somebody else owns anything in) with
     node.yaml, unless one exists
   * creates the local group "BoundGate Users" and adds you: its members may
     use the tray and boundgatectl without administrator rights
@@ -22,7 +23,7 @@
 #>
 [CmdletBinding()]
 param(
-    # wintun-0.14.1.zip from https://www.wintun.net (or the wintun.dll for this machine's architecture)
+    # wintun-0.14.1.zip from https://www.wintun.net, as downloaded (its SHA-256 is checked)
     [string]$WintunZip,
     # control plane address, host[:port]; later with `boundgatectl configure -control HOST` as well
     [string]$Control,
@@ -47,25 +48,45 @@ $group = 'BoundGate Users'
 $dataDir = Join-Path $env:ProgramData 'BoundGate'
 $svc = Get-Service -Name BoundGate -ErrorAction SilentlyContinue
 
-# --- Wintun: the one file from outside this release; checked by its signature
+# --- Wintun: the one file from outside this release. The zip is pinned by the
+# SHA-256 that https://www.wintun.net publishes for it, and the DLL in it must
+# carry a valid Authenticode signature whose subject says exactly
+# CN=WireGuard LLC and O=WireGuard LLC (a subject that merely contains the
+# text, e.g. in another attribute, is not enough).
+$wintunZipName = 'wintun-0.14.1.zip'
+$wintunZipSha256 = '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51'
+function Get-SubjectValues([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert, [string]$Key) {
+    # one relative distinguished name per line; a value with special characters comes in quotes
+    $Cert.SubjectName.Format($true) -split "`r?`n" | Where-Object { $_ -ne '' } | ForEach-Object {
+        $k, $v = $_ -split '=', 2
+        if ($null -ne $v -and $k.Trim() -ceq $Key) { $v.Trim().Trim('"') }
+    }
+}
 $wintun = $null
 $tmp = $null
 if ($WintunZip) {
-    if ($WintunZip -like '*.zip') {
-        $tmp = Join-Path $env:TEMP ("boundgate-wintun-" + [guid]::NewGuid())
-        Expand-Archive -Path $WintunZip -DestinationPath $tmp
-        $wintun = Join-Path $tmp "wintun\bin\$arch\wintun.dll"
-    } else {
-        $wintun = $WintunZip
+    if ($WintunZip -notlike '*.zip') {
+        throw "-WintunZip takes $wintunZipName itself (its SHA-256 is pinned), not a DLL: download it from https://www.wintun.net"
     }
-    if (-not (Test-Path $wintun)) { throw "no wintun.dll for $arch in $WintunZip" }
-    $sig = Get-AuthenticodeSignature -FilePath $wintun
-    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=WireGuard LLC') {
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $WintunZip).Hash
+    if ($hash -ne $wintunZipSha256) {
+        throw "$WintunZip has SHA-256 $hash, not that of $wintunZipName ($wintunZipSha256). Download it from https://www.wintun.net only."
+    }
+    $tmp = Join-Path $env:TEMP ("boundgate-wintun-" + [guid]::NewGuid())
+    Expand-Archive -LiteralPath $WintunZip -DestinationPath $tmp
+    $wintun = Join-Path $tmp "wintun\bin\$arch\wintun.dll"
+    if (-not (Test-Path -LiteralPath $wintun)) { throw "no wintun.dll for $arch in $WintunZip" }
+    $sig = Get-AuthenticodeSignature -LiteralPath $wintun
+    $o = @(); $cn = @()
+    # @(): a function's single result arrives as a scalar, and 'x'[0] is a character
+    if ($sig.SignerCertificate) { $o = @(Get-SubjectValues $sig.SignerCertificate 'O'); $cn = @(Get-SubjectValues $sig.SignerCertificate 'CN') }
+    if ($sig.Status -ne 'Valid' -or $sig.SignatureType -ne 'Authenticode' -or
+        $o.Count -ne 1 -or $o[0] -cne 'WireGuard LLC' -or $cn.Count -ne 1 -or $cn[0] -cne 'WireGuard LLC') {
         throw "wintun.dll is not signed by WireGuard LLC (status $($sig.Status), signer $($sig.SignerCertificate.Subject)). Download it from https://www.wintun.net only."
     }
-    Write-Host "wintun.dll: signed by WireGuard LLC, version $((Get-Item $wintun).VersionInfo.FileVersion)"
+    Write-Host "wintun.dll: $wintunZipName (SHA-256 checked), signed by WireGuard LLC, version $((Get-Item -LiteralPath $wintun).VersionInfo.FileVersion)"
 } elseif (-not (Test-Path (Join-Path $InstallDir 'wintun.dll'))) {
-    throw 'Wintun is needed once: download wintun-0.14.1.zip from https://www.wintun.net and pass it with -WintunZip.'
+    throw "Wintun is needed once: download $wintunZipName from https://www.wintun.net and pass it with -WintunZip."
 }
 
 # --- programs
@@ -92,7 +113,15 @@ if (-not (Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue | Whe
 }
 
 # --- configuration and service
-New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+# Before anything is written into it: %ProgramData%\BoundGate is created
+# protected (owner Administrators, SYSTEM and Administrators only), or, if it
+# exists, taken over only when nobody but SYSTEM, Administrators or
+# TrustedInstaller owns anything in it; links and junctions are refused.
+# A standard user may create directories in ProgramData, and the owner of a
+# directory can always change its permissions again.
+$node = Join-Path $InstallDir 'boundgate-node.exe'
+& $node protect
+if ($LASTEXITCODE -ne 0) { throw "$dataDir is not safe to use (the reason is above); nothing was written into it" }
 $cfg = Join-Path $dataDir 'node.yaml'
 if (-not (Test-Path $cfg)) {
     Copy-Item (Join-Path $here 'node.yaml') $cfg
@@ -106,7 +135,6 @@ if (-not (Select-String -Path $cfg -Pattern '^socket_users:' -Quiet)) {
     Add-Content -Path $cfg -Value "socket_users: ['$($User -replace "'", "''")']   # may use the tray before signing in again (install.ps1)"
     Write-Host "allowed $User to use the service now"
 }
-$node = Join-Path $InstallDir 'boundgate-node.exe'
 if (-not $svc) {
     & $node install -config $cfg
     if ($LASTEXITCODE -ne 0) { throw 'service installation failed' }

@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -43,6 +45,9 @@ func runMain(cfgPath string) error {
 		return err
 	}
 	if !inService {
+		if err := checkDir(ipc.Dir()); err != nil {
+			return err
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 		return run(ctx, cfgPath)
@@ -61,6 +66,12 @@ type handler struct {
 
 func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, st chan<- svc.Status) (bool, uint32) {
 	st <- svc.Status{State: svc.StartPending}
+	// configuration, key and socket come from this directory, and we are SYSTEM
+	if err := checkDir(ipc.Dir()); err != nil {
+		h.err = err
+		logEvent(fmt.Sprintf("boundgate-node does not start: %v", err))
+		return true, 2
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, h.cfgPath) }()
@@ -120,6 +131,17 @@ func serviceCommand(args []string) (bool, error) {
 			return true, errors.New("usage: boundgate-node install [-config file]")
 		}
 		return true, install(cfg)
+	case "protect":
+		// install.ps1, before it writes anything into the directory, and on
+		// every update: owner and DACL of the whole tree, or a refusal
+		if len(args) != 1 {
+			return true, errors.New("usage: boundgate-node protect")
+		}
+		if err := secureTree(ipc.Dir()); err != nil {
+			return true, err
+		}
+		fmt.Printf("%s: owner Administrators, SYSTEM and Administrators only\n", ipc.Dir())
+		return true, nil
 	case "uninstall":
 		return true, uninstall()
 	case "start":
@@ -154,14 +176,15 @@ func install(cfg string) error {
 		s.Close()
 		return fmt.Errorf("service %s is already installed (uninstall first)", serviceName)
 	}
-	for _, d := range []string{ipc.Dir(), defaults.stateDir, defaults.profilesDir, defaults.logDir} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
+	// state, keys and logs: SYSTEM and administrators only, nothing inherited,
+	// and never in a directory somebody else prepared
+	if err := secureTree(ipc.Dir()); err != nil {
+		return err
+	}
+	for _, d := range []string{defaults.stateDir, defaults.profilesDir, defaults.logDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil { // inherit the protected DACL
 			return err
 		}
-	}
-	// state, keys and logs: SYSTEM and administrators only, nothing inherited
-	if err := protectDir(ipc.Dir()); err != nil {
-		return err
 	}
 	s, err := m.CreateService(serviceName, exe, mgr.Config{
 		DisplayName:  "BoundGate",
@@ -232,10 +255,82 @@ func control(f func(*mgr.Service) error) error {
 	return f(s)
 }
 
-// protectDir gives SYSTEM and Administrators full control and removes
-// everything inherited (ProgramData lets every user read by default).
-func protectDir(dir string) error {
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)")
+// The directory under ProgramData holds the configuration (which names the
+// control plane), the device key and the socket, and the service runs as
+// SYSTEM. ProgramData lets every user create a directory, and the owner of an
+// object may always rewrite its DACL: a standard user who creates
+// %ProgramData%\BoundGate before the first install, or plants a file in it,
+// would keep control over what SYSTEM reads. So the whole tree belongs to
+// Administrators with a protected DACL (SYSTEM and Administrators only), an
+// install refuses a tree that anybody else owns, and the service refuses to
+// start from a directory that is not protected that way.
+const (
+	sddlProtectedDir  = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	sddlProtectedFile = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"
+	// NT SERVICE\TrustedInstaller
+	trustedInstallerSID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+)
+
+// trustedOwner: SYSTEM, Administrators, TrustedInstaller.
+func trustedOwner(sid *windows.SID) bool {
+	return sid != nil && (sid.IsWellKnown(windows.WinLocalSystemSid) ||
+		sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) ||
+		sid.String() == trustedInstallerSID)
+}
+
+// accountName is for messages: DOMAIN\name, or the SID.
+func accountName(sid *windows.SID) string {
+	if sid == nil {
+		return "nobody"
+	}
+	if a, d, _, err := sid.LookupAccount(""); err == nil {
+		if d != "" {
+			return d + `\` + a
+		}
+		return a
+	}
+	return sid.String()
+}
+
+// plainEntry refuses what a planted tree could use to redirect SYSTEM's
+// writes: symbolic links, junctions and other reparse points, devices, pipes.
+// A socket (the daemon's, left behind) is fine.
+func plainEntry(path string) (os.FileInfo, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Mode()&(fs.ModeSymlink|fs.ModeIrregular|fs.ModeDevice|fs.ModeNamedPipe|fs.ModeCharDevice) != 0 {
+		return nil, fmt.Errorf("%s is a link or reparse point (%s): refusing; remove it as administrator", path, fi.Mode().Type())
+	}
+	return fi, nil
+}
+
+func ownerOf(path string) (*windows.SID, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return owner, nil
+}
+
+// protect makes Administrators the owner and SYSTEM and Administrators the
+// only entries of a protected DACL; directories pass it on to what is created
+// in them.
+func protect(path string, dir bool) error {
+	sddl := sddlProtectedFile
+	if dir {
+		sddl = sddlProtectedDir
+	}
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	owner, _, err := sd.Owner()
 	if err != nil {
 		return err
 	}
@@ -243,6 +338,162 @@ func protectDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	if owner == nil || dacl == nil { // a nil DACL would be "everyone, everything"
+		return errors.New("protect: bad security descriptor")
+	}
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		owner, nil, dacl, nil); err != nil {
+		return fmt.Errorf("protect %s: %w", path, err)
+	}
+	return nil
+}
+
+// walkPlain calls f for every entry below root (not root itself), refusing
+// links and reparse points, and never following one.
+func walkPlain(root string, f func(path string, fi os.FileInfo) error) error {
+	return filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("%s cannot be read completely (%w): refusing", root, err)
+		}
+		if path == root {
+			return nil
+		}
+		fi, err := plainEntry(path)
+		if err != nil {
+			return err
+		}
+		return f(path, fi)
+	})
+}
+
+// secureTree creates root already protected, or takes over an existing tree
+// only if every entry in it belongs to SYSTEM, Administrators or
+// TrustedInstaller, and then gives all of it owner Administrators and the
+// protected DACL. No fallback: anything else is an error that names the entry.
+func secureTree(root string) error {
+	sd, err := windows.SecurityDescriptorFromString(sddlProtectedDir)
+	if err != nil {
+		return err
+	}
+	p, err := windows.UTF16PtrFromString(root)
+	if err != nil {
+		return err
+	}
+	sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
+	sa.Length = uint32(unsafe.Sizeof(*sa))
+	switch err := windows.CreateDirectory(p, sa); {
+	case err == nil:
+		return checkDir(root) // protected from its first moment, and empty
+	case !errors.Is(err, windows.ERROR_ALREADY_EXISTS):
+		return fmt.Errorf("create %s: %w", root, err)
+	}
+	refuse := func(path string, owner *windows.SID) error {
+		return fmt.Errorf("%s belongs to %s, not to SYSTEM or Administrators: refusing to install into a directory somebody else prepared. "+
+			"Look at what is in %s, remove the directory as administrator, and run this again", path, accountName(owner), root)
+	}
+	fi, err := plainEntry(root)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory: refusing", root)
+	}
+	owner, err := ownerOf(root)
+	if err != nil {
+		return err
+	}
+	if !trustedOwner(owner) {
+		return refuse(root, owner)
+	}
+	// First the directory itself, so that nobody else can add to it while the
+	// rest is looked at; then every entry, checked before it is changed.
+	if err := protect(root, true); err != nil {
+		return err
+	}
+	if err := walkPlain(root, func(path string, fi os.FileInfo) error {
+		owner, err := ownerOf(path)
+		if err != nil {
+			return err
+		}
+		if !trustedOwner(owner) {
+			return refuse(path, owner)
+		}
+		return protect(path, fi.IsDir())
+	}); err != nil {
+		return err
+	}
+	// what was created through a handle opened before the DACL changed
+	if err := walkPlain(root, func(path string, _ os.FileInfo) error {
+		owner, err := ownerOf(path)
+		if err != nil {
+			return err
+		}
+		if !trustedOwner(owner) {
+			return refuse(path, owner)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return checkDir(root)
+}
+
+// checkDir is what the service requires of its directory at every start:
+// owned by SYSTEM, Administrators or TrustedInstaller, a protected DACL,
+// and access allowed to SYSTEM and Administrators only.
+func checkDir(dir string) error {
+	fix := "run install.ps1 (or boundgate-node protect) as administrator to set owner and permissions again, after checking what is in it"
+	fi, err := plainEntry(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s does not exist: %s", dir, "run install.ps1 as administrator")
+		}
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("%s: %w", dir, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return fmt.Errorf("%s: %w", dir, err)
+	}
+	if !trustedOwner(owner) {
+		return fmt.Errorf("%s belongs to %s, not to SYSTEM or Administrators: refusing to run from it; %s", dir, accountName(owner), fix)
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		return fmt.Errorf("%s: %w", dir, err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return fmt.Errorf("%s inherits permissions from %s: refusing to run from it; %s", dir, filepath.Dir(dir), fix)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return fmt.Errorf("%s has no DACL (everyone may do everything): refusing to run from it; %s", dir, fix)
+	}
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return fmt.Errorf("%s: %w", dir, err)
+		}
+		switch ace.Header.AceType {
+		case windows.ACCESS_DENIED_ACE_TYPE:
+			continue // takes rights away
+		case windows.ACCESS_ALLOWED_ACE_TYPE:
+			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+			if sid.IsWellKnown(windows.WinLocalSystemSid) || sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+				continue
+			}
+			return fmt.Errorf("%s grants access to %s: refusing to run from it; %s", dir, accountName(sid), fix)
+		default:
+			return fmt.Errorf("%s has a permission entry of type %d this check does not know: refusing to run from it; %s", dir, ace.Header.AceType, fix)
+		}
+	}
+	return nil
 }
