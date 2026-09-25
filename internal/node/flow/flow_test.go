@@ -540,3 +540,28 @@ func TestLearnerSeesTheAnswersOfAnAllowedFlow(t *testing.T) {
 		t.Fatalf("a denied flow taught something: %+v", got)
 	}
 }
+
+// A ClientHello that never completes within MaxClientHello ends the
+// inspection, and the bytes gathered for it go with it: an allowed flow
+// lives for half an hour, and a peer can open many.
+func TestSNIBufferReleasedWhenInspectionGivesUp(t *testing.T) {
+	tb := New(Timeouts{}, nil)
+	peer := Origin{Principal: "node-a"}
+	allow := func(*Entry) Result { return Result{Allow: true} }
+	syn := tcp("10.21.0.2", "10.60.0.11", 40000, 443, netparse.TCPSyn, nil)
+	tb.Handle(parse(t, syn), syn, peer, allow)
+	// a handshake header that announces more than the table buffers
+	seg := append([]byte{0x16, 0x03, 0x01, 0x40, 0x00, 0x01, 0x00, 0x3f, 0xfb, 0x03, 0x03}, make([]byte, 1200)...)
+	var e *Entry
+	for i := 0; i*len(seg) <= netparse.MaxClientHello; i++ {
+		p := tcp("10.21.0.2", "10.60.0.11", 40000, 443, netparse.TCPAck, seg)
+		var out Outcome
+		if out, e = tb.Handle(parse(t, p), p, peer, allow); out != Pass {
+			t.Fatalf("segment %d: %v", i, out)
+		}
+		seg = make([]byte, 1200)
+	}
+	if !e.sniDone || e.sniBuf != nil {
+		t.Fatalf("inspection done %v, %d bytes still buffered", e.sniDone, len(e.sniBuf))
+	}
+}

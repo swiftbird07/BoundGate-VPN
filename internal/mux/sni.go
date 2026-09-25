@@ -141,8 +141,10 @@ func readTLSClientHello(r io.Reader, max int) (string, []byte, error) {
 	var raw, hs []byte
 	hdr := make([]byte, 5)
 	for len(raw) < max {
-		if _, err := io.ReadFull(r, hdr); err != nil {
-			return "", raw, err
+		// on a short read, what did arrive is replayed and nothing else: the
+		// rest of a buffer was never sent by the client
+		if m, err := io.ReadFull(r, hdr); err != nil {
+			return "", append(raw, hdr[:m]...), err
 		}
 		raw = append(raw, hdr...)
 		n := int(binary.BigEndian.Uint16(hdr[3:]))
@@ -150,8 +152,8 @@ func readTLSClientHello(r io.Reader, max int) (string, []byte, error) {
 			return "", raw, errNoName
 		}
 		rec := make([]byte, n)
-		if _, err := io.ReadFull(r, rec); err != nil {
-			return "", append(raw, rec...), err
+		if m, err := io.ReadFull(r, rec); err != nil {
+			return "", append(raw, rec[:m]...), err
 		}
 		raw = append(raw, rec...)
 		hs = append(hs, rec...)

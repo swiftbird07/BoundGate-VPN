@@ -223,13 +223,12 @@ vuln:
 	box go run $(GOVULNCHECK) ./...
 	box go run -exec 'env GOOS=windows' $(GOVULNCHECK) ./...
 
+# every fuzz target of the packages that take bytes from others, one after
+# the other (FUZZTIME each)
+FUZZTIME ?= 20s
+FUZZPKGS = ./internal/netparse ./internal/binding ./internal/node/flow ./internal/transport ./internal/mux
 fuzz:
-	box go test -run=^$$ -fuzz=FuzzParse -fuzztime=30s ./internal/netparse
-	box go test -run=^$$ -fuzz=FuzzParseSSHSIG -fuzztime=20s ./internal/binding
-	box go test -run=^$$ -fuzz=FuzzParseBinding -fuzztime=20s ./internal/binding
-	box go test -run=^$$ -fuzz=FuzzClientHelloSNI -fuzztime=20s ./internal/netparse
-	box go test -run=^$$ -fuzz=FuzzDNSQueryName -fuzztime=20s ./internal/netparse
-	box go test -run=^$$ -fuzz=FuzzTCPReset -fuzztime=20s ./internal/netparse
+	box sh -c 'set -e; for p in $(FUZZPKGS); do for f in $$(go test -list "^Fuzz" $$p | grep "^Fuzz"); do echo "== $$p $$f"; go test -run="^$$" -fuzz="^$$f\$$" -fuzztime=$(FUZZTIME) $$p; done; done'
 
 cooldown:
 	box gocooldown check
