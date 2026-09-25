@@ -146,13 +146,8 @@ func (h *hubService) Serve(ctx context.Context, t *transport.Tunnel) {
 
 	buf := make([]byte, forward.Offset+forward.MaxPacket)
 	var dropped uint64
-	for {
-		n, err := t.ReadPacket(buf[forward.Offset:])
-		if err != nil {
-			return
-		}
-		ts.in.Add(uint64(n))
-		ts.inPkts.Add(1)
+	handle := func(n int) {
+		defer s.n.guard.catch("spoke tunnel")
 		pkt := buf[forward.Offset : forward.Offset+n]
 		hdr, ok := netparse.Parse(pkt)
 		if !ok || !allowedSource(p, s.pool, s.networks(), hdr.Src) {
@@ -161,17 +156,26 @@ func (h *hubService) Serve(ctx context.Context, t *transport.Tunnel) {
 			if dropped == 1 || dropped%1000 == 0 {
 				s.n.log.Warn("dropping packet with unexpected source", "tunnel", t.ID(), "src", hdr.Src, "peer", p.Name, "dropped", dropped)
 			}
-			continue
+			return
 		}
 		// the ACL: this peer is the principal of every flow it starts
 		switch out, _ := s.admit(hdr, pkt, flow.Origin{Principal: p.ID}); out {
 		case flow.Drop:
-			continue
+			return
 		case flow.Reset:
 			s.reset(pkt, ts)
-			continue
+			return
 		}
 		dp.Route(buf[:forward.Offset+n], ts)
+	}
+	for {
+		n, err := t.ReadPacket(buf[forward.Offset:])
+		if err != nil {
+			return
+		}
+		ts.in.Add(uint64(n))
+		ts.inPkts.Add(1)
+		handle(n)
 	}
 }
 

@@ -29,6 +29,7 @@ type dataplane struct {
 	table  *forward.Table
 	uplink atomic.Pointer[uplinkRef]
 	log    *slog.Logger
+	guard  *packetGuard
 	// s admits packets through the flow table (nil in tests).
 	s *session
 
@@ -39,7 +40,7 @@ type dataplane struct {
 type uplinkRef struct{ pw forward.PacketWriter }
 
 func newDataplane(dev tun.Device, ifname string, log *slog.Logger) *dataplane {
-	return &dataplane{dev: dev, ifname: ifname, table: forward.NewTable(), log: log, wbufs: make([][]byte, 1)}
+	return &dataplane{dev: dev, ifname: ifname, table: forward.NewTable(), log: log, guard: &packetGuard{log: log}, wbufs: make([][]byte, 1)}
 }
 
 // setUplink installs (or clears, with nil) the tunnel that carries traffic
@@ -76,6 +77,7 @@ func (d *dataplane) WriteToTUN(buf []byte) error {
 // that owns the destination, otherwise to the host stack. ICMP errors from
 // the next hop go back to the sender.
 func (d *dataplane) Route(buf []byte, from forward.PacketWriter) {
+	defer d.guard.catch("route")
 	pkt := buf[forward.Offset:]
 	h, ok := netparse.Parse(pkt)
 	if ok {
@@ -105,6 +107,48 @@ func (d *dataplane) RunTUNReader(ctx context.Context) error {
 		_ = d.dev.Close()
 	}()
 	var dropped uint64
+	handle := func(pkt []byte) {
+		defer d.guard.catch("host stack")
+		// Only IPv4 runs on the overlay. The kernel also emits IPv6
+		// link-local traffic (router solicitations, MLD) on a fresh TUN.
+		if len(pkt) == 0 || pkt[0]>>4 != 4 {
+			return
+		}
+		h, ok := netparse.Parse(pkt)
+		if !ok {
+			return
+		}
+		if d.s != nil {
+			// flows from the host stack are tracked so their return
+			// traffic is matched; the receiving node decides them
+			if out, _ := d.s.admit(h, pkt, flow.Origin{Local: true}); out != flow.Pass {
+				return
+			}
+		}
+		pw, ok := d.table.Lookup(h.Dst)
+		if !ok {
+			pw = d.getUplink()
+			if d.s != nil && d.s.paths != nil {
+				d.s.paths.noPath(h.Dst) // the hub carries it; a path of its own may follow
+			}
+		}
+		if pw == nil {
+			dropped++
+			if dropped == 1 || dropped%1000 == 0 {
+				d.log.Debug("no path for packet from host stack", "dst", h.Dst, "dropped", dropped)
+			}
+			return
+		}
+		icmp, err := pw.WritePacket(pkt)
+		if err != nil {
+			return // tunnel is gone; its owner detaches it
+		}
+		if icmp != nil {
+			b := make([]byte, forward.Offset+len(icmp))
+			copy(b[forward.Offset:], icmp)
+			_ = d.WriteToTUN(b)
+		}
+	}
 	for {
 		n, err := d.dev.Read(bufs, sizes, forward.Offset)
 		if err != nil {
@@ -117,46 +161,7 @@ func (d *dataplane) RunTUNReader(ctx context.Context) error {
 			return fmt.Errorf("dataplane: tun read: %w", err)
 		}
 		for i := 0; i < n; i++ {
-			pkt := bufs[i][forward.Offset : forward.Offset+sizes[i]]
-			// Only IPv4 runs on the overlay. The kernel also emits IPv6
-			// link-local traffic (router solicitations, MLD) on a fresh TUN.
-			if len(pkt) == 0 || pkt[0]>>4 != 4 {
-				continue
-			}
-			h, ok := netparse.Parse(pkt)
-			if !ok {
-				continue
-			}
-			if d.s != nil {
-				// flows from the host stack are tracked so their return
-				// traffic is matched; the receiving node decides them
-				if out, _ := d.s.admit(h, pkt, flow.Origin{Local: true}); out != flow.Pass {
-					continue
-				}
-			}
-			pw, ok := d.table.Lookup(h.Dst)
-			if !ok {
-				pw = d.getUplink()
-				if d.s != nil && d.s.paths != nil {
-					d.s.paths.noPath(h.Dst) // the hub carries it; a path of its own may follow
-				}
-			}
-			if pw == nil {
-				dropped++
-				if dropped == 1 || dropped%1000 == 0 {
-					d.log.Debug("no path for packet from host stack", "dst", h.Dst, "dropped", dropped)
-				}
-				continue
-			}
-			icmp, err := pw.WritePacket(pkt)
-			if err != nil {
-				continue // tunnel is gone; its owner detaches it
-			}
-			if icmp != nil {
-				b := make([]byte, forward.Offset+len(icmp))
-				copy(b[forward.Offset:], icmp)
-				_ = d.WriteToTUN(b)
-			}
+			handle(bufs[i][forward.Offset : forward.Offset+sizes[i]])
 		}
 	}
 }

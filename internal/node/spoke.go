@@ -427,15 +427,12 @@ func (m *spokeManager) dialWith(ctx context.Context, hub registry.Node, transpor
 func (m *spokeManager) pump(ctx context.Context, t *transport.ClientTunnel) {
 	s := m.s
 	buf := make([]byte, forward.Offset+forward.MaxPacket)
-	for ctx.Err() == nil {
-		n, err := t.ReadPacket(buf[forward.Offset:])
-		if err != nil {
-			return
-		}
+	handle := func(n int) {
+		defer s.n.guard.catch("hub tunnel")
 		pkt := buf[forward.Offset : forward.Offset+n]
 		h, ok := netparse.Parse(pkt)
 		if !ok {
-			continue
+			return
 		}
 		var origin flow.Origin
 		if owner, ok := acl.Owner(s.n.holder.Load(), h.Src); ok {
@@ -443,7 +440,7 @@ func (m *spokeManager) pump(ctx context.Context, t *transport.ClientTunnel) {
 		}
 		switch out, _ := s.admit(h, pkt, origin); out {
 		case flow.Drop:
-			continue
+			return
 		case flow.Reset:
 			toSender, toReceiver := netparse.TCPReset(pkt)
 			if toSender != nil {
@@ -454,11 +451,18 @@ func (m *spokeManager) pump(ctx context.Context, t *transport.ClientTunnel) {
 				copy(b[forward.Offset:], toReceiver)
 				_ = s.dp.WriteToTUN(b)
 			}
-			continue
+			return
 		}
 		if err := s.dp.WriteToTUN(buf[:forward.Offset+n]); err != nil {
 			s.n.log.Warn("tun write", "err", err)
 		}
+	}
+	for ctx.Err() == nil {
+		n, err := t.ReadPacket(buf[forward.Offset:])
+		if err != nil {
+			return
+		}
+		handle(n)
 	}
 }
 

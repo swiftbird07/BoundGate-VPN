@@ -351,6 +351,7 @@ func (pm *pathManager) pump(ctx context.Context, p *path) {
 // or a network it announces; then the ACL decides with the peer as principal.
 // Nothing is forwarded to another tunnel: a spoke is not a hub.
 func (s *session) fromPeer(buf []byte, peer registry.Node, back forward.PacketWriter) {
+	defer s.n.guard.catch("path")
 	pkt := buf[forward.Offset:]
 	h, ok := netparse.Parse(pkt)
 	if !ok || !allowedSource(peer, s.pool, s.networks(), h.Src) || !s.forMe(h.Dst) {

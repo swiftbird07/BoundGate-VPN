@@ -61,9 +61,46 @@ func TestParseIPv6(t *testing.T) {
 	copy(p[8:24], netip.MustParseAddr("fd00::2").AsSlice())
 	copy(p[24:40], netip.MustParseAddr("fd00::1").AsSlice())
 	copy(p[40:], tcp(1, 22, TCPAck))
+	binary.BigEndian.PutUint16(p[4:6], 20)
 	h, ok := Parse(p)
 	if !ok || h.Version != 6 || h.DstPort != 22 || h.Src != netip.MustParseAddr("fd00::2") {
 		t.Fatalf("%+v %v", h, ok)
+	}
+	// the payload length must be what came: more (a trailer the receiver
+	// never reads) or less is refused, and 0 is no jumbogram here
+	for _, plen := range []uint16{0, 19, 21} {
+		binary.BigEndian.PutUint16(p[4:6], plen)
+		if _, ok := Parse(p); ok {
+			t.Fatalf("payload length %d for 20 bytes parsed", plen)
+		}
+	}
+}
+
+// A packet decides by the bytes its receiver reads: a SYN whose length field
+// says 40 with a ClientHello behind it would give the flow a server name the
+// server never sees. Such packets do not parse; the part an ICMP error
+// quotes (length field larger than what is there) does, as ParseQuoted.
+func TestParseLengthMustMatch(t *testing.T) {
+	p := make([]byte, 20+20, 20+20+64)
+	p[0] = 0x45
+	p[9] = ProtoTCP
+	binary.BigEndian.PutUint16(p[2:4], 40)
+	copy(p[12:16], []byte{10, 0, 0, 2})
+	copy(p[16:20], []byte{10, 0, 0, 1})
+	copy(p[20:], tcp(1, 443, TCPSyn))
+	if _, ok := Parse(p); !ok {
+		t.Fatal("exact packet refused")
+	}
+	trailer := append(p, make([]byte, 64)...)
+	if h, ok := Parse(trailer); ok {
+		t.Fatalf("bytes behind the length field parsed: %+v", h)
+	}
+	if _, ok := Parse(p[:39]); ok {
+		t.Fatal("truncated packet parsed")
+	}
+	binary.BigEndian.PutUint16(trailer[2:4], uint16(len(trailer)))
+	if h, ok := ParseQuoted(trailer[:40]); !ok || h.DstPort != 443 {
+		t.Fatalf("quoted part: %+v %v", h, ok)
 	}
 }
 

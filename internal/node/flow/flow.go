@@ -626,7 +626,7 @@ func (t *Table) relatedLocked(h netparse.Header, pkt []byte) *Entry {
 	default:
 		return nil // a redirect (5) is never passed on: nobody routes by the overlay's word
 	}
-	inner, ok := netparse.Parse(pkt[ihl+8:])
+	inner, ok := netparse.ParseQuoted(pkt[ihl+8:])
 	if !ok {
 		return nil
 	}

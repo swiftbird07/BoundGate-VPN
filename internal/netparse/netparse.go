@@ -68,9 +68,19 @@ const (
 )
 
 // Parse extracts the header summary. ok is false when the packet is not a
-// well-formed IPv4/IPv6 packet. IPv6 extension headers are not walked: the
-// protocol is then the next-header value and ports stay 0.
-func Parse(b []byte) (h Header, ok bool) {
+// well-formed IPv4/IPv6 packet, and when its length field does not match
+// the bytes it came in: whoever receives the packet reads only what the
+// length says, so bytes behind it would be inspected here (a server name,
+// a DNS question) and never arrive, and bytes missing would be decided
+// unseen. IPv6 extension headers are not walked: the protocol is then the
+// next-header value and ports stay 0.
+func Parse(b []byte) (h Header, ok bool) { return parse(b, true) }
+
+// ParseQuoted parses the packet an ICMP error quotes: a leading part of the
+// original, so its length field may exceed what is there.
+func ParseQuoted(b []byte) (h Header, ok bool) { return parse(b, false) }
+
+func parse(b []byte, whole bool) (h Header, ok bool) {
 	h.Payload = -1
 	switch Version(b) {
 	case 4:
@@ -79,7 +89,7 @@ func Parse(b []byte) (h Header, ok bool) {
 		}
 		ihl := int(b[0]&0x0f) * 4
 		total := int(binary.BigEndian.Uint16(b[2:4]))
-		if ihl < 20 || total < ihl || len(b) < ihl {
+		if ihl < 20 || total < ihl || len(b) < ihl || (whole && total != len(b)) {
 			return h, false
 		}
 		h.Version = 4
@@ -97,6 +107,11 @@ func Parse(b []byte) (h Header, ok bool) {
 		return h, true
 	case 6:
 		if len(b) < 40 {
+			return h, false
+		}
+		// a payload length of 0 with more bytes would be a jumbogram, which
+		// no link of the overlay carries
+		if whole && 40+int(binary.BigEndian.Uint16(b[4:6])) != len(b) {
 			return h, false
 		}
 		h.Version = 6

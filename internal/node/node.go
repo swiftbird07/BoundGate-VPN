@@ -265,8 +265,11 @@ type Status struct {
 	Binding      string `json:"binding,omitempty"`
 	BindingError string `json:"binding_error,omitempty"`
 	// IgnoredPeers lists peers whose binding did not verify (name: reason).
-	IgnoredPeers    []string `json:"ignored_peers,omitempty"`
-	SnapshotVersion uint64   `json:"snapshot_version"`
+	IgnoredPeers []string `json:"ignored_peers,omitempty"`
+	// PacketPanics counts packets dropped because handling them panicked
+	// (a bug; the log has the first and one per 10 s).
+	PacketPanics    uint64 `json:"packet_panics,omitempty"`
+	SnapshotVersion uint64 `json:"snapshot_version"`
 	// Policies is the number of compiled ACL statements; PolicyErrors lists
 	// policies that did not compile (skipped).
 	Policies     int      `json:"policies"`
@@ -293,6 +296,7 @@ type Node struct {
 	seen  *history // newest binding and revocation per node (binding.Guard)
 
 	acl     atomic.Pointer[acl.Engine]
+	guard   packetGuard // a panic in packet handling drops the packet
 	ship    *shipper
 	flowLog *slog.Logger
 	denied  atomic.Uint64
@@ -412,6 +416,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: nc, holder: &registry.Holder{}, flowLog: cfg.FlowLog,
 		resetKey: resetKey, moves: make(map[*transport.ClientTunnel]context.CancelFunc)}
+	n.guard.log = cfg.Log
 	if n.flowLog == nil {
 		n.flowLog = cfg.Log
 	}
@@ -826,6 +831,7 @@ func (n *Node) publishStatus() {
 
 func (n *Node) publishLocked() {
 	n.status.ControlTransport = n.control.Transport()
+	n.status.PacketPanics = n.guard.panics.Load()
 	s := n.sess
 	if s == nil {
 		n.status.Interface, n.status.MTU = "", 0
@@ -1387,6 +1393,7 @@ func (s *session) apply(ctx context.Context) error {
 		return err
 	}
 	s.dp = newDataplane(dev, ifname, n.log)
+	s.dp.guard = &n.guard
 	s.dp.s = s
 	s.dp.table.SetReserved(s.pool, s.self.PrefixList())
 	go s.flowSweeper()
