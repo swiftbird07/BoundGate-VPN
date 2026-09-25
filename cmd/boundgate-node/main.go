@@ -69,8 +69,15 @@ type config struct {
 	// through the tunnel; the hub lets DNS to them through (port 53) for every
 	// peer, also before the sign-in and whatever the policies allow. Daemons
 	// keep the system's resolver.
-	DNS   []netip.Addr `yaml:"dns"`
-	Paths struct {
+	DNS []netip.Addr `yaml:"dns"`
+	// DNSLearnFrom (enforcing node, default: dns): the resolvers whose
+	// answers this node believes. It reads the answers it forwards and
+	// remembers, per peer, which addresses a name resolved to, so that a
+	// dynamic access list also matches a connection to those addresses
+	// (docs/ACL.md). An answer from any other resolver is forwarded but not
+	// believed: a device must not be able to name an address itself.
+	DNSLearnFrom []netip.Addr `yaml:"dns_learn_from"`
+	Paths        struct {
 		Disabled bool          `yaml:"disabled"` // spoke: everything stays on the hub path
 		Listen   string        `yaml:"listen"`   // spoke: UDP address peers can dial (announce it with public_addr)
 		Idle     time.Duration `yaml:"idle"`     // close a path nothing used for this long, default 5m
@@ -254,6 +261,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		NoRelay:           cfg.Relay != nil && !*cfg.Relay,
 		LoginPassthrough:  cfg.LoginPassthrough,
 		DNS:               cfg.DNS,
+		DNSLearnFrom:      cfg.DNSLearnFrom,
 		NoPaths:           cfg.Paths.Disabled,
 		PathsListen:       cfg.Paths.Listen,
 		PathIdle:          cfg.Paths.Idle,

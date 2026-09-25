@@ -30,7 +30,7 @@
   }
   function add(list: Cond[], type: CondType) { list.push(newCond(type)); }
   function retype(list: Cond[], i: number, type: CondType) { list[i] = newCond(type); if (type === 'list') (list[i] as any).list = lists[0]?.name ?? ''; }
-  const kindLabel = { ip: 'addresses', dns: 'DNS names', sni: 'TLS server names' } as const;
+  const kindLabel = { dynamic: 'names and addresses', ip: 'addresses', dns: 'DNS names', sni: 'TLS server names' } as const;
 </script>
 
 {#snippet condRow(list: Cond[], i: number)}

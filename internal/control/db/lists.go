@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 )
 
 // List is a row of lists: a named set policies refer to as
@@ -70,8 +72,12 @@ func CleanListSource(rawURL string, interval time.Duration, header string) (stri
 	return u.String(), interval.Round(time.Second), header, nil
 }
 
-// ListKinds are the kinds a list can have.
-var ListKinds = []string{"ip", "dns", "sni"}
+// ListKinds are the kinds a list can have. "dynamic" is the access list
+// that follows the traffic: names matched however the node sees the
+// destination (DNS question, TLS server name, or an address the asking
+// device resolved that name to a moment ago) next to plain addresses,
+// ranges and ports (docs/ACL.md).
+var ListKinds = []string{"ip", "dns", "sni", "dynamic"}
 
 // MaxListEntries bounds a list: every node carries every list in its snapshot.
 const MaxListEntries = 10000
@@ -90,11 +96,14 @@ func CleanListName(s string) (string, error) {
 
 // CleanListEntries normalizes entries for a kind: addresses and prefixes for
 // ip (a plain address becomes a /32), lowercase names for dns and sni,
-// where a leading "*." matches any number of labels. Empty lines and
-// comments (#) are dropped, duplicates removed, the result sorted.
+// where a leading "*." matches any number of labels. A dynamic list takes
+// both: an entry that reads as an address, a prefix, a range or one of
+// those with a port (registry.AddrEntry) is kept in its canonical form, the
+// rest are names. Empty lines and comments (#) are dropped, duplicates
+// removed, the result sorted.
 func CleanListEntries(kind string, in []string) ([]string, error) {
 	if !slices.Contains(ListKinds, kind) {
-		return nil, fmt.Errorf("list kind %q: one of ip, dns, sni", kind)
+		return nil, fmt.Errorf("list kind %q: one of %s", kind, strings.Join(ListKinds, ", "))
 	}
 	out := make([]string, 0, len(in))
 	for _, raw := range in {
@@ -116,14 +125,30 @@ func CleanListEntries(kind string, in []string) ([]string, error) {
 			}
 			return nil, fmt.Errorf("entry %q: an address or a CIDR prefix", e)
 		}
+		if kind == "dynamic" {
+			a, ok, err := registry.ParseAddrEntry(e)
+			if err != nil {
+				return nil, fmt.Errorf("entry %q: %w", e, err)
+			}
+			if ok {
+				out = append(out, a.String())
+				continue
+			}
+		}
 		e = strings.ToLower(strings.TrimSuffix(e, "."))
 		if len(e) > 253 {
 			return nil, fmt.Errorf("entry %q: too long", e)
 		}
-		for i, l := range strings.Split(e, ".") {
+		labels := strings.Split(e, ".")
+		for i, l := range labels {
 			if !listNameLabelRe.MatchString(l) || (l == "*" && i != 0) {
 				return nil, fmt.Errorf("entry %q: a host name, optionally starting with *.", e)
 			}
+		}
+		if last := labels[len(labels)-1]; strings.Trim(last, "0123456789") == "" {
+			// 10.60.0.300 reads as a host name, and a list would keep it as
+			// one for good: no name ends in a number
+			return nil, fmt.Errorf("entry %q: a name must not end in a number; as an address it does not parse", e)
 		}
 		out = append(out, e)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,9 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
+
+// maxLearnedAddrs bounds the per-peer name cache of one session (dnsmap).
+const maxLearnedAddrs = 8192
 
 // --- ACL glue --------------------------------------------------------------
 
@@ -56,8 +60,46 @@ func (s *session) decide(e *flow.Entry) flow.Result {
 	if r, ok := s.loginPassthrough(e); ok {
 		return r
 	}
-	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: e.DNSName})
-	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI}
+	names := s.dns.Names(e.Origin.Principal, e.Target.Addr(), time.Now())
+	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: e.DNSName, Resolved: names})
+	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI, Names: names}
+}
+
+// learnDNS remembers the addresses of a DNS answer for the peer that asked,
+// so that a later connection to one of them is decided under the name it
+// was resolved from (dnsmap, docs/ACL.md). Two conditions, both fail
+// closed: the answer must come from a resolver this node trusts, and some
+// list of kind "dynamic" must hold the name. Nothing else is kept.
+func (s *session) learnDNS(e *flow.Entry, name string, addrs []netip.Addr, ttl time.Duration) {
+	eng := s.n.acl.Load()
+	if eng == nil || !eng.LearnsNames() || !eng.Learns(name) {
+		return
+	}
+	if !s.trustedResolver(e.Target.Addr()) {
+		s.noResolver.Do(func() {
+			s.n.log.Warn("a dynamic access list is in use, but this node trusts no resolver: set dns (or dns_learn_from) to the resolvers it hands out, otherwise names are only matched by DNS query and TLS server name",
+				"answered_by", e.Target.Addr().String(), "name", name)
+		})
+		return
+	}
+	s.dns.Learn(e.Origin.Principal, name, addrs, ttl, time.Now())
+	s.n.log.Debug("learned a name for a peer", "peer", string(e.Origin.Principal), "name", name, "addrs", len(addrs), "ttl", ttl.String())
+}
+
+// trustedResolver: the resolvers this node hands out (Config.DNS), or the
+// ones dns_learn_from names. A device that asks any other resolver gets its
+// answer, but the node does not believe what it says.
+func (s *session) trustedResolver(a netip.Addr) bool {
+	from := s.n.cfg.DNSLearnFrom
+	if len(from) == 0 {
+		from = s.n.cfg.DNS
+	}
+	for _, r := range from {
+		if r == a {
+			return true
+		}
+	}
+	return false
 }
 
 // offeredDNS: a flow to port 53 of a resolver this hub offers (Config.DNS).
@@ -111,6 +153,7 @@ func (s *session) flowSweeper() {
 			return
 		case now := <-t.C:
 			s.flows.Expire(now)
+			s.dns.Expire(now)
 		}
 	}
 }
@@ -129,6 +172,7 @@ type FlowView struct {
 	Policies      []string  `json:"policies,omitempty"`
 	SNI           string    `json:"sni,omitempty"`
 	DNSName       string    `json:"dns_name,omitempty"`
+	Names         []string  `json:"resolved_names,omitempty"`
 	BytesIn       uint64    `json:"bytes_in"`
 	BytesOut      uint64    `json:"bytes_out"`
 	Opened        time.Time `json:"opened"`
@@ -163,7 +207,7 @@ func decisionOf(e flow.Entry) string {
 func flowView(snap *registry.Snapshot, e flow.Entry) FlowView {
 	v := FlowView{ID: e.ID, Proto: acl.ProtoName(e.Proto), Src: e.Originator.String(), Dst: e.Target.String(), Local: e.Origin.Local,
 		Principal: string(e.Origin.Principal), PrincipalName: nodeName(snap, e.Origin.Principal), Decision: decisionOf(e),
-		Policies: e.Result.Policies, SNI: e.SNI, DNSName: e.DNSName, BytesIn: e.BytesIn, BytesOut: e.BytesOut, Opened: e.Opened, LastSeen: e.LastSeen}
+		Policies: e.Result.Policies, SNI: e.SNI, DNSName: e.DNSName, Names: e.Result.Names, BytesIn: e.BytesIn, BytesOut: e.BytesOut, Opened: e.Opened, LastSeen: e.LastSeen}
 	if e.Result.Session != nil {
 		v.User = e.Result.Session.Username
 		if v.User == "" {
@@ -200,6 +244,9 @@ func (s *session) onFlowEvent(ev flow.Event) {
 	}
 	if e.DNSName != "" {
 		attrs["dns_name"] = e.DNSName
+	}
+	if len(e.Result.Names) > 0 {
+		attrs["resolved_names"] = e.Result.Names
 	}
 	if e.Decided {
 		attrs["policies"] = orEmptyStrings(e.Result.Policies)

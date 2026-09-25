@@ -90,7 +90,7 @@ const policies: T.Policy[] = [
 
 const lists: T.AclList[] = [
   { id: 'l1', name: 'ad-domains', kind: 'dns', description: 'Trackers and ad networks', entries: ['*.ads.example', '*.doubleclick.example', 'tracker.example'], used_by: ['block-ad-domains'], created_at: ago(86400 * 3), created_by: 'ada', updated_at: ago(3600 * 5), updated_by: 'source', source_url: 'https://git.example.com/acl/raw/branch/main/ad-domains.list', source_interval: 900, source_fetched_at: ago(240) },
-  { id: 'l2', name: 'allowed-sites', kind: 'sni', description: 'What the NAS may talk to', entries: ['myip.wtf', '*.github.com'], used_by: [], created_at: ago(86400), created_by: 'martin', updated_at: ago(86400), updated_by: 'martin' },
+  { id: 'l2', name: 'allowed-sites', kind: 'dynamic', description: 'What the NAS may talk to', entries: ['myip.wtf', '*.github.com', '10.60.0.11:443', '192.168.178.20-192.168.178.29'], used_by: [], created_at: ago(86400), created_by: 'martin', updated_at: ago(86400), updated_by: 'martin' },
   { id: 'l3', name: 'blocked-hosts', kind: 'ip', description: 'Printers and the old NAS', entries: ['192.168.178.99/32', '10.60.0.128/25'], used_by: [], created_at: ago(86400 * 2), created_by: 'martin', updated_at: ago(86400 * 2), updated_by: 'martin', source_url: 'https://git.example.com/acl/raw/branch/main/blocked-hosts.list', source_interval: 3600, source_header: 'Private-Token', source_secret_set: true, source_fetched_at: ago(1800), source_status: 'the source answered HTTP 403' },
 ];
 

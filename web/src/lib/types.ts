@@ -18,7 +18,7 @@ export interface Session { id: string; node_id: string; node_name?: string; subj
 export interface Policy { id: string; name: string; description?: string; cedar: string; enabled: boolean; group?: string; scope: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string }
 export interface PolicyBody { name: string; description: string; cedar: string; enabled: boolean; group?: string; scope: string[] }
 /** A named set policies refer to as BoundGate::List::"name": addresses (ip), DNS query names (dns) or TLS server names (sni). */
-export type ListKind = 'ip' | 'dns' | 'sni';
+export type ListKind = 'ip' | 'dns' | 'sni' | 'dynamic';
 export interface AclList { id: string; name: string; kind: ListKind; description?: string; entries: string[]; used_by: string[]; created_at: string; created_by?: string; updated_at: string; updated_by?: string; source_url?: string; source_interval?: number; source_header?: string; source_secret_set?: boolean; source_fetched_at?: string; source_status?: string }
 export interface ListBody { name: string; kind: ListKind; description: string; entries: string[]; source_url?: string; source_interval?: number; source_header?: string; source_secret?: string | null }
 export interface EvaluateBody { node: string; dst: string; port?: number; proto?: string; sni?: string; dns_name?: string; enforcer?: string; draft?: { id: string; name: string; cedar: string }; draft_only?: boolean }

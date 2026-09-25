@@ -31,19 +31,20 @@ Policies talk about these entities:
 |---|---|---|
 | `BoundGate::Node::"<node id>"` (principal, or owner of a destination) | `name`, `kind` (`interactive`/`workload`), `roles` (set), `overlay_ip` (ipaddr), `hardware_bound`, `tags` (set), `platform`, `key_kind`, `has_session` | `BoundGate::Role::"<role>"` for every granted role; `BoundGate::Tag::"<tag>"` for every tag; `BoundGate::User::"<subject>"` while the node has an active user session |
 | `BoundGate::User::"<subject>"` | `subject`, `email`, `username`, `groups` (set) | `BoundGate::Group::"<name>"` for every OIDC group |
-| `BoundGate::Host::"<ip>"` (resource: the destination of a flow) | `ip` (ipaddr), `port`, `protocol` (`tcp`/`udp`/`icmp`/number), `sni` (only when a TLS ClientHello was seen), `dns_name` (only for DNS queries) | `BoundGate::Network::"<prefix>"` for the overlay pool and every announced prefix containing the address; `BoundGate::Node::"<owner>"` (the node with that overlay address, or the announcer of the longest matching prefix) |
+| `BoundGate::Host::"<ip>"` (resource: the destination of a flow) | `ip` (ipaddr), `port`, `protocol` (`tcp`/`udp`/`icmp`/number), `sni` (only when a TLS ClientHello was seen), `dns_name` (only for DNS queries), `resolved_names` (set; the names this node resolved to the address for this principal, see the dynamic access list) | `BoundGate::Network::"<prefix>"` for the overlay pool and every announced prefix containing the address; `BoundGate::Node::"<owner>"` (the node with that overlay address, or the announcer of the longest matching prefix) |
 | `BoundGate::Network::"<prefix>"` | `prefix` (ipaddr) | the announcing node(s) |
 | `BoundGate::Tag::"<tag>"` | | none. A destination is `in` the tags of the node that owns it, through that node |
-| `BoundGate::List::"<name>"` (Lists in the admin UI) | `name`, `kind` (`ip`, `dns`, `sni`) | none. A destination is `in` an `ip` list when its address is inside one of the list's prefixes, in a `dns` list when the DNS query name matches one of its names, in an `sni` list when the TLS server name does |
+| `BoundGate::List::"<name>"` (Lists in the admin UI) | `name`, `kind` (`ip`, `dns`, `sni`, `dynamic`) | none. A destination is `in` an `ip` list when its address is inside one of the list's prefixes, in a `dns` list when the DNS query name matches one of its names, in an `sni` list when the TLS server name does, and in a `dynamic` list when any of the three matches or one of its address entries contains the destination |
 | `BoundGate::Action::"connect"` | | the only action |
 
 `context` carries `protocol`, `port`, `has_session`, and when present `sni`,
-`dns_name` and `user {subject, username, email, groups}`.
+`dns_name`, `resolved_names` and `user {subject, username, email, groups}`.
 
 ## Lists
 
 A list is a named set of addresses and prefixes (`ip`), DNS query names
-(`dns`) or TLS server names (`sni`), kept apart from the rules that use it
+(`dns`), TLS server names (`sni`) or all of that together (`dynamic`, see
+below), kept apart from the rules that use it
 (Lists in the admin UI, `/api/v1/admin/lists`). Names are lowercase; a
 leading `*.` matches any number of labels below the name and not the name
 itself (`*.github.com` matches `api.github.com`, not `github.com`; list
@@ -62,6 +63,66 @@ forbid(principal, action, resource in BoundGate::List::"ad-domains");
 permit(principal, action, resource in BoundGate::Network::"10.60.0.0/24")
   unless { resource in BoundGate::List::"blocked-hosts" };
 ```
+
+### The dynamic access list
+
+An `ip` list decides by address, a `dns` list by the question of a DNS
+query, an `sni` list by the TLS server name — each of them sees one side of
+a destination. A **dynamic** list is the whole destination: it holds names
+and addresses together, and a name counts however the enforcing node can
+see it.
+
+```
+*.github.com          a name, with the usual wildcard
+myip.wtf
+10.60.0.10            a plain address
+10.60.0.64/26         a prefix
+192.168.178.20-192.168.178.29   a range
+10.60.0.11:443        an address and a port
+10.60.0.12:8000-8100  a port range   ([2001:db8::1]:443 for IPv6)
+```
+
+A permit that names such a list does three things at once:
+
+1. **The DNS query is answered.** The destination of a query whose question
+   is in the list is in the list, so the resolution goes through and comes
+   back (a hub lets DNS to the resolvers it offers through anyway, see
+   `dns` in `DEPLOY.md`).
+2. **What the answer names is open.** The node reads the answers it
+   forwards and remembers, *for the device that asked*, which addresses the
+   name resolved to (`internal/node/dnsmap`). The connection that follows is
+   decided under that name — whether it is TLS, plain HTTP, a database
+   protocol or anything else, and whatever port it uses. The entry lives as
+   long as the answer's time to live says (at least a minute, at most an
+   hour, plus five minutes, because devices cache longer than they are
+   told).
+3. **The TLS server name still works, as the fallback.** A device that
+   resolves elsewhere — DNS over HTTPS in a browser, a hard-coded resolver,
+   an address typed by hand — teaches the node nothing. A TLS connection is
+   then still decided by the name in its ClientHello, exactly like an `sni`
+   list: the handshake is allowed, the first payload held back, and the
+   connection opened or reset with the name (see Flows below).
+
+Two conditions guard what a node believes, both fail closed:
+
+* Only answers from a **resolver the node trusts** are read: the resolvers
+  it offers its spokes (`dns`), or the ones `dns_learn_from` names. A device
+  that asks some other resolver still gets its answer, but must not be able
+  to name an address itself — otherwise it would forge a mapping from a
+  permitted name to any address it likes (R115).
+* Only names a **dynamic list actually holds** are remembered. Everything
+  else passes unremembered.
+
+What the node learned is visible: the flow log and `boundgatectl flows`
+carry `resolved_names` for a flow decided that way, so a permit that came
+from a resolution five minutes ago is not a mystery. The dry run in the
+policy editor takes the same names (`resolved_names` in
+`POST /admin/acl/evaluate`).
+
+A node that sees no DNS at all (a spoke whose device resolves over DoH
+only) matches a dynamic list by server name and by its address entries; the
+names it never saw resolved simply do not match. Nothing is remembered
+across a restart.
 
 ### A list as a file: import, export, and a source it follows
 

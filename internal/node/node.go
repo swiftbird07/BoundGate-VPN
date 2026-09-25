@@ -40,6 +40,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey/tpm2key"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/controlclient"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/dnsmap"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/flow"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/profile"
@@ -110,6 +111,9 @@ type Config struct {
 	// (Always-on VPN with "Block connections without VPN"), where the
 	// browser cannot reach the IdP outside the tunnel. Empty: 403 as usual.
 	LoginPassthrough []netip.Prefix
+	// DNSLearnFrom: the resolvers whose answers this node believes when it
+	// matches a dynamic access list (dnsmap, docs/ACL.md). Empty: DNS.
+	DNSLearnFrom []netip.Addr
 	// DNS (hub): resolvers offered to spokes with every tunnel
 	// (transport.DNSHeader). DNS to them (port 53) is let through for every
 	// peer: offering a resolver the policies then deny would break name
@@ -1285,6 +1289,10 @@ type session struct {
 	nat            bool
 	arrival        bool // reply_via_arrival is on
 
+	// dns: the names peers resolved, per peer (policy.go, dnsmap)
+	dns        *dnsmap.Map
+	noResolver sync.Once
+
 	since  time.Time
 	done   chan struct{}
 	once   sync.Once
@@ -1300,6 +1308,8 @@ func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *sessio
 		tunnels: make(map[string]*tunnelStats),
 	}
 	s.flows = flow.New(flow.Timeouts{}, s.onFlowEvent)
+	s.dns = dnsmap.New(maxLearnedAddrs)
+	s.flows.SetLearner(s.learnDNS)
 	return s
 }
 

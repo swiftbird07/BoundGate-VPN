@@ -1,0 +1,11 @@
+# The lab's resolver, "behind the hubs" on the internal network. It answers
+# the two names the targets have and nothing else, so that a dynamic access
+# list (docs/ACL.md) has something to resolve. The hubs believe it because
+# their config names it in dns_learn_from.
+.:53 {
+    hosts {
+        10.60.0.10 target.lab
+        10.60.0.11 tls.lab
+    }
+    errors
+}

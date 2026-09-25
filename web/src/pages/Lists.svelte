@@ -15,8 +15,9 @@
   let fetching = $state<string | null>(null);
   let importInto = $state<AclList | null>(null);
   let fileInput: HTMLInputElement | undefined = $state();
-  const kindLabel: Record<ListKind, string> = { ip: 'Addresses', dns: 'DNS names', sni: 'TLS server names' };
+  const kindLabel: Record<ListKind, string> = { dynamic: 'Dynamic access list', ip: 'Addresses', dns: 'DNS names', sni: 'TLS server names' };
   const kindHelp: Record<ListKind, string> = {
+    dynamic: 'Names and addresses together, one per line: *.github.com, myip.wtf, 10.60.0.10, 10.60.0.64/26, 192.168.178.20-192.168.178.29, 10.60.0.11:443, 10.60.0.12:8000-8100 ([2001:db8::1]:443 for IPv6). A name counts however the node sees it: it answers the DNS query, remembers for that device which addresses the answer named and lets the connection to them through under that name — TLS or not — and a TLS server name still matches on its own. The node believes only the resolvers it offers (hub option dns, or dns_learn_from); see docs/ACL.md.',
     ip: 'One address or CIDR prefix per line: 10.60.0.11, 192.168.178.0/24.',
     dns: 'One name per line. *.example.com matches every name under example.com (not example.com itself). Matched against the question of DNS queries.',
     sni: 'One name per line, * at the start matches any number of labels. Matched against the TLS ClientHello; a permit by such a list decides after the handshake (docs/ACL.md).',
@@ -30,7 +31,7 @@
       ? { id: l.id, name: l.name, kind: l.kind, description: l.description || '', text: l.entries.join('\n'),
           source_url: l.source_url || '', source_minutes: Math.round((l.source_interval || 900) / 60), source_header: l.source_header || '',
           source_secret: '', secret_set: !!l.source_secret_set }
-      : { name: '', kind: 'sni', description: '', text: '', source_url: '', source_minutes: 15, source_header: '', source_secret: '', secret_set: false };
+      : { name: '', kind: 'dynamic', description: '', text: '', source_url: '', source_minutes: 15, source_header: '', source_secret: '', secret_set: false };
   }
   const entryCount = $derived(editing ? editing.text.split(/\r?\n/).map((s) => s.replace(/#.*/, '').trim()).filter(Boolean).length : 0);
   async function save() {
@@ -91,7 +92,7 @@
 </script>
 
 <div class="page-head">
-  <div><h1>Lists</h1><div class="sub">Named sets of addresses, DNS names or TLS server names. A policy refers to one as <code>resource in BoundGate::List::"name"</code>: an allow-list in a permit, a block-list in a forbid or an exception.</div></div>
+  <div><h1>Lists</h1><div class="sub">Named sets of addresses, names, or both at once. A policy refers to one as <code>resource in BoundGate::List::"name"</code>: an allow-list in a permit, a block-list in a forbid or an exception. A <b>dynamic access list</b> follows the traffic: it answers the DNS query for a name it holds, opens what the answer named for that device, and still matches the TLS server name.</div></div>
   <div class="row"><a class="btn" href="/policies">Policies</a><button class="btn primary" onclick={() => start()}>+ New list</button></div>
 </div>
 
@@ -108,7 +109,7 @@
     </div>
     <label class="field">Description <input placeholder="what the list is for" bind:value={editing.description} /></label>
     <label class="field">Entries <span class="faint small">{entryCount}</span>
-      <textarea class="code" rows="12" spellcheck="false" placeholder={editing.kind === 'ip' ? '10.60.0.11\n192.168.178.0/24' : 'myip.wtf\n*.github.com  # comments are fine'} bind:value={editing.text}></textarea>
+      <textarea class="code" rows="12" spellcheck="false" placeholder={editing.kind === 'ip' ? '10.60.0.11\n192.168.178.0/24' : editing.kind === 'dynamic' ? '*.github.com\n10.60.0.11:443  # comments are fine' : 'myip.wtf\n*.github.com  # comments are fine'} bind:value={editing.text}></textarea>
     </label>
     <div class="hint">{kindHelp[editing.kind]} Blank lines and everything after # are ignored; the list is sorted and de-duplicated on save. Up to 10 000 entries.</div>
     <details open={!!editing.source_url}>

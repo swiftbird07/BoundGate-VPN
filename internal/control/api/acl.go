@@ -196,6 +196,10 @@ type EvaluateBody struct {
 	Proto   string `json:"proto"`
 	SNI     string `json:"sni"`
 	DNSName string `json:"dns_name"`
+	// Resolved are names the node would have learned from DNS answers for
+	// dst (dnsmap): what a dynamic access list matches besides the query
+	// and the server name.
+	Resolved []string `json:"resolved_names,omitempty"`
 	// Enforcer is the node whose policy view is used (id or name); empty
 	// means every enabled policy.
 	Enforcer string `json:"enforcer"`
@@ -332,7 +336,15 @@ func (h *Handlers) adminEvaluate(w http.ResponseWriter, r *http.Request) {
 		snap.Policies = append(kept, draft)
 	}
 	eng := acl.New(snap)
-	d := eng.Evaluate(acl.Request{Principal: transport.DeviceID(src.ID), Dst: dst, Port: uint16(body.Port), Proto: proto, SNI: clip(body.SNI, 253), DNSName: clip(body.DNSName, 253)})
+	resolved := body.Resolved
+	if len(resolved) > 8 {
+		resolved = resolved[:8]
+	}
+	for i, n := range resolved {
+		resolved[i] = clip(n, 253)
+	}
+	d := eng.Evaluate(acl.Request{Principal: transport.DeviceID(src.ID), Dst: dst, Port: uint16(body.Port), Proto: proto,
+		SNI: clip(body.SNI, 253), DNSName: clip(body.DNSName, 253), Resolved: resolved})
 	out := EvaluateResponse{Allow: d.Allow, Policies: orEmpty(d.Policies), Reasons: orEmpty(d.Reasons), Errors: d.Errors, PolicyCount: eng.Policies(), Principal: src.ID}
 	for _, pe := range eng.Errors() {
 		out.PolicyErrors = append(out.PolicyErrors, pe.Error())

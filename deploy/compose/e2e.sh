@@ -49,6 +49,7 @@ x node-t boundgatectl down >/dev/null 2>&1 || true
 for sid in $($S api GET /api/v1/admin/sessions | jq -r '.[].id'); do $S api DELETE "/api/v1/admin/sessions/$sid" >/dev/null || true; done
 # an aborted run may have left test policies behind
 for p in $($S api GET /api/v1/admin/policies | jq -r '.[] | select(.name != "lab-allow-all") | .name'); do policy_rm "$p"; done
+for l in $($S api GET /api/v1/admin/lists | jq -r '.[] | select(.name == "lab-dynamic") | .id'); do $S api DELETE "/api/v1/admin/lists/$l" >/dev/null || true; done
 
 echo "== 1. bootstrap: admin signing key, network, enroll + confirm + sign hub1, hub2, node-r, node-a, node-t"
 $S all
@@ -115,7 +116,32 @@ policy lab-allow-all 'permit(principal, action, resource);'
 policy_rm vpn-users
 wait_for 15 reach 192.168.178.10 target-lan || fail "LAN unreachable after restoring allow-all"
 
-echo "== 4e. tunnel history: every spoke-hub tunnel is reported by its hub (paths between spokes, reported by the accepting spoke, are step 15)"
+echo "== 4e. dynamic access list: one list of names and addresses; the name opens the query, what the answer named, and TLS by server name"
+LIST_ID=$($S api POST /api/v1/admin/lists '{"name":"lab-dynamic","kind":"dynamic","entries":["target.lab","public.lab","192.168.178.10:80"]}' | jq -r .id)
+[ -n "$LIST_ID" ] && [ "$LIST_ID" != "null" ] || fail "dynamic list not created"
+policy lab-allow-all 'permit(principal, action, resource) when { principal.kind == "workload" };'
+policy dyn-list 'permit(principal in BoundGate::Group::"vpn-users", action, resource in BoundGate::List::"lab-dynamic");'
+wait_for 10 status_is hub1 '.policies == 2' || fail "hub1 did not get the dynamic list policy"
+# nothing has been resolved yet: the address alone is not in the list
+wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "the target was reachable by address before anyone resolved its name"
+# a question the list does not hold is denied at the hub
+if x node-a timeout 4 nslookup other.example 10.60.0.53 >/dev/null 2>&1; then fail "a question outside the list was answered"; fi
+# the question in the list goes through, and the answer teaches the hub
+x node-a timeout 5 nslookup target.lab 10.60.0.53 2>/dev/null | grep -q 10.60.0.10 || fail "the resolver did not answer target.lab through the tunnel"
+wait_for 10 reach 10.60.0.10 target || fail "the address the name resolved to stayed closed"
+# TLS without any resolution: the server name decides, as with an sni list
+reach_tls public.lab 10.60.0.11 || fail "public.lab blocked although the list holds the name"
+if x node-a curl -sf --max-time 2 http://10.60.0.11 >/dev/null 2>&1; then fail "a port nothing in the list names was open"; fi
+# a plain address entry of the same list, enforced where the traffic enters the LAN
+wait_for 10 reach 192.168.178.10 target-lan || fail "the address entry of the list did not open the LAN target"
+# the flow log says which name opened the connection
+wait_for 20 sh -c "$S api GET '/api/v1/admin/flows?dst=10.60.0.10&limit=20' | jq -e '[.[] | select(.attrs.resolved_names != null and (.attrs.resolved_names | index(\"target.lab\")))] | length >= 1'" || fail "the learned name is not in the shipped flow log"
+policy_rm dyn-list
+$S api DELETE "/api/v1/admin/lists/$LIST_ID" >/dev/null
+policy lab-allow-all 'permit(principal, action, resource);'
+wait_for 15 reach 10.60.0.10 target || fail "target unreachable after the dynamic list test"
+
+echo "== 4f. tunnel history: every spoke-hub tunnel is reported by its hub (paths between spokes, reported by the accepting spoke, are step 15)"
 wait_for 40 sh -c "$S api GET '/api/v1/admin/tunnels?active=1' | jq -e '([.[] | select(.hub_name == \"hub1\" and .peer_name == \"node-a\")] | length) == 1 and ([.[] | select(.peer_name == \"node-r\" and (.hub_name | startswith(\"hub\")))] | length) == 2'" || fail "active tunnels not reported"
 wait_for 45 sh -c "$S api GET '/api/v1/admin/tunnels?active=1' | jq -e '[.[] | select(.bytes_in > 0)] | length >= 2'" || fail "tunnel counters stay at zero (hubs report every 30 s)"
 

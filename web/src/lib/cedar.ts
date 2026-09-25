@@ -46,7 +46,7 @@ export const condTypes: { type: CondType; label: string; about: string }[] = [
   { type: 'group', label: 'User in group', about: 'an OIDC group of the logged-in user' },
   { type: 'role', label: 'Node has role', about: 'endpoint, subnet-router, hub or exit-node' },
   { type: 'platform', label: 'Node platform', about: 'linux, darwin, windows' },
-  { type: 'list', label: 'Destination in a list', about: 'an address, DNS name or TLS server name list (Lists)' },
+  { type: 'list', label: 'Destination in a list', about: 'a list of addresses, names, or both at once (Lists)' },
 ];
 
 export function newCond(type: CondType): Cond {

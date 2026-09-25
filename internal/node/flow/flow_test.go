@@ -2,6 +2,7 @@ package flow
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -353,5 +354,90 @@ func TestFragmentsFollowTheirFirstFragment(t *testing.T) {
 	}
 	if tb.Strays() != 3 {
 		t.Fatalf("strays %d", tb.Strays())
+	}
+}
+
+// dnsMsg builds a query (qr=false) or an answer with one A record.
+func dnsMsg(name string, answer string) []byte {
+	b := []byte{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0}
+	if answer != "" {
+		b[2], b[3] = 0x81, 0x80
+		b[7] = 1
+	}
+	for _, l := range splitDots(name) {
+		b = append(b, byte(len(l)))
+		b = append(b, l...)
+	}
+	b = append(b, 0, 0, 1, 0, 1)
+	if answer != "" {
+		b = append(b, 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4)
+		b = append(b, ip4(answer)...)
+	}
+	return b
+}
+
+func splitDots(s string) []string {
+	var out []string
+	for len(s) > 0 {
+		i := 0
+		for i < len(s) && s[i] != '.' {
+			i++
+		}
+		out = append(out, s[:i])
+		if i == len(s) {
+			break
+		}
+		s = s[i+1:]
+	}
+	return out
+}
+
+// The Learner hears every answer that passes an allowed DNS flow, with the
+// name of the answer itself: one socket may ask several names.
+func TestLearnerSeesTheAnswersOfAnAllowedFlow(t *testing.T) {
+	tb := New(Timeouts{}, nil)
+	peer := Origin{Principal: "node-a"}
+	type learned struct {
+		peer, name string
+		addrs      int
+		ttl        time.Duration
+	}
+	var got []learned
+	tb.SetLearner(func(e *Entry, name string, addrs []netip.Addr, ttl time.Duration) {
+		got = append(got, learned{string(e.Origin.Principal), name, len(addrs), ttl})
+	})
+	allow := func(e *Entry) Result { return Result{Allow: e.DNSName != "evil.com"} }
+
+	q := dnsMsg("api.github.com", "")
+	pkt := udp("10.21.0.2", "10.60.0.53", 5353, 53, q)
+	if out, _ := tb.Handle(parse(t, pkt), pkt, peer, allow); out != Pass {
+		t.Fatal("the query was denied")
+	}
+	if len(got) != 0 {
+		t.Fatalf("a question teaches nothing: %+v", got)
+	}
+	ans := udp("10.60.0.53", "10.21.0.2", 53, 5353, dnsMsg("api.github.com", "140.82.121.4"))
+	if out, _ := tb.Handle(parse(t, ans), ans, Origin{Local: true}, nil); out != Pass {
+		t.Fatal("the answer was dropped")
+	}
+	if len(got) != 1 || got[0] != (learned{"node-a", "api.github.com", 1, time.Minute}) {
+		t.Fatalf("learned %+v", got)
+	}
+	// a second question over the same socket: the answer carries its own name
+	ans2 := udp("10.60.0.53", "10.21.0.2", 53, 5353, dnsMsg("other.example", "10.0.0.9"))
+	tb.Handle(parse(t, ans2), ans2, Origin{Local: true}, nil)
+	if len(got) != 2 || got[1].name != "other.example" {
+		t.Fatalf("learned %+v", got)
+	}
+
+	// a denied flow teaches nothing, however its answer looks
+	den := udp("10.21.0.2", "10.60.0.53", 5354, 53, dnsMsg("evil.com", ""))
+	if out, _ := tb.Handle(parse(t, den), den, peer, allow); out != Drop {
+		t.Fatal("evil.com was allowed")
+	}
+	dans := udp("10.60.0.53", "10.21.0.2", 53, 5354, dnsMsg("evil.com", "10.0.0.66"))
+	tb.Handle(parse(t, dans), dans, Origin{Local: true}, nil)
+	if len(got) != 2 {
+		t.Fatalf("a denied flow taught something: %+v", got)
 	}
 }

@@ -57,11 +57,20 @@ type Result struct {
 	// PermitBySNI: denied so far, but a permit may match once the TLS
 	// server name is known (acl.Decision.PermitBySNI).
 	PermitBySNI bool
+	// Names are the names this peer resolved to the destination and that
+	// the decision could use (dnsmap); for the flow log.
+	Names []string
 }
 
 // Decider is asked once per new peer-originated flow, and again when an
 // inspected attribute (SNI, DNS name) appears.
 type Decider func(e *Entry) Result
+
+// Learner is told about every DNS answer that passes an allowed flow: the
+// name of its question, the addresses it names and the smallest time to
+// live of those records. The node decides what to keep (dnsmap); the flow
+// table only reads what goes by.
+type Learner func(e *Entry, name string, addrs []netip.Addr, ttl time.Duration)
 
 // Entry is one tracked flow.
 type Entry struct {
@@ -143,6 +152,7 @@ type Table struct {
 	m        map[Key]*Entry
 	t        Timeouts
 	onEvent  func(Event)
+	learn    Learner
 	full     bool
 	overflow uint64
 	strays   uint64
@@ -198,6 +208,13 @@ func New(t Timeouts, onEvent func(Event)) *Table {
 		onEvent = func(Event) {}
 	}
 	return &Table{m: make(map[Key]*Entry), frags: make(map[fragKey]fragState), t: t, onEvent: onEvent}
+}
+
+// SetLearner installs the hook for DNS answers (nil switches it off).
+func (t *Table) SetLearner(l Learner) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.learn = l
 }
 
 // Len returns the number of tracked flows.
@@ -334,6 +351,7 @@ func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 	if h.Proto == netparse.ProtoTCP && h.TCPFlags&(netparse.TCPFin|netparse.TCPRst) != 0 {
 		e.closing = true
 	}
+	t.learned(e, h, pkt, src)
 	changed := e.inspect(h, pkt, src)
 	if changed && e.Decided {
 		e.decide(decide)
@@ -408,6 +426,22 @@ func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort) bool 
 		}
 	}
 	return false
+}
+
+// learned passes a DNS answer on an allowed flow to the Learner. Answers
+// are read one by one and not from e.DNSName: a resolver client that keeps
+// one socket asks several names over it, and every answer carries the
+// question it belongs to.
+func (t *Table) learned(e *Entry, h netparse.Header, pkt []byte, src netip.AddrPort) {
+	if t.learn == nil || !e.Allowed || h.Proto != netparse.ProtoUDP || src != e.Target || src.Port() != 53 {
+		return
+	}
+	if h.Payload < 0 || h.Payload >= len(pkt) {
+		return
+	}
+	if name, addrs, ttl, ok := netparse.DNSAnswer(pkt[h.Payload:]); ok {
+		t.learn(e, name, addrs, ttl)
+	}
 }
 
 // probe handles a packet of a flow that waits for its server name.

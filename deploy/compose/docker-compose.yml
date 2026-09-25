@@ -10,7 +10,7 @@
 #
 # Networks:
 #   public   172.30.0.0/24  control (.5), idp (.6), hub1 (.10), hub2 (.11), node-a (.20), node-r (.30), node-t (.40, TPM key), node-m (.50, embedded engine)
-#   internal 10.60.0.0/24   hub1 (.2), hub2 (.3), target (.10), target-tls (.11)   "behind the hubs"
+#   internal 10.60.0.0/24   hub1 (.2), hub2 (.3), target (.10), target-tls (.11), resolver (.53)   "behind the hubs"
 #   lan      192.168.178.0/24 node-r (.30), target-lan (.10)        "Martin's home LAN"
 #   overlay  10.21.0.0/16   assigned by the control plane at approval
 
@@ -203,6 +203,19 @@ services:
       - ./logs/node-t:/var/log/boundgate
       - swtpm-run:/run/swtpm
     command: ["boundgate-node", "-config", "/etc/boundgate/node-t.yaml"]
+
+  # The resolver the dynamic access list needs (e2e step 4e): it answers
+  # target.lab and tls.lab and nothing else. The hubs read the answers they
+  # forward (dns_learn_from) and let the connection to the addresses of a
+  # resolved name through under that name.
+  resolver:
+    image: coredns/coredns:1.12.0
+    networks:
+      internal:
+        ipv4_address: 10.60.0.53
+    volumes:
+      - ./config/Corefile:/Corefile:ro
+    command: ["-conf", "/Corefile"]
 
   target:
     image: traefik/whoami:v1.10.4

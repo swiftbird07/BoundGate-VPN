@@ -88,7 +88,11 @@ type Request struct {
 	SNI string
 	// DNSName is the queried name for DNS flows, if known.
 	DNSName string
-	Now     time.Time
+	// Resolved are the names this principal recently resolved to Dst
+	// (dnsmap). They match lists of kind "dynamic" and are readable in a
+	// policy as resource.resolved_names.
+	Resolved []string
+	Now      time.Time
 }
 
 // Decision is the outcome.
@@ -126,14 +130,22 @@ type Engine struct {
 
 // list is a compiled registry.List: a destination is `in` the list when
 // its address is inside one of the prefixes (kind ip), or its DNS query
-// name or TLS server name matches one of the names (kind dns, sni). A name
-// "*.example.com" matches every name under example.com, not example.com
-// itself.
+// name or TLS server name matches one of the names (kind dns, sni).
+//
+// Kind "dynamic" is the access list that follows the traffic: it holds
+// names and addresses together, and a name matches however the node sees
+// it — as the DNS question, as the TLS server name, or as a name this
+// principal resolved to the destination a moment ago (dnsmap). Its address
+// entries may carry a port or a port range.
+//
+// A name "*.example.com" matches every name under example.com, not
+// example.com itself.
 type list struct {
 	name     string
 	kind     string
 	uid      types.EntityUID
 	prefixes []netip.Prefix
+	addrs    []registry.AddrEntry // kind dynamic
 	exact    map[string]bool
 	under    []string // "*.example.com" stored as ".example.com"
 }
@@ -141,37 +153,56 @@ type list struct {
 func compileList(l registry.List) list {
 	c := list{name: l.Name, kind: l.Kind, uid: types.NewEntityUID(TypeList, types.String(l.Name)), exact: map[string]bool{}}
 	for _, e := range l.Entries {
-		switch l.Kind {
-		case "ip":
+		if l.Kind == "ip" {
 			if p, err := netip.ParsePrefix(e); err == nil {
 				c.prefixes = append(c.prefixes, p)
 			}
-		default:
-			e = strings.ToLower(e)
-			if rest, ok := strings.CutPrefix(e, "*."); ok {
-				c.under = append(c.under, "."+rest)
-			} else {
-				c.exact[e] = true
+			continue
+		}
+		if l.Kind == "dynamic" {
+			if a, ok, err := registry.ParseAddrEntry(e); ok && err == nil {
+				c.addrs = append(c.addrs, a)
+				continue
 			}
+		}
+		e = strings.ToLower(e)
+		if rest, ok := strings.CutPrefix(e, "*."); ok {
+			c.under = append(c.under, "."+rest)
+		} else {
+			c.exact[e] = true
 		}
 	}
 	return c
 }
 
 // has reports whether the flow's destination is in the list.
-func (c *list) has(dst netip.Addr, sni, dnsName string) bool {
+func (c *list) has(r Request) bool {
 	switch c.kind {
 	case "ip":
 		for _, p := range c.prefixes {
-			if p.Contains(dst) {
+			if p.Contains(r.Dst) {
 				return true
 			}
 		}
 		return false
 	case "sni":
-		return c.hasName(sni)
+		return c.hasName(r.SNI)
 	case "dns":
-		return c.hasName(dnsName)
+		return c.hasName(r.DNSName)
+	case "dynamic":
+		for _, a := range c.addrs {
+			if a.Matches(r.Dst, r.Port) {
+				return true
+			}
+		}
+		if c.hasName(r.DNSName) || c.hasName(r.SNI) {
+			return true
+		}
+		for _, n := range r.Resolved {
+			if c.hasName(n) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -211,7 +242,9 @@ func New(snap *registry.Snapshot) *Engine {
 		c := compileList(l)
 		e.lists = append(e.lists, c)
 		e.base[c.uid] = types.Entity{UID: c.uid, Attributes: types.NewRecord(types.RecordMap{"kind": types.String(l.Kind), "name": types.String(l.Name)})}
-		if l.Kind == "sni" {
+		if l.Kind == "sni" || l.Kind == "dynamic" {
+			// a dynamic list matches the server name too, so a permit that
+			// names one is worth waiting for the ClientHello
 			sniLists[`BoundGate::List::"`+l.Name+`"`] = true
 		}
 	}
@@ -255,6 +288,29 @@ func (e *Engine) Policies() int { return e.count }
 
 // Errors lists the policies that did not compile.
 func (e *Engine) Errors() []PolicyError { return e.errs }
+
+// LearnsNames reports whether any list of kind "dynamic" is in the
+// snapshot: without one there is nothing to learn from DNS answers.
+func (e *Engine) LearnsNames() bool {
+	for i := range e.lists {
+		if e.lists[i].kind == "dynamic" {
+			return true
+		}
+	}
+	return false
+}
+
+// Learns reports whether a list of kind "dynamic" holds this name. A node
+// remembers the addresses of an answer only for such a name: everything
+// else would fill the cache without a policy ever asking for it.
+func (e *Engine) Learns(name string) bool {
+	for i := range e.lists {
+		if e.lists[i].kind == "dynamic" && e.lists[i].hasName(name) {
+			return true
+		}
+	}
+	return false
+}
 
 func (e *Engine) buildEntities() {
 	s := e.snap
@@ -479,7 +535,7 @@ func (e *Engine) evaluate(r Request) Decision {
 		parents = append(parents, nodeUID(owner.ID))
 	}
 	for i := range e.lists {
-		if e.lists[i].has(r.Dst, r.SNI, r.DNSName) {
+		if e.lists[i].has(r) {
 			parents = append(parents, e.lists[i].uid)
 		}
 	}
@@ -501,6 +557,14 @@ func (e *Engine) evaluate(r Request) Decision {
 	if r.DNSName != "" {
 		hostAttrs["dns_name"] = types.String(r.DNSName)
 		ctx["dns_name"] = types.String(r.DNSName)
+	}
+	if len(r.Resolved) > 0 {
+		ns := make([]types.Value, 0, len(r.Resolved))
+		for _, n := range r.Resolved {
+			ns = append(ns, types.String(n))
+		}
+		hostAttrs["resolved_names"] = types.NewSet(ns...)
+		ctx["resolved_names"] = types.NewSet(ns...)
 	}
 	if se != nil {
 		gs := make([]types.Value, 0, len(se.Groups))

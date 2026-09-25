@@ -10,6 +10,10 @@ prefixes:
   - {prefix: 10.60.0.0/24, mode: snat}
 public_addr: "hub1:443"
 listen: ":443"               # hub tunnel listener (UDP)
+# The resolver of the lab (10.60.0.53): the hub reads the answers it
+# forwards from it and remembers, per peer, what a name resolved to, so a
+# dynamic access list also matches the connection that follows (docs/ACL.md).
+dns_learn_from: [10.60.0.53]
 auto_up: true
 profile: full
 profiles_dir: /etc/boundgate/profiles

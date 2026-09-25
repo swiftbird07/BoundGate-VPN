@@ -166,7 +166,10 @@ type Policy struct {
 
 // List is a named set of addresses or names that policies refer to as
 // BoundGate::List::"<name>". Kind is "ip" (addresses and prefixes), "dns"
-// (query names) or "sni" (TLS server names); names may start with "*.".
+// (query names), "sni" (TLS server names) or "dynamic" (the access list
+// that follows the traffic: names however the node sees them — query,
+// server name, or what the query resolved to — next to addresses, ranges
+// and ports, see AddrEntry); names may start with "*.".
 type List struct {
 	Name    string   `json:"name"`
 	Kind    string   `json:"kind"`
