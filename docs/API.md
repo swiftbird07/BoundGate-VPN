@@ -38,6 +38,7 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | PATCH | `/api/v1/admin/nodes/{id}` | `Grant` (all fields optional) | `ConfirmResponse`; a signed field change demotes an approved node to confirmed and returns a new sign token |
 | GET | `/api/v1/admin/tags` | | `{defaults: [...], used: [...]}`: the tags to offer in an editor (built in, and carried by some node) |
 | DELETE | `/api/v1/admin/nodes/{id}` | | 204 (revoke, also ends the node's user session); 409 unless approved |
+| POST | `/api/v1/admin/nodes/{id}/revocation` | | `ConfirmResponse` with `sign_token`/`sign_command` for the node's revocation (BINDINGS.md "Replay"); 409 unless revoked. `NodeView.revocation_signed` shows whether one is signed |
 | GET | `/api/v1/admin/signers` | | `[SignerView]` incl. removed; `active` = in the signed list |
 | GET | `/api/v1/admin/signers/set` | | `{version, hash, genesis_hash, history[]}` of the signed list |
 | POST | `/api/v1/admin/signers` | `{name?, public_key}` (authorized_keys line) | 202 `SignerChangeView` (a proposal: `sign_command`, `sign_token`, `added`, `removed`, `affected_nodes`, `signable_by`); 400 for a disallowed key type; 409 if already in the list |
@@ -137,12 +138,14 @@ first active passkey is 401 with an explanatory message.
 
 | Method | Path | Auth | Result |
 |---|---|---|---|
-| GET | `/api/v1/sign/binding` | `Authorization: Bearer bgsign_…` | `SignBinding`; 401 unknown/expired token; 409 used token or node not confirmed |
-| POST | `/api/v1/sign/signature` | same | `{signature}` (armored SSHSIG) → `NodeView` (approved); 403 signer not registered; 409 signature not over the current grant, or token used |
+| GET | `/api/v1/sign/binding` | `Authorization: Bearer bgsign_…` | `SignBinding`; 401 unknown/expired token; 409 used token, or node neither confirmed nor revoked |
+| POST | `/api/v1/sign/signature` | same | `{signature}` (armored SSHSIG) → `NodeView` (approved, or revoked with `revocation_signed`); 403 signer not registered; 409 signature not over the current grant, or token used |
 
 `SignBinding`: `node_id, name, fingerprint, key_kind, hardware_bound,
 roles, prefixes, overlay_ip, public_addr, binding` (the exact bytes to
-sign), `namespace` (`boundgate-binding`), `expires_at, signers`
+sign, with `deployment` and `issued`), `namespace` (`boundgate-binding`),
+or for a revoked node `revocation` (the exact bytes of the revocation)
+instead of `binding`, with namespace `boundgate-revocation`; `expires_at, signers`
 (authorized_keys lines of the active admin keys). Rate limit 30/min per
 source address (per /64 for IPv6).
 

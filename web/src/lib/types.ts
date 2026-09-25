@@ -9,6 +9,7 @@ export interface Node {
   requested_at: string; request_ip?: string; confirmed_at?: string; confirmed_by?: string; approved_at?: string; approved_by?: string;
   revoked_at?: string; revoked_by?: string; last_seen_at?: string; snapshot_version: number; active_tunnels: number;
   sign_token?: string; sign_expires_at?: string; sign_command?: string;
+  revocation_signed?: boolean;
 }
 export interface Grant { fingerprint?: string; name?: string; kind?: string; roles?: Role[]; prefixes?: Prefix[]; overlay_ip?: string; public_addr?: string; hardware_bound?: boolean; tags?: string[] }
 export interface Signer { id: string; name: string; subject?: string; public_key: string; key_type: string; hardware: boolean; fingerprint: string; created_at: string; revoked_at?: string; active: boolean }

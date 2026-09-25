@@ -189,7 +189,14 @@ login_node() {
   url=$(printf '%s' "$st" | jq -r .url)
   # the "browser" on the Mac: follow the IdP redirect (published on loopback), then hit the callback (devproxy)
   cb=$(curl -sS -o /dev/null -w '%{redirect_url}' "$url")
-  curl -sS -f --cacert "$CACERT" -o /dev/null "$cb"
+  # the callback asks whether this device is the person's own; the "browser"
+  # presses "Sign in this device" (POST with the page's single-use token)
+  page=$(curl -sS -f --cacert "$CACERT" "$cb")
+  cflow=$(printf '%s' "$page" | sed -n 's/.*name="flow" value="\([^"]*\)".*/\1/p')
+  ctoken=$(printf '%s' "$page" | sed -n 's/.*name="token" value="\([^"]*\)".*/\1/p')
+  [ -n "$cflow" ] && [ -n "$ctoken" ] || { echo "$1: no confirmation page after the IdP" >&2; exit 1; }
+  curl -sS -f --cacert "$CACERT" -o /dev/null --data-urlencode "flow=$cflow" --data-urlencode "token=$ctoken" \
+    --data-urlencode action=confirm "${cb%%/api/*}/api/v1/oidc/confirm"
   nodectl "$1" -json status | jq -r '"\(.node_name): logged in as \(.user.username // "?") \(.user.groups // [])"' 2>/dev/null || true
   echo "$1: login flow $flow completed"
 }
@@ -200,6 +207,16 @@ revoke_node() {
   [ -n "$id" ] || { echo "$1 is not approved"; exit 1; }
   api DELETE "/api/v1/admin/nodes/$id"
   echo "revoked $1 ($id)"
+}
+
+# sign_revocation ID: the second signature after a revoke, which makes it
+# hold against the control plane itself (BINDINGS.md "Replay")
+sign_revocation() {
+  fp=$(api GET "/api/v1/admin/nodes/$1" | jq -r .spki)
+  token=$(api POST "/api/v1/admin/nodes/$1/revocation" | jq -r .sign_token)
+  $COMPOSE exec -T control boundgatectl -json admin sign --control https://localhost:443 --cacert /var/lib/boundgate/control.crt \
+    --node "$1" --fingerprint "$fp" --token "$token" --key "$SIGNER_KEY" \
+    | jq -r '"\(.name): revocation signed"'
 }
 
 case "${1:-all}" in
@@ -215,7 +232,8 @@ case "${1:-all}" in
   confirm) ensure_signer; confirm_node "$2" ;;
   sign)    confirm_node "$2" sign ;;
   revoke)  revoke_node "$2" ;;
+  sign-revocation) sign_revocation "$2" ;;
   login)   login_node "$2" ;;
   api)     shift; api "$@"; echo ;;
-  *)       echo "usage: $0 [all|signer|approve SVC|confirm SVC|sign SVC|revoke SVC|login SVC|policy NAME CEDAR [SVC...]|policy-rm NAME|policies|eval SVC DST [PORT] [PROTO] [SNI]|flows [QUERY]|tunnels [QUERY]|api METHOD PATH [JSON]]" >&2; exit 2 ;;
+  *)       echo "usage: $0 [all|signer|approve SVC|confirm SVC|sign SVC|revoke SVC|sign-revocation ID|login SVC|policy NAME CEDAR [SVC...]|policy-rm NAME|policies|eval SVC DST [PORT] [PROTO] [SNI]|flows [QUERY]|tunnels [QUERY]|api METHOD PATH [JSON]]" >&2; exit 2 ;;
 esac

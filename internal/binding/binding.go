@@ -367,25 +367,20 @@ type Guard interface {
 // Errors from the guard.
 var (
 	ErrOtherDeployment = errors.New("binding: signed for another network")
-	ErrNoDeployment    = errors.New("binding: does not name its network, but this node's own binding does")
 	ErrRolledBack      = errors.New("binding: older than one already seen for this node")
 	ErrRevoked         = errors.New("binding: the node was revoked after this binding was issued")
 )
 
 // guarded runs the guard's checks on a binding whose signature verified.
-// strict: the verifier's own binding names its network, so every binding
-// must (bindings made before the field existed are refused then).
-func guarded(g Guard, b Binding, strict bool) error {
+// A binding that names no network (signed before the field existed) is
+// accepted: networks keep such nodes until each is signed again, and one
+// cannot outrank a newer binding or a revocation (its issued is 0).
+func guarded(g Guard, b Binding) error {
 	if g == nil {
 		return nil
 	}
-	if dep := g.Deployment(); dep != "" {
-		switch {
-		case b.Deployment != "" && b.Deployment != dep:
-			return ErrOtherDeployment
-		case b.Deployment == "" && strict:
-			return ErrNoDeployment
-		}
+	if dep := g.Deployment(); dep != "" && b.Deployment != "" && b.Deployment != dep {
+		return ErrOtherDeployment
 	}
 	return g.Check(b)
 }
@@ -419,13 +414,11 @@ func VerifySnapshot(s *registry.Snapshot, signers Signers, g Guard) ([]Rejected,
 			}
 		}
 	}
-	strict := false
 	var self Binding
 	if s.Self.ID != "" {
 		b, _, err := verifyNode(s.Self, signers)
 		if err == nil {
-			strict = b.Deployment != ""
-			err = guarded(g, b, strict)
+			err = guarded(g, b)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("own binding: %w", err)
@@ -437,7 +430,7 @@ func VerifySnapshot(s *registry.Snapshot, signers Signers, g Guard) ([]Rejected,
 	for _, p := range s.Peers {
 		b, _, err := verifyNode(p, signers)
 		if err == nil {
-			err = guarded(g, b, strict)
+			err = guarded(g, b)
 		}
 		if err != nil {
 			rejected = append(rejected, Rejected{ID: string(p.ID), Name: p.Name, Err: err})

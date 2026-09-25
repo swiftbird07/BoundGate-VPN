@@ -15,7 +15,7 @@
   let nodes = $state<Node[]>([]);
   let filter = $state<'all' | 'pending' | 'confirmed' | 'approved' | 'revoked'>('all');
   let selected = $state<Node | null>(null);
-  let signCmd = $state<{ cmd: string; expires: string } | null>(null);
+  let signCmd = $state<{ cmd: string; expires: string; revocation?: boolean } | null>(null);
   let confirm = $state<{ node: Node; edit: boolean } | null>(null);
   let g = $state<Required<Pick<Grant, 'name' | 'kind' | 'roles' | 'prefixes' | 'overlay_ip' | 'public_addr' | 'tags'>> & { checked: boolean; hardware: boolean }>({ name: '', kind: 'interactive', roles: [], prefixes: [], overlay_ip: '', public_addr: '', tags: [], checked: false, hardware: false });
   let tagFilter = $state('');
@@ -100,7 +100,21 @@
   }
   async function revoke(n: Node) {
     if (!window.confirm(`Revoke ${n.name}? Its tunnels close within seconds and its key can never enroll again.`)) return;
-    try { await admin.revoke(n.id); toast('Revoked', 'ok'); await load(); } catch (e) { fail(e); }
+    try {
+      await admin.revoke(n.id);
+      toast('Revoked. Now sign the revocation with an admin key.', 'ok');
+      await load();
+      await signRevocation(n);
+    } catch (e) { fail(e); }
+  }
+  // The revocation holds against this control plane only once an admin
+  // signed it: then every node refuses the old binding for good (R119).
+  async function signRevocation(n: Node) {
+    try {
+      const r = await admin.revocationToken(n.id);
+      selected = nodes.find((x) => x.id === n.id) ?? selected;
+      if (r.sign_command) signCmd = { cmd: r.sign_command, expires: r.sign_expires_at || '', revocation: true };
+    } catch (e) { fail(e); }
   }
 </script>
 
@@ -153,7 +167,7 @@
   {@const n = selected}
   <Drawer title={n.name} onclose={() => select(null)}>
     <div class="col" style="gap:16px">
-      <div class="row"><Badge status={n.status} />{#if n.signed}<span class="badge ok plain">signed by {n.signed_by}</span>{:else if n.status !== 'pending' && n.status !== 'revoked'}<span class="badge warn plain">not signed</span>{/if}<span class="chip">{n.kind}</span>{#if n.hardware_bound}<span class="chip">hardware-bound</span>{/if}</div>
+      <div class="row"><Badge status={n.status} />{#if n.status === 'revoked'}{#if n.revocation_signed}<span class="badge ok plain">revocation signed</span>{:else}<span class="badge warn plain">revocation not signed</span>{/if}{:else if n.signed}<span class="badge ok plain">signed by {n.signed_by}</span>{:else if n.status !== 'pending'}<span class="badge warn plain">not signed</span>{/if}<span class="chip">{n.kind}</span>{#if n.hardware_bound}<span class="chip">hardware-bound</span>{/if}</div>
       <div>
         <h3>Fingerprint</h3>
         <div class="cmd"><pre>{n.fingerprint}</pre><Copy text={n.fingerprint} /></div>
@@ -161,8 +175,13 @@
       </div>
       {#if signCmd}
         <div class="callout strong">
-          <h3>Sign the binding</h3>
-          <p class="small muted">Run this where the admin SSH key (YubiKey) is available. The token is single-use and expires {when(signCmd.expires)}.</p>
+          {#if signCmd.revocation}
+            <h3>Sign the revocation</h3>
+            <p class="small muted">The node is revoked already. Signing makes it stick: every node then refuses its old binding for good, even if this control plane were to serve it again. Run this where the admin SSH key (YubiKey) is available; the token is single-use and expires {when(signCmd.expires)}.</p>
+          {:else}
+            <h3>Sign the binding</h3>
+            <p class="small muted">Run this where the admin SSH key (YubiKey) is available. The token is single-use and expires {when(signCmd.expires)}.</p>
+          {/if}
           <SignCommand command={signCmd.cmd} />
         </div>
       {/if}
@@ -177,6 +196,8 @@
         {:else if n.status === 'approved'}
           <button class="btn" onclick={() => openConfirm(n, true)}>Edit grant…</button>
           <button class="btn danger" onclick={() => revoke(n)}>Revoke</button>
+        {:else if n.status === 'revoked' && !n.revocation_signed}
+          <button class="btn primary" onclick={() => signRevocation(n)}>Sign revocation</button>
         {/if}
       </div>
       <dl class="kv">

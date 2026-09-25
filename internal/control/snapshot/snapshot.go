@@ -30,6 +30,7 @@ type Source struct {
 	cachedNet     db.NetworkSettings
 	cachedAt      time.Time
 	cachedChain   []registry.SignerLink
+	cachedRevs    []registry.SignedRevocation
 }
 
 // New creates a source. Call Notify after every mutation that bumped the
@@ -45,6 +46,7 @@ type loaded struct {
 	net      db.NetworkSettings
 	at       time.Time
 	chain    []registry.SignerLink
+	revs     []registry.SignedRevocation
 }
 
 func (s *Source) load(ctx context.Context) (loaded, error) {
@@ -54,7 +56,7 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	}
 	s.mu.Lock()
 	if s.cachedNodes != nil && s.cachedVersion == version {
-		l := loaded{version, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedLists, s.cachedNet, s.cachedAt, s.cachedChain}
+		l := loaded{version, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedLists, s.cachedNet, s.cachedAt, s.cachedChain, s.cachedRevs}
 		s.mu.Unlock()
 		return l, nil
 	}
@@ -86,6 +88,12 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	if err != nil {
 		return loaded{}, err
 	}
+	// so do the signed revocations: a node keeps what it verified and never
+	// takes the revoked node back, whatever this control plane says later
+	revs, err := s.db.Revocations(ctx)
+	if err != nil {
+		return loaded{}, err
+	}
 	nodes := make([]registry.Node, 0, len(rows))
 	for _, n := range rows {
 		nodes = append(nodes, toRegistry(n))
@@ -100,9 +108,9 @@ func (s *Source) load(ctx context.Context) (loaded, error) {
 	}
 	at := time.Now().UTC()
 	s.mu.Lock()
-	s.cachedVersion, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedLists, s.cachedNet, s.cachedAt, s.cachedChain = version, nodes, sessions, policies, lists, net, at, chain
+	s.cachedVersion, s.cachedNodes, s.cachedSess, s.cachedPol, s.cachedLists, s.cachedNet, s.cachedAt, s.cachedChain, s.cachedRevs = version, nodes, sessions, policies, lists, net, at, chain, revs
 	s.mu.Unlock()
-	return loaded{version, nodes, sessions, policies, lists, net, at, chain}, nil
+	return loaded{version, nodes, sessions, policies, lists, net, at, chain, revs}, nil
 }
 
 func toRegistry(n db.Node) registry.Node {
@@ -158,6 +166,7 @@ func (s *Source) BuildFor(ctx context.Context, self transport.DeviceID) (*regist
 		Policies:      make([]registry.Policy, 0, len(l.policies)),
 		Pool:          l.net.Pool,
 		SignerChain:   l.chain,
+		Revocations:   l.revs,
 	}
 	for _, p := range l.policies {
 		if self == "" || p.AppliesTo(string(self)) {

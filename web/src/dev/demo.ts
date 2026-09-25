@@ -143,6 +143,11 @@ function answer(method: string, path: string, query: URLSearchParams, body: any,
   if (path === '/admin/overview') return { nodes: { pending: count('pending'), confirmed: count('confirmed'), approved: count('approved'), revoked: count('revoked') }, active_sessions: 2, active_tunnels: 6, policies: policies.length, policies_enabled: 3, denied_last_24h: 2, pending_passkeys: 1, signers: signers.length, snapshot_version: 212 } satisfies T.Overview;
   if (path === '/admin/tags') return { defaults: ['server', 'workstation', 'laptop', 'phone', 'iot', 'production', 'staging', 'lab', 'critical', 'dmz', 'office', 'home', 'personal', 'shared'], used: [...new Set(nodes.flatMap((n) => n.tags ?? []))].sort() } satisfies T.TagOffer;
   if (path === '/admin/nodes') return query.get('state') ? nodes.filter((n) => n.status === query.get('state')) : nodes;
+  const mr = path.match(/^\/admin\/nodes\/([^/]+)\/revocation$/);
+  if (mr) {
+    const n = nodes.find((x) => x.id === mr[1]) ?? nodes[0];
+    return { ...n, sign_command: nodes[5].sign_command, sign_expires_at: nodes[5].sign_expires_at };
+  }
   const m = path.match(/^\/admin\/nodes\/([^/]+)(\/confirm)?$/);
   if (m) {
     const n = nodes.find((x) => x.id === m[1]) ?? nodes[0];

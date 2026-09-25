@@ -21,6 +21,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 )
 
 // admin sign: the second approval factor. Runs on the admin's machine with
@@ -45,8 +46,8 @@ func runAdmin(args []string, asJSON bool) error {
 	token := fs.String("token", "", "one-time sign token from the confirm step")
 	keyFile := fs.String("key", "", "sign with this OpenSSH private key file, without ssh-agent; a passphrase protected file or a security key (YubiKey) is signed by ssh-keygen, which asks for passphrase, PIN and touch")
 	agentKey := fs.String("agent-key", "", "pick the ssh-agent key whose comment or fingerprint contains this")
-	sigFile := fs.String("signature", "", "post this SSHSIG file made with `ssh-keygen -Y sign -n boundgate-binding` instead of signing")
-	outFile := fs.String("out", "", "write the binding to this file for `ssh-keygen -Y sign` and exit")
+	sigFile := fs.String("signature", "", "post this SSHSIG file made with `ssh-keygen -Y sign -n boundgate-binding` (a revocation: -n boundgate-revocation) instead of signing")
+	outFile := fs.String("out", "", "write the binding (or revocation) to this file for `ssh-keygen -Y sign` and exit")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -74,38 +75,72 @@ func runAdmin(args []string, asJSON bool) error {
 	if wantFP != gotFP {
 		return fmt.Errorf("admin sign: fingerprint mismatch: you gave %s, the control plane has %s. Do not sign", wantFP, gotFP)
 	}
-	// What gets signed is the binding, so that is what is checked and shown:
-	// the fields next to it are the control plane's description of it.
-	bd, err := binding.Parse([]byte(sb.Binding))
-	if err != nil {
-		return fmt.Errorf("admin sign: the control plane sent a binding that does not parse: %w. Do not sign", err)
-	}
-	if bd.NodeID != *nodeID {
-		return fmt.Errorf("admin sign: the binding is for node %s, not %s. Do not sign", bd.NodeID, *nodeID)
-	}
-	if got := strings.ReplaceAll(bd.SPKI.Fingerprint(), " ", ""); got != wantFP {
-		return fmt.Errorf("admin sign: the binding names the key %s, you gave %s. Do not sign", got, wantFP)
-	}
-	if !asJSON {
-		fmt.Printf("node:         %s (%s)\nfingerprint:  %s\nkey:          %s (hardware-bound: %v)\nkind:         %s\nroles:        %v\n",
-			sb.Name, bd.NodeID, bd.SPKI.Fingerprint(), sb.KeyKind, bd.HardwareBound, bd.Kind, bd.Roles)
-		if len(bd.Tags) > 0 {
-			fmt.Printf("tags:         %s\n", strings.Join(bd.Tags, ", "))
+	// What gets signed is the statement, so that is what is checked and
+	// shown: the fields next to it are the control plane's description of
+	// it. The namespace is this tool's, never the control plane's word: a
+	// signature in another namespace could be taken for something else.
+	var (
+		msg       []byte
+		namespace string
+		issued    int64
+	)
+	if sb.Revocation != "" {
+		rv, err := binding.ParseRevocation([]byte(sb.Revocation))
+		if err != nil {
+			return fmt.Errorf("admin sign: the control plane sent a revocation that does not parse: %w. Do not sign", err)
 		}
-		for _, p := range bd.Prefixes {
-			fmt.Printf("announces:    %s (%s)\n", p.Prefix, p.Mode)
+		if rv.NodeID != *nodeID {
+			return fmt.Errorf("admin sign: the revocation is for node %s, not %s. Do not sign", rv.NodeID, *nodeID)
 		}
-		fmt.Printf("overlay ip:   %s\n", bd.OverlayIP)
-		if sb.PublicAddr != "" {
-			fmt.Printf("public addr:  %s (not signed)\n", sb.PublicAddr)
+		if got := strings.ReplaceAll(rv.SPKI.Fingerprint(), " ", ""); got != wantFP {
+			return fmt.Errorf("admin sign: the revocation names the key %s, you gave %s. Do not sign", got, wantFP)
 		}
-		fmt.Printf("binding:      %s\n", sb.Binding)
+		msg, namespace, issued = []byte(sb.Revocation), binding.RevocationNamespace, rv.Issued
+		if !asJSON {
+			fmt.Printf("REVOKE node:  %s (%s)\nfingerprint:  %s\nnetwork:      %s\nrevocation:   %s\n\nEvery node will refuse this node's bindings issued before now, for good.\n",
+				sb.Name, rv.NodeID, rv.SPKI.Fingerprint(), orUnknown(rv.Deployment), sb.Revocation)
+		}
+	} else {
+		bd, err := binding.Parse([]byte(sb.Binding))
+		if err != nil {
+			return fmt.Errorf("admin sign: the control plane sent a binding that does not parse: %w. Do not sign", err)
+		}
+		if bd.NodeID != *nodeID {
+			return fmt.Errorf("admin sign: the binding is for node %s, not %s. Do not sign", bd.NodeID, *nodeID)
+		}
+		if got := strings.ReplaceAll(bd.SPKI.Fingerprint(), " ", ""); got != wantFP {
+			return fmt.Errorf("admin sign: the binding names the key %s, you gave %s. Do not sign", got, wantFP)
+		}
+		msg, namespace, issued = []byte(sb.Binding), binding.Namespace, bd.Issued
+		if !asJSON {
+			fmt.Printf("node:         %s (%s)\nfingerprint:  %s\nkey:          %s (hardware-bound: %v)\nkind:         %s\nroles:        %v\n",
+				sb.Name, bd.NodeID, bd.SPKI.Fingerprint(), sb.KeyKind, bd.HardwareBound, bd.Kind, bd.Roles)
+			if len(bd.Tags) > 0 {
+				fmt.Printf("tags:         %s\n", strings.Join(bd.Tags, ", "))
+			}
+			for _, p := range bd.Prefixes {
+				fmt.Printf("announces:    %s (%s)\n", p.Prefix, p.Mode)
+			}
+			fmt.Printf("overlay ip:   %s\nnetwork:      %s\n", bd.OverlayIP, orUnknown(bd.Deployment))
+			if sb.PublicAddr != "" {
+				fmt.Printf("public addr:  %s (not signed)\n", sb.PublicAddr)
+			}
+			fmt.Printf("binding:      %s\n", sb.Binding)
+		}
+	}
+	// A statement dated far from now is refused: dated in the future it
+	// would outrank every later binding of the node (nodes keep the newest),
+	// and nothing an admin signs today should say otherwise.
+	if issued != 0 {
+		if d := time.Since(time.Unix(issued, 0)); d > 24*time.Hour || d < -24*time.Hour {
+			return fmt.Errorf("admin sign: the statement is dated %s, more than a day from this machine's clock. Do not sign", time.Unix(issued, 0).UTC().Format(time.RFC3339))
+		}
 	}
 	if *outFile != "" {
-		if err := os.WriteFile(*outFile, []byte(sb.Binding), 0o600); err != nil {
+		if err := os.WriteFile(*outFile, msg, 0o600); err != nil {
 			return err
 		}
-		fmt.Printf("\nbinding written to %s. Sign it with:\n  ssh-keygen -Y sign -n %s -f <key> %s\nthen run this command again with --signature %s.sig\n", *outFile, sb.Namespace, *outFile, *outFile)
+		fmt.Printf("\nstatement written to %s. Sign it with:\n  ssh-keygen -Y sign -n %s -f <key> %s\nthen run this command again with --signature %s.sig\n", *outFile, namespace, *outFile, *outFile)
 		return nil
 	}
 
@@ -119,7 +154,7 @@ func runAdmin(args []string, asJSON bool) error {
 		sig = string(b)
 	default:
 		var err error
-		if sig, err = signMessage(*keyFile, *agentKey, sb.Signers, sb.Namespace, []byte(sb.Binding), asJSON); err != nil {
+		if sig, err = signMessage(*keyFile, *agentKey, sb.Signers, namespace, msg, asJSON); err != nil {
 			return err
 		}
 	}
@@ -128,7 +163,12 @@ func runAdmin(args []string, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	if _, err := binding.Verify([]byte(sb.Binding), sig, signers); err != nil {
+	if sb.Revocation != "" {
+		_, err = binding.VerifyRevocation(registry.SignedRevocation{Revocation: sb.Revocation, Signature: sig}, signers, nil)
+	} else {
+		_, err = binding.Verify(msg, sig, signers)
+	}
+	if err != nil {
 		return fmt.Errorf("admin sign: the signature does not verify against the registered admin keys: %w", err)
 	}
 	var nv api.NodeView
@@ -138,8 +178,19 @@ func runAdmin(args []string, asJSON bool) error {
 	if asJSON {
 		return dump(nv)
 	}
+	if sb.Revocation != "" {
+		fmt.Printf("\nrevocation signed: %s stays revoked on every node, whatever the control plane says later\n", nv.Name)
+		return nil
+	}
 	fmt.Printf("\napproved: %s is now %s (overlay ip %s, signed by %s)\n", nv.Name, nv.Status, nv.OverlayIP, nv.SignedBy)
 	return nil
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "(not named: signed before networks were named)"
+	}
+	return s
 }
 
 // pickSigner returns the ssh-agent key that is one of the registered admin

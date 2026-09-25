@@ -51,6 +51,7 @@ func (h *Handlers) AdminMux() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/nodes/{id}", h.adminPatchNode)
 	mux.HandleFunc("GET /api/v1/admin/tags", h.adminTags)
 	mux.HandleFunc("DELETE /api/v1/admin/nodes/{id}", h.adminRevokeNode)
+	mux.HandleFunc("POST /api/v1/admin/nodes/{id}/revocation", h.adminRevocationToken)
 	mux.HandleFunc("GET /api/v1/admin/signers", h.adminListSigners)
 	mux.HandleFunc("POST /api/v1/admin/signers", h.adminAddSigner)
 	mux.HandleFunc("DELETE /api/v1/admin/signers/{id}", h.adminRevokeSigner)
@@ -113,20 +114,23 @@ type NodeView struct {
 	Tags                []string          `json:"tags"`                            // the administrator's labels; part of the signed binding
 	KeyVersion          int               `json:"key_version"`
 	Signed              bool              `json:"signed"`
-	SignedBy            string            `json:"signed_by,omitempty"`
-	SignedAt            *time.Time        `json:"signed_at,omitempty"`
-	RequestedAt         time.Time         `json:"requested_at"`
-	RequestIP           string            `json:"request_ip,omitempty"`
-	ConfirmedAt         *time.Time        `json:"confirmed_at,omitempty"`
-	ConfirmedBy         string            `json:"confirmed_by,omitempty"`
-	ApprovedAt          *time.Time        `json:"approved_at,omitempty"`
-	ApprovedBy          string            `json:"approved_by,omitempty"`
-	RevokedAt           *time.Time        `json:"revoked_at,omitempty"`
-	RevokedBy           string            `json:"revoked_by,omitempty"`
-	LastSeenAt          *time.Time        `json:"last_seen_at,omitempty"`
-	SnapshotVersion     uint64            `json:"snapshot_version"`
-	ActiveTunnels       int               `json:"active_tunnels"`
-	Attrs               map[string]string `json:"attrs,omitempty"`
+	// RevocationSigned: an admin signed this revoked node's revocation, so
+	// every node refuses its old binding for good (binding.Revocation)
+	RevocationSigned bool              `json:"revocation_signed,omitempty"`
+	SignedBy         string            `json:"signed_by,omitempty"`
+	SignedAt         *time.Time        `json:"signed_at,omitempty"`
+	RequestedAt      time.Time         `json:"requested_at"`
+	RequestIP        string            `json:"request_ip,omitempty"`
+	ConfirmedAt      *time.Time        `json:"confirmed_at,omitempty"`
+	ConfirmedBy      string            `json:"confirmed_by,omitempty"`
+	ApprovedAt       *time.Time        `json:"approved_at,omitempty"`
+	ApprovedBy       string            `json:"approved_by,omitempty"`
+	RevokedAt        *time.Time        `json:"revoked_at,omitempty"`
+	RevokedBy        string            `json:"revoked_by,omitempty"`
+	LastSeenAt       *time.Time        `json:"last_seen_at,omitempty"`
+	SnapshotVersion  uint64            `json:"snapshot_version"`
+	ActiveTunnels    int               `json:"active_tunnels"`
+	Attrs            map[string]string `json:"attrs,omitempty"`
 }
 
 func nodeView(n db.Node) NodeView {
@@ -193,9 +197,16 @@ func (h *Handlers) adminListNodes(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, h.d.Logs.System)
 		return
 	}
+	signed, err := h.d.DB.RevokedAndSigned(r.Context())
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
 	out := make([]NodeView, 0, len(nodes))
 	for _, n := range nodes {
-		out = append(out, nodeView(n))
+		v := nodeView(n)
+		v.RevocationSigned = signed[n.ID]
+		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -206,7 +217,11 @@ func (h *Handlers) adminGetNode(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, h.d.Logs.System)
 		return
 	}
-	writeJSON(w, http.StatusOK, nodeView(n))
+	v := nodeView(n)
+	if signed, err := h.d.DB.RevokedAndSigned(r.Context()); err == nil {
+		v.RevocationSigned = signed[n.ID]
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 // GrantBody is what an admin decides for a node. Roles and prefixes are
@@ -286,10 +301,11 @@ type ConfirmResponse struct {
 	SignCommand   string     `json:"sign_command,omitempty"`
 }
 
-// withSignToken mints a token for a confirmed node and fills the response.
+// withSignToken mints a token for a confirmed node (its binding) or a
+// revoked one (its revocation) and fills the response.
 func (h *Handlers) withSignToken(r *http.Request, a Admin, n db.Node) (ConfirmResponse, error) {
 	out := ConfirmResponse{NodeView: nodeView(n)}
-	if n.Status != db.StatusConfirmed {
+	if n.Status != db.StatusConfirmed && n.Status != db.StatusRevoked {
 		return out, nil
 	}
 	tok, exp, err := h.d.DB.CreateSignToken(r.Context(), n.ID, n.SPKI, a.Subject)
@@ -531,6 +547,30 @@ func (h *Handlers) adminRevokeNode(w http.ResponseWriter, r *http.Request) {
 	h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, a.Subject, "node revoked", id,
 		map[string]any{"name": n.Name, "spki": n.SPKI.String(), "snapshot_version": version})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminRevocationToken issues the one-time token with which an admin signs
+// a revoked node's revocation on the machine with the security key. The
+// revocation above took effect already; the signature makes it stick
+// against the control plane itself (R119).
+func (h *Handlers) adminRevocationToken(w http.ResponseWriter, r *http.Request) {
+	a, _ := AdminFrom(r.Context())
+	n, err := h.d.DB.NodeByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	if n.Status != db.StatusRevoked {
+		writeError(w, http.StatusConflict, "only a revoked node has a revocation to sign")
+		return
+	}
+	out, err := h.withSignToken(r, a, n)
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, a.Subject, "revocation sign token issued", n.ID, map[string]any{"name": n.Name})
+	writeJSON(w, http.StatusOK, out)
 }
 
 // adminIdentity tells the admin the fingerprint of the node-channel key: what

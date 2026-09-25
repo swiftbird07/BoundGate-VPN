@@ -125,11 +125,20 @@ func TestGuardRefusesWhatTheControlPlaneCouldReplay(t *testing.T) {
 	if rej, _ := VerifySnapshot(guardSnap(self, lab), signers, g); len(rej) != 1 || !errors.Is(rej[0].Err, ErrOtherDeployment) {
 		t.Fatalf("a lab binding: %+v", rej)
 	}
-	// a binding that names no network, while this node's own does
+	// a binding signed before the fields existed still counts, also next to
+	// one that names the network (a network is re-signed node by node) ...
 	legacy := node("legacy", registry.RoleHub)
 	sign(t, &legacy, admin)
-	if rej, _ := VerifySnapshot(guardSnap(self, legacy), signers, g); len(rej) != 1 || !errors.Is(rej[0].Err, ErrNoDeployment) {
-		t.Fatalf("a binding without a network: %+v", rej)
+	if rej, _ := VerifySnapshot(guardSnap(self, legacy), signers, g); len(rej) != 0 {
+		t.Fatalf("a binding without a network in a mixed network: %+v", rej)
+	}
+	// ... until the node was signed again: then the old one is a rollback
+	resigned := signAt(t, node("legacy", registry.RoleHub), admin, prodNet, 700)
+	if rej, _ := VerifySnapshot(guardSnap(self, resigned), signers, g); len(rej) != 0 {
+		t.Fatalf("re-signed: %+v", rej)
+	}
+	if rej, _ := VerifySnapshot(guardSnap(self, legacy), signers, g); len(rej) != 1 || !errors.Is(rej[0].Err, ErrRolledBack) {
+		t.Fatalf("the unsigned-network binding after a newer one: %+v", rej)
 	}
 	// the own binding rolled back: the node stops
 	oldSelf := signAt(t, node("self", registry.RoleEndpoint), admin, prodNet, 50)

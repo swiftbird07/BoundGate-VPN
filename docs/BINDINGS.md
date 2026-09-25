@@ -6,7 +6,7 @@ A **binding** is the statement an administrator signs for every node:
 {"node_id":"f11a…","spki":"cb0d…","key_version":1,"kind":"interactive",
  "roles":["endpoint","subnet-router"],
  "prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}],
- "overlay_ip":"10.21.0.4"}
+ "overlay_ip":"10.21.0.4","deployment":"9c1e…","issued":1790380800}
 ```
 
 It says: *this node id and this device key are of this kind (interactive:
@@ -14,7 +14,10 @@ a person must log in; workload: the key alone suffices), hold these roles,
 may announce these prefixes, and own this overlay address*. A binding for a
 node whose key an admin accepted as living in a TPM ends with
 `,"hardware_bound":true}` (TPM.md), and the tags an admin gave the node
-follow as `,"tags":["production","server"]}`. Every node verifies the
+follow as `,"tags":["production","server"]}`. `deployment` names the network
+(the hash of the first admin key list, below) and `issued` the time the
+signature was requested; both are there against replay (see "Replay"
+below). Every node verifies the
 bindings of its peers and of itself against the admin keys it pinned at
 its own enrollment. The control plane distributes bindings but cannot
 create or change one. A compromised control plane can therefore still
@@ -76,6 +79,13 @@ what the node itself reported about its key (`hardware_claimed`). A wrong
 public address only fails the pinned handshake; the others are claims
 shown to admins.
 
+`deployment` and `issued` come after `tags` and are left out when empty,
+so bindings signed before v0.1.13 keep their bytes and stay valid until the
+node's own binding names its network (see "Replay"). Nodes older than
+v0.1.13 refuse bindings that carry the fields, like any unknown field:
+**update every node before the control plane**, or approvals made after
+the update are ignored by the nodes that were not updated yet.
+
 `key_version` counts re-keys of the same node id (always 1 for now); a
 future key rotation will sign a new binding with `key_version + 1`.
 
@@ -115,7 +125,12 @@ pending ──confirm──▶ confirmed ──sign──▶ approved ──revo
    snapshot at once (hubs close its tunnels, its own poll gets 403), and
    the response carries a new sign command. A rename or a new public
    address keeps the approval.
-4. **revoke** deletes the node from snapshots; the row stays for audit.
+4. **revoke** deletes the node from snapshots at once; the row stays for
+   audit. The response of the UI, or `POST /api/v1/admin/nodes/{id}/revocation`
+   later, carries a second sign command: the admin signs a **revocation**
+   (below), which makes the revocation hold against the control plane
+   itself. Until it is signed, a compromised control plane could put the
+   node back into snapshots with its old binding.
 
 ## What nodes verify
 
@@ -133,6 +148,57 @@ On every snapshot, before it is installed (`internal/node`
   the snapshot before it is indexed. A hub therefore closes that peer's
   tunnels and refuses its handshake; a spoke does not dial it. Dropped
   peers are listed as `ignored_peers` in the status and logged.
+
+## Replay: network, time and revocations
+
+A signature does not expire, so without more a control plane could serve an
+old binding again: the grant of a node an admin revoked, the wider prefixes
+it had before a PATCH, or a binding signed for another BoundGate network
+that the same admin keys sign for. Three things close that:
+
+* **`deployment`** is the genesis hash of the admin key list, which every
+  node learns from the chain it pinned. A binding for another network is
+  refused. A binding signed before the field existed is still accepted, so
+  a network can be re-signed node by node; it counts as issued at 0, so
+  once a node saw a newer binding of that node (or its revocation) the old
+  one is refused like any rollback. Re-sign every node after the update to
+  close the rest: until then, a legacy binding the same admin keys signed
+  for another network would be accepted for a node this one has never
+  seen.
+* **`issued`** is the time the sign token was made (Unix seconds). Every
+  node keeps, per node id, the newest `issued` it verified
+  (`state_dir/bindings_seen.json`, written before the snapshot is used), and
+  refuses an older binding of the same node: the control plane cannot go
+  back to an earlier grant once the nodes saw a newer one. The history is
+  bounded to 20000 node ids; the oldest non-revoked entries are dropped
+  first. A damaged file stops the node with an explanation; removing it
+  forgets what the node could refuse.
+* A **revocation** is a second statement an admin signs after revoking a
+  node, in its own SSHSIG namespace `boundgate-revocation`:
+
+  ```json
+  {"type":"boundgate-revocation","node_id":"f11a…","spki":"cb0d…","deployment":"9c1e…","issued":1790467200}
+  ```
+
+  The control plane stores it and puts every signed revocation into every
+  snapshot. A node verifies it against its pinned admin keys, records it in
+  the same history, and from then on refuses every binding of that node
+  issued at or before it, for good. The UI shows "revocation signed" /
+  "revocation not signed" on a revoked node and a button to sign it.
+
+`boundgatectl admin sign` shows which of the two it is about to sign (a
+revocation is printed as `REVOKE node:`), picks the namespace itself (never
+from the control plane), prints the network, and refuses a statement dated
+more than a day away from the local clock: a binding dated in the future
+would outrank every later one. The control plane also refuses a snapshot
+older than the one a node has (`version`), which keeps it from quietly
+going back to an earlier state within one run.
+
+What this cannot do: a node that never saw the newer binding or the
+revocation (offline, freshly enrolled, or a control plane that withheld it
+from the start) cannot know it. A signed revocation reaches new nodes with
+their first snapshot, as long as the control plane keeps serving it; a
+compromised one can withhold it, and only from nodes that have not seen it.
 
 The lab demonstrates this with `sqlite3`: adding `hub` to a router's roles
 in the control plane database makes every other node ignore that router

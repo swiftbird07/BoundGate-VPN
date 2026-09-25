@@ -181,6 +181,20 @@ x node-a boundgatectl -json enroll -accept-new-pin | jq -e '.status == "revoked"
 status_is hub1 '.tunnels == 1' || fail "hub1 still has node-a's tunnel"
 wait_for 20 sh -c "$S api GET '/api/v1/admin/tunnels?node=$OLD_ID' | jq -e '[.[] | select(.closed_at != null and (.close_reason | test(\"revoked\")))] | length >= 1'" || fail "revoked node's tunnels not closed in the history"
 
+echo "== 6b. signed revocation: a control plane that approves node-a again with its old binding is ignored"
+$S api GET "/api/v1/admin/nodes/$OLD_ID" | jq -e '.revocation_signed != true' >/dev/null || fail "revocation signed before anyone signed it"
+$S sign-revocation "$OLD_ID" >/dev/null || fail "signing the revocation failed"
+$S api GET "/api/v1/admin/nodes/$OLD_ID" | jq -e '.revocation_signed == true' >/dev/null || fail "revocation not recorded as signed"
+wait_for 15 sh -c "$S api GET /api/v1/admin/snapshot | jq -e '[.revocations[]? | select(.revocation | contains(\"$OLD_ID\"))] | length == 1'" || fail "the revocation is not in the snapshots"
+# a compromised control plane: the old row, binding and address back in place
+# (behind the API: no long-poll wakes up, nodes see it within one poll timeout)
+sql "UPDATE nodes SET status = 'approved', overlay_ip = json_extract(binding_json, '\$.overlay_ip') WHERE id = '$OLD_ID'; UPDATE snapshot_version SET version = version + 1;"
+$S api GET /api/v1/admin/snapshot | jq -e --arg id "$OLD_ID" '[.peers[] | select(.id == $id)] | length == 1' >/dev/null || fail "the forged approval is not in the control plane's snapshot (the test proves nothing)"
+wait_for 45 status_is hub1 '[.ignored_peers[]? | select(test("revoked after"))] | length == 1' || fail "hub1 took the revoked node back"
+wait_for 45 status_is node-r '[.ignored_peers[]? | select(test("revoked after"))] | length == 1' || fail "node-r took the revoked node back"
+sql "UPDATE nodes SET status = 'revoked', overlay_ip = '' WHERE id = '$OLD_ID'; UPDATE snapshot_version SET version = version + 1;"
+wait_for 45 status_is hub1 '[.ignored_peers[]? | select(test("revoked after"))] | length == 0' || fail "hub1 still lists the revoked node after the repair"
+
 echo "== 7. fresh key: enroll -> pending -> confirm (not enough) -> sign -> approved -> up; token is single use"
 fresh_key node-a
 wait_for 10 sh -c 'docker compose -f docker-compose.yml exec -T node-a boundgatectl -json enroll -accept-new-pin | jq -e ".status == \"pending\""' || fail "new key not pending"

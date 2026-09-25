@@ -36,9 +36,12 @@ type SignBinding struct {
 	OverlayIP   string            `json:"overlay_ip"`
 	PublicAddr  string            `json:"public_addr,omitempty"`
 	// Binding is the exact canonical JSON to sign.
-	Binding   string    `json:"binding"`
-	Namespace string    `json:"namespace"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Binding string `json:"binding"`
+	// Revocation, instead of Binding, is the canonical JSON of a revoked
+	// node's revocation (binding.Revocation) to sign.
+	Revocation string    `json:"revocation,omitempty"`
+	Namespace  string    `json:"namespace"`
+	ExpiresAt  time.Time `json:"expires_at"`
 	// Signers lists the accepted admin keys (authorized_keys lines) so the
 	// CLI can pick the matching agent key.
 	Signers []string `json:"signers"`
@@ -89,34 +92,64 @@ func (h *Handlers) signToken(w http.ResponseWriter, r *http.Request) (db.SignTok
 	return db.SignToken{}, "", false
 }
 
-// currentBinding loads the node behind a token and builds the binding it
-// must be signed for. The node must still be confirmed with the same key.
-func (h *Handlers) currentBinding(w http.ResponseWriter, r *http.Request, t db.SignToken) (db.Node, []byte, bool) {
+// statement is what a sign token asks the admin to sign: the binding of a
+// confirmed node, or the revocation of a revoked one.
+type statement struct {
+	n          db.Node
+	raw        []byte
+	revocation bool
+	st         signerState
+}
+
+func (s statement) namespace() string {
+	if s.revocation {
+		return binding.RevocationNamespace
+	}
+	return binding.Namespace
+}
+
+// currentStatement loads the node behind a token and builds what it must
+// be signed for, with the same key it had when the token was made. Both
+// name the network (the genesis hash of the admin key list) and carry the
+// token's time as issued: that is what lets a node refuse, later, whatever
+// was signed before (binding.Guard).
+func (h *Handlers) currentStatement(w http.ResponseWriter, r *http.Request, t db.SignToken) (statement, bool) {
+	var out statement
 	n, err := h.d.DB.NodeByID(r.Context(), t.NodeID)
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
-		return n, nil, false
+		return out, false
 	}
-	if n.Status != db.StatusConfirmed || n.SPKI != t.SPKI {
+	out.n = n
+	if out.st, err = h.signerState(r.Context()); err != nil {
+		fail(w, err, h.d.Logs.System)
+		return out, false
+	}
+	if n.SPKI != t.SPKI {
+		writeError(w, http.StatusConflict, "the node has another key than when this token was made; nothing to sign")
+		return out, false
+	}
+	switch n.Status {
+	case db.StatusConfirmed:
+		b := binding.FromNode(nodeToRegistry(n))
+		b.Deployment, b.Issued = out.st.Trust.Genesis, t.CreatedAt.Unix()
+		out.raw, err = b.Canonical()
+	case db.StatusRevoked:
+		out.revocation = true
+		out.raw, err = binding.Revocation{Type: binding.RevocationType, NodeID: n.ID, SPKI: n.SPKI, Deployment: out.st.Trust.Genesis, Issued: t.CreatedAt.Unix()}.Canonical()
+	default:
 		writeError(w, http.StatusConflict, "node is "+n.Status+"; nothing to sign")
-		return n, nil, false
+		return out, false
 	}
-	raw, err := binding.FromNode(nodeToRegistry(n)).Canonical()
 	if err != nil {
 		writeError(w, http.StatusConflict, "grant is incomplete: "+err.Error())
-		return n, nil, false
+		return out, false
 	}
-	return n, raw, true
+	return out, true
 }
 
 func nodeToRegistry(n db.Node) registry.Node {
 	return registry.Node{ID: transport.DeviceID(n.ID), Name: n.Name, SPKI: n.SPKI, KeyVersion: n.KeyVersion, Kind: n.Kind, Roles: n.Roles, Prefixes: n.Prefixes, OverlayIP: n.OverlayIP, HardwareBound: n.HardwareBound, Tags: n.Tags}
-}
-
-// activeSigners are the keys of the verified head of the signed list.
-func (h *Handlers) activeSigners(r *http.Request) ([]db.Signer, binding.Signers, error) {
-	st, err := h.signerState(r.Context())
-	return st.Rows, st.Keys, err
 }
 
 func (h *Handlers) signGetBinding(w http.ResponseWriter, r *http.Request) {
@@ -124,21 +157,22 @@ func (h *Handlers) signGetBinding(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n, raw, ok := h.currentBinding(w, r, t)
+	sm, ok := h.currentStatement(w, r, t)
 	if !ok {
 		return
 	}
-	rows, _, err := h.activeSigners(r)
-	if err != nil {
-		fail(w, err, h.d.Logs.System)
-		return
-	}
+	n := sm.n
 	out := SignBinding{
 		NodeID: n.ID, Name: n.Name, Fingerprint: n.SPKI.Fingerprint(), KeyKind: n.KeyKind, Hardware: n.HardwareBound,
-		Roles: orEmptyRoles(n.Roles), Prefixes: orEmptyPrefixes(n.Prefixes), OverlayIP: n.OverlayIP.String(), PublicAddr: n.PublicAddr,
-		Binding: string(raw), Namespace: binding.Namespace, ExpiresAt: t.ExpiresAt, Signers: []string{},
+		Roles: orEmptyRoles(n.Roles), Prefixes: orEmptyPrefixes(n.Prefixes), PublicAddr: n.PublicAddr,
+		Namespace: sm.namespace(), ExpiresAt: t.ExpiresAt, Signers: []string{},
 	}
-	for _, s := range rows {
+	if sm.revocation {
+		out.Revocation = string(sm.raw)
+	} else {
+		out.Binding, out.OverlayIP = string(sm.raw), n.OverlayIP.String()
+	}
+	for _, s := range sm.st.Rows {
 		out.Signers = append(out.Signers, s.AuthorizedKey())
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -154,16 +188,18 @@ func (h *Handlers) signPostSignature(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	n, raw, ok := h.currentBinding(w, r, t)
+	sm, ok := h.currentStatement(w, r, t)
 	if !ok {
 		return
 	}
-	rows, keys, err := h.activeSigners(r)
-	if err != nil {
-		fail(w, err, h.d.Logs.System)
-		return
+	n, raw, rows, keys := sm.n, sm.raw, sm.st.Rows, sm.st.Keys
+	var pub ssh.PublicKey
+	var err error
+	if sm.revocation {
+		pub, err = h.verifyRevocation(raw, body.Signature, keys)
+	} else {
+		pub, err = binding.Verify(raw, body.Signature, keys)
 	}
-	pub, err := binding.Verify(raw, body.Signature, keys)
 	if err != nil {
 		h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, t.Admin, "binding signature rejected", n.ID,
 			map[string]any{"name": n.Name, "spki": n.SPKI.String(), "reason": err.Error(), "src": remoteIP(r)})
@@ -184,6 +220,25 @@ func (h *Handlers) signPostSignature(w http.ResponseWriter, r *http.Request) {
 			signerName = s.Name
 		}
 	}
+	if sm.revocation {
+		version, err := h.d.DB.StoreRevocation(r.Context(), n.ID, token, string(raw), body.Signature, fp)
+		if err != nil {
+			if errors.Is(err, db.ErrTokenUsed) {
+				writeError(w, http.StatusConflict, "sign token already used")
+				return
+			}
+			fail(w, err, h.d.Logs.System)
+			return
+		}
+		h.d.Snap.Notify(version)
+		h.audit(r.Context(), h.d.Logs.Enrollment, logging.StreamEnrollment, t.Admin, "node revocation signed", n.ID,
+			map[string]any{"name": n.Name, "spki": n.SPKI.String(), "signed_by": fp, "signer": signerName,
+				"signer_hardware": binding.IsHardwareKey(pub), "snapshot_version": version})
+		nv := nodeView(n)
+		nv.RevocationSigned = true
+		writeJSON(w, http.StatusOK, nv)
+		return
+	}
 	version, err := h.d.DB.ApproveSigned(r.Context(), n.ID, token, string(raw), body.Signature, fp)
 	if err != nil {
 		if errors.Is(err, db.ErrTokenUsed) {
@@ -200,4 +255,19 @@ func (h *Handlers) signPostSignature(w http.ResponseWriter, r *http.Request) {
 			"roles": n.Roles, "prefixes": n.Prefixes, "overlay_ip": n.OverlayIP.String(), "public_addr": n.PublicAddr,
 			"signed_by": fp, "signer": signerName, "signer_hardware": binding.IsHardwareKey(pub), "snapshot_version": version})
 	writeJSON(w, http.StatusOK, nodeView(n))
+}
+
+// verifyRevocation checks an admin's signature over a revocation.
+func (h *Handlers) verifyRevocation(raw []byte, sig string, keys binding.Signers) (ssh.PublicKey, error) {
+	if strings.TrimSpace(sig) == "" {
+		return nil, binding.ErrNoSignature
+	}
+	parsed, err := binding.ParseSSHSIG(sig)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := binding.VerifyRevocation(registry.SignedRevocation{Revocation: string(raw), Signature: sig}, keys, nil); err != nil {
+		return nil, err
+	}
+	return parsed.PublicKey, nil
 }
