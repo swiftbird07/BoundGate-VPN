@@ -106,7 +106,7 @@ const audit: T.LogEvent[] = [
   log(86400 * 9, 'audit', 'martin', 'node revoked', { name: 'old-laptop' }, nodes[7].id),
 ];
 const flow = (s: number, n: T.Node, user: string, dst: string, decision: 'allow' | 'deny', extra: Record<string, unknown> = {}): T.LogEvent =>
-  log(s, 'flow', 'node', decision === 'deny' ? 'deny' : 'open', { event: decision === 'deny' ? 'deny' : 'open', node_name: nodes[0].name, principal_name: n.name, user, src: `${n.overlay_ip}:51${s % 900}`, dst, proto: 'tcp', decision, policies: decision === 'deny' ? ['block-telemetry'] : ['staff-to-intranet'], ...extra }, nodes[0].id);
+  log(s, 'flow', 'node', decision === 'deny' ? 'deny' : 'open', { event: decision === 'deny' ? 'deny' : 'open', node_name: nodes[0].name, reported_by: nodes[0].id, principal: n.id, principal_name: n.name, user, src: `${n.overlay_ip}:51${s % 900}`, dst, proto: 'tcp', decision, policies: decision === 'deny' ? ['block-telemetry'] : ['staff-to-intranet'], ...extra }, nodes[0].id);
 const flows: T.LogEvent[] = [
   flow(12, nodes[3], 'ada', '10.60.0.10:443', 'allow', { sni: 'intranet.example.net', bytes_in: 18233, bytes_out: 942 }),
   flow(40, nodes[4], 'martin', '10.60.0.10:22', 'allow'),

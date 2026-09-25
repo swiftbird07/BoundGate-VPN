@@ -195,6 +195,12 @@ func TestLogShipping(t *testing.T) {
 	if !found {
 		t.Fatalf("the tunnel a spoke accepted is missing: %+v", accepted)
 	}
+	// nor can it close the hub's tunnel by reporting its id
+	code, b = e.nodeCall(laptop, "POST", "/api/v1/node/logs", `{"events":[
+	  {"stream":"tunnel","message":"close","attrs":{"tunnel":"t1","peer":"`+hid+`","opened_at":"`+opened+`","reason":"forged","bytes_in":999999}}]}`)
+	if code != http.StatusOK || !strings.Contains(string(b), `"rejected":1`) {
+		t.Fatalf("laptop reports the hub's tunnel: %d %s", code, b)
+	}
 
 	var tunnels []db.Tunnel
 	e.adminCall("GET", "/api/v1/admin/tunnels?active=1", "", http.StatusOK, &tunnels)

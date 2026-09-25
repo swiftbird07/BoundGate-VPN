@@ -157,7 +157,7 @@ source address (per /64 for IPv6).
 | POST | `/api/v1/node/login/start` | approved only | `{flow_id, url, expires_at}`; 503 without an IdP, 502 if the IdP is unreachable. At most three open flows per node: a fourth fails the oldest |
 | GET | `/api/v1/node/login/{flow}` | the node that started it | `?wait=30s`: `{status: pending\|done\|failed, session?, error?}`; `pending` until the person confirmed the device in the browser; 429 when two requests of the node are already waiting |
 | POST | `/api/v1/node/logout` | approved only | 204 |
-| POST | `/api/v1/node/logs` | approved only | `{events: [{ts, stream: flow\|tunnel, message, attrs}]}` (≤ 2000 events, ≤ 4 MB) → `{accepted, rejected}`; tunnel events (`reset`, `open`, `update`, `close`) only from hubs; the reporter's id overrides `attrs.node_id` |
+| POST | `/api/v1/node/logs` | approved only | `{events: [{ts, stream: flow\|tunnel, message, attrs}]}` (≤ 2000 events, ≤ 4 MB) → `{accepted, rejected}`; tunnel events (`reset`, `open`, `update`, `close`) only from hubs; the reporter's id overrides `attrs.node_id` and is stamped as `attrs.reported_by`; `principal_name` and `owner_name` come from the registry, a session is linked only when it belongs to `attrs.principal`; 30 batches per minute per node, then 429 with `Retry-After` |
 
 Enroll body: `{name, hostname, platform, key_kind, hardware_bound, roles[],
 prefixes[{prefix, mode}], public_addr}`. Everything is a claim; `public_addr`

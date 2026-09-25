@@ -34,13 +34,28 @@ const (
 	ShipMaxBytes  = 4 << 20
 )
 
+// ShipBatchesPerMinute bounds how often one node may ship. A node sends a
+// batch every 5 s and drains what it buffered during an outage (at most 5
+// batches) at once.
+const ShipBatchesPerMinute = 30
+
 // nodeShipLogs stores flow records and tunnel reports of an approved node.
 // The reporter is authenticated by mTLS; its id overrides whatever the
-// records claim. A tunnel is reported by the node that accepted it: a hub,
-// or since M7 a spoke that a peer reached directly or through a relay.
+// records claim and is kept as reported_by. What a record says about
+// others (principal, user, session) is the reporter's word: the control
+// plane names the principal and the owner from its own registry and links
+// a session only when it belongs to that principal, but it cannot know
+// whether the flow happened (R47). A tunnel is reported by the node that
+// accepted it: a hub, or since M7 a spoke that a peer reached directly or
+// through a relay.
 func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 	peer, ok := h.approvedPeer(w, r)
 	if !ok {
+		return
+	}
+	if !h.shipLimit.allow(string(peer.DeviceID())) {
+		w.Header().Set("Retry-After", "10")
+		writeError(w, http.StatusTooManyRequests, "too many log batches from this node; try again later")
 		return
 	}
 	var body ShipRequest
@@ -57,6 +72,20 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, h.d.Logs.System)
 		return
 	}
+	names := map[string]string{self.ID: self.Name} // node id → name, "" unknown
+	nodeName := func(id string) string {
+		if n, ok := names[id]; ok {
+			return n
+		}
+		n, err := h.d.DB.NodeByID(r.Context(), id)
+		if err != nil {
+			names[id] = ""
+			return ""
+		}
+		names[id] = n.Name
+		return n.Name
+	}
+	sessionOf := map[string]string{} // session id → node id, "" unknown
 	var rows []db.LogEvent
 	accepted, rejected := 0, 0
 	for _, ev := range body.Events {
@@ -65,12 +94,35 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		ev.Attrs["node_id"] = self.ID
 		ev.Attrs["node_name"] = self.Name
+		ev.Attrs["reported_by"] = self.ID
 		if ev.TS.IsZero() || ev.TS.After(time.Now().Add(5*time.Minute)) {
 			ev.TS = time.Now().UTC()
 		}
 		switch ev.Stream {
 		case ShipStreamFlow:
+			// names come from the registry, not from the reporter
+			for _, k := range [][2]string{{"principal", "principal_name"}, {"owner", "owner_name"}} {
+				delete(ev.Attrs, k[1])
+				if id, _ := ev.Attrs[k[0]].(string); id != "" {
+					if n := nodeName(id); n != "" {
+						ev.Attrs[k[1]] = n
+					}
+				}
+			}
 			sess, _ := ev.Attrs["session"].(string)
+			principal, _ := ev.Attrs["principal"].(string)
+			if sess != "" {
+				owner, seen := sessionOf[sess]
+				if !seen {
+					if s, err := h.d.DB.SessionByID(r.Context(), sess); err == nil {
+						owner = s.NodeID
+					}
+					sessionOf[sess] = owner
+				}
+				if owner == "" || owner != principal {
+					sess = "" // not linked: the session is not the principal's
+				}
+			}
 			rows = append(rows, db.LogEvent{TS: ev.TS, Stream: ShipStreamFlow, Actor: "node", DeviceID: self.ID, SessionID: sess, Message: clip(ev.Message, 64), Attrs: ev.Attrs})
 			accepted++
 		case ShipStreamTunnel:
@@ -98,7 +150,7 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 				rep.CloseReason = "peer revoked"
 			}
 			if err := h.d.DB.UpsertTunnel(r.Context(), rep); err != nil {
-				h.d.Logs.System.Warn("tunnel report", "err", err)
+				h.d.Logs.System.Warn("tunnel report", "node", self.ID, "err", err)
 				rejected++
 				continue
 			}

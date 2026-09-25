@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -46,12 +47,15 @@ type TunnelReport struct {
 // is final.
 // A tunnel that housekeeping closed because its hub fell silent (control
 // plane or VM paused) is reopened by the hub's next live report.
+// A tunnel belongs to the hub and peer that first reported it: a report
+// of the same id by another node changes nothing (ErrConflict), so one
+// node cannot close, reopen or inflate another's tunnels.
 func (d *DB) UpsertTunnel(ctx context.Context, r TunnelReport) error {
 	var closed any
 	if !r.ClosedAt.IsZero() {
 		closed = r.ClosedAt.UTC().Format(timeFormat)
 	}
-	_, err := d.sql.ExecContext(ctx, `INSERT INTO tunnels (id, hub_id, peer_id, peer_addr, transport, opened_at, closed_at, close_reason, bytes_in, bytes_out, packets_in, packets_out, last_report_at)
+	res, err := d.sql.ExecContext(ctx, `INSERT INTO tunnels (id, hub_id, peer_id, peer_addr, transport, opened_at, closed_at, close_reason, bytes_in, bytes_out, packets_in, packets_out, last_report_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		  peer_addr = CASE WHEN excluded.peer_addr <> '' THEN excluded.peer_addr ELSE peer_addr END,
@@ -61,10 +65,19 @@ func (d *DB) UpsertTunnel(ctx context.Context, r TunnelReport) error {
 		  close_reason = CASE WHEN tunnels.closed_at IS NULL OR tunnels.close_reason = 'hub stopped reporting' THEN excluded.close_reason ELSE close_reason END,
 		  bytes_in = MAX(bytes_in, excluded.bytes_in), bytes_out = MAX(bytes_out, excluded.bytes_out),
 		  packets_in = MAX(packets_in, excluded.packets_in), packets_out = MAX(packets_out, excluded.packets_out),
-		  last_report_at = excluded.last_report_at`,
+		  last_report_at = excluded.last_report_at
+		WHERE tunnels.hub_id = excluded.hub_id AND tunnels.peer_id = excluded.peer_id`,
 		r.ID, r.HubID, r.PeerID, r.PeerAddr, r.Transport, r.OpenedAt.UTC().Format(timeFormat), closed, r.CloseReason,
 		r.BytesIn, r.BytesOut, r.PacketsIn, r.PacketsOut, now())
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return fmt.Errorf("%w: tunnel %s belongs to another hub or peer", ErrConflict, r.ID)
+	}
+	return nil
 }
 
 // TunnelQuery filters ListTunnels.

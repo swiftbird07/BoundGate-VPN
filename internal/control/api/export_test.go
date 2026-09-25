@@ -9,6 +9,7 @@ func (h *Handlers) ResetRateLimitsForTest() {
 	h.limit = newRateLimiter(5, time.Minute)
 	h.signLimit = newRateLimiter(30, time.Minute)
 	h.loginLimit = newRateLimiter(10, time.Minute)
+	h.shipLimit = newRateLimiter(ShipBatchesPerMinute, time.Minute)
 }
 
 // LocalPathForTest exposes the check of an admin login's next= target.

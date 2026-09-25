@@ -340,6 +340,16 @@ The control plane stores them in `log_events` (stream `flow`, retention
 `log_retention`) and serves them at `GET /api/v1/admin/flows` with filters
 for reporter, principal, user, decision, destination, SNI, DNS name and time.
 
+A record is the reporting node's word. The control plane stamps the
+reporter (`node_id`, `node_name`, `reported_by`, from the mTLS identity,
+whatever the record said), replaces `principal_name` and `owner_name` with
+the names in its registry (and drops them for an id it does not know),
+and links the record to a session only when that session belongs to the
+principal; `principal`, `user` and the rest stay as reported. The Flows
+page shows each record under **Reported by**, and a principal other than
+the reporter as "per <reporter>". One node may ship 30 batches a minute
+(then 429; the node keeps its buffer and tries again).
+
 Hubs ship **tunnel events** on the same route: `reset` when the hub comes
 up (closes whatever the control plane still lists for it), `open` when a
 peer attaches, `update` with byte counters every 30 s, `close` with the reason (`closed by

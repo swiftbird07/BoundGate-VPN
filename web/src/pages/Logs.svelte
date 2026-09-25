@@ -84,7 +84,7 @@
     </table>
   {:else if tab === 'flows'}
     <table>
-      <thead><tr><th>Time</th><th>Event</th><th>Decided on</th><th>Principal</th><th>Flow</th><th>Policies</th><th class="num">Bytes</th></tr></thead>
+      <thead><tr><th>Time</th><th>Event</th><th title="The node that decided the flow and shipped this record; everything else in the row is its report">Reported by</th><th title="As the reporting node saw it">Principal</th><th>Flow</th><th>Policies</th><th class="num">Bytes</th></tr></thead>
       <tbody>
         {#each events as e (e.id)}
           {@const a = e.attrs ?? {}}
@@ -92,7 +92,7 @@
             <td><Time at={e.ts} /></td>
             <td><Badge status={String(a.decision ?? e.message)} label={`${e.message}${a.reset ? ' + RST' : ''}`} /></td>
             <td>{a.node_name ?? nodeName(e.device_id)}</td>
-            <td>{a.principal_name ?? nodeName(String(a.principal ?? ''))}{#if a.username}<div class="faint small">{a.username}{#if Array.isArray(a.groups) && a.groups.length}&nbsp;· {a.groups.join(', ')}{/if}</div>{/if}</td>
+            <td>{#if a.principal && !a.principal_name}<span class="mono small" title="Not a node the control plane knows">{String(a.principal).slice(0, 16)}</span> <span class="faint small">unknown</span>{:else}{a.principal_name ?? ''}{/if}{#if a.principal && a.principal !== (a.reported_by ?? e.device_id)}<div class="faint small">per {a.node_name ?? nodeName(e.device_id)}</div>{/if}{#if a.username}<div class="faint small">{a.username}{#if Array.isArray(a.groups) && a.groups.length}&nbsp;· {a.groups.join(', ')}{/if}</div>{/if}</td>
             <td class="mono small">{a.src}:{a.sport} → {a.dst}:{a.dport} {a.proto}{#if a.sni}<div class="faint">sni {a.sni}</div>{/if}{#if a.dns_name}<div class="faint">dns {a.dns_name}</div>{/if}{#if a.owner_name}<div class="faint">owner {a.owner_name}</div>{/if}</td>
             <td>{#if Array.isArray(a.policies)}{#each a.policies as p}<span class="chip">{p}</span> {/each}{/if}{#if Array.isArray(a.errors) && a.errors.length}<div class="error small">{a.errors.join('; ')}</div>{/if}{#if a.reason}<div class="faint small">{a.reason}</div>{/if}</td>
             <td class="num">{bytes(Number(a.bytes_in ?? 0) + Number(a.bytes_out ?? 0))}</td>

@@ -352,6 +352,15 @@ func TestPoliciesAndTunnels(t *testing.T) {
 	if err := d.UpsertTunnel(ctx, TunnelReport{ID: "t1", HubID: "h", PeerID: "p", OpenedAt: opened, BytesIn: 5, BytesOut: 7}); err != nil {
 		t.Fatal(err)
 	}
+	// another node reporting the same id changes nothing
+	for _, r := range []TunnelReport{
+		{ID: "t1", HubID: "x", PeerID: "p", OpenedAt: opened, BytesIn: 1 << 40, ClosedAt: time.Now(), CloseReason: "forged"},
+		{ID: "t1", HubID: "h", PeerID: "x", OpenedAt: opened, BytesIn: 1 << 40, ClosedAt: time.Now(), CloseReason: "forged"},
+	} {
+		if err := d.UpsertTunnel(ctx, r); !errors.Is(err, ErrConflict) {
+			t.Fatalf("%s/%s: %v", r.HubID, r.PeerID, err)
+		}
+	}
 	ts, err := d.ListTunnels(ctx, TunnelQuery{Active: true})
 	if err != nil || len(ts) != 1 || ts[0].BytesIn != 10 || ts[0].BytesOut != 7 {
 		t.Fatalf("%v %+v", err, ts)
