@@ -11,6 +11,12 @@ import (
 // admits approved devices. The registry lookup runs inside the handshake:
 // an unknown key means the handshake fails and nothing above TLS is reached.
 //
+// Session tickets are off: a resumed TLS 1.3 handshake proves the ticket,
+// not the device key, and skips VerifyPeerCertificate. With tickets, whoever
+// once copied a ticket and its secret off an enrolled device could connect
+// from anywhere without the hardware key, and a revoked device would pass
+// the handshake.
+//
 // Client certificates are not chain-validated (there is no CA); they are
 // validated structurally by parseDeviceCert and by registry membership.
 func ServerTLSConfig(serverCert tls.Certificate, lookup DeviceLookup) *tls.Config {
@@ -21,7 +27,8 @@ func ServerTLSConfig(serverCert tls.Certificate, lookup DeviceLookup) *tls.Confi
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			return verifyDevice(lookup, rawCerts)
 		},
-		NextProtos: []string{http3.NextProtoH3},
+		NextProtos:             []string{http3.NextProtoH3},
+		SessionTicketsDisabled: true,
 	}
 }
 
@@ -37,6 +44,7 @@ func ServerTLSConfigAnyDevice(serverCert tls.Certificate) *tls.Config {
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			return verifyDevice(nil, rawCerts)
 		},
+		SessionTicketsDisabled: true, // see ServerTLSConfig
 	}
 }
 

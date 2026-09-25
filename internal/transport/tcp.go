@@ -43,7 +43,13 @@ func (s *Server) serveTCP(ln net.Listener) error {
 	hs := &http.Server{
 		Handler:           http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleTCP(w, r, path) }),
 		ReadHeaderTimeout: 10 * time.Second,
-		ErrorLog:          nil,
+		// a connection that sent its request is hijacked and lives by the
+		// tunnel's own idle timeout; this one only ends idle connections
+		// between requests, which an approved peer could otherwise hold
+		// open forever
+		IdleTimeout:    30 * time.Second,
+		MaxHeaderBytes: 16 << 10,
+		ErrorLog:       nil,
 	}
 	s.mu.Lock()
 	s.hs = hs

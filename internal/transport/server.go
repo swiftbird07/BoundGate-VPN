@@ -226,7 +226,7 @@ type quicConnKey struct{}
 
 // NewServer validates the configuration and prepares the listener.
 func NewServer(cfg ServerConfig, h Handler) (*Server, error) {
-	if cfg.TLS == nil || cfg.TLS.ClientAuth != tls.RequireAnyClientCert || cfg.TLS.VerifyPeerCertificate == nil {
+	if cfg.TLS == nil || cfg.TLS.ClientAuth != tls.RequireAnyClientCert || cfg.TLS.VerifyPeerCertificate == nil || !cfg.TLS.SessionTicketsDisabled {
 		return nil, errors.New("transport: ServerConfig.TLS must come from ServerTLSConfig")
 	}
 	if cfg.Lookup == nil {

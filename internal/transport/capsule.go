@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
@@ -59,6 +60,12 @@ type capsuleLink struct {
 	wmu    sync.Mutex
 	wbuf   []byte
 	in     chan []byte
+	// out holds datagram capsules for writeLoop. WritePacket never waits
+	// for the peer: a full queue drops the packet, as a congested QUIC path
+	// would. The hub writes into every link from one goroutine, so one peer
+	// that stops reading must not stop the others.
+	out     chan []byte
+	dropped atomic.Uint64
 	done   chan struct{}
 	once   sync.Once
 	stopKA chan struct{}
@@ -78,12 +85,46 @@ func newCapsuleLink(conn net.Conn, r *bufio.Reader, idle, keepAlive time.Duratio
 	}
 	l := &capsuleLink{
 		conn: conn, r: r, idleTimeout: idle, keepAlive: keepAlive,
-		in: make(chan []byte, capsuleQueue), done: make(chan struct{}), stopKA: make(chan struct{}),
+		in: make(chan []byte, capsuleQueue), out: make(chan []byte, capsuleQueue), done: make(chan struct{}), stopKA: make(chan struct{}),
 		gotAssign: make(chan struct{}), gotRoutes: make(chan struct{}),
 	}
 	go l.readLoop()
+	go l.writeLoop()
 	go l.keepAliveLoop()
 	return l
+}
+
+// writeLoop sends the queued datagram capsules, several per write when they
+// pile up. A write that fails or does not finish within the idle timeout
+// ends the stream.
+func (l *capsuleLink) writeLoop() {
+	var batch []byte
+	for {
+		var b []byte
+		select {
+		case b = <-l.out:
+		case <-l.done:
+			return
+		}
+		batch = append(batch[:0], b...)
+	more:
+		for len(batch) < 64<<10 {
+			select {
+			case b = <-l.out:
+				batch = append(batch, b...)
+			default:
+				break more
+			}
+		}
+		l.wmu.Lock()
+		_ = l.conn.SetWriteDeadline(time.Now().Add(l.idleTimeout))
+		_, err := l.conn.Write(batch)
+		l.wmu.Unlock()
+		if err != nil {
+			_ = l.conn.Close() // the read loop ends and records why
+			return
+		}
+	}
 }
 
 // readLoop parses capsules until the stream ends. Datagrams queue for
@@ -249,13 +290,14 @@ func (l *capsuleLink) WritePacket(b []byte) ([]byte, error) {
 	}
 	switch b[0] >> 4 {
 	case 4:
-		if len(b) < 20 || b[8] <= 1 {
+		ihl := int(b[0]&0x0f) * 4
+		if ihl < 20 || len(b) < ihl || b[8] <= 1 {
 			return nil, nil
 		}
 		b[8]--
 		b[10], b[11] = 0, 0
 		var sum uint32
-		for i := 0; i+1 < 20; i += 2 {
+		for i := 0; i+1 < ihl; i += 2 { // the whole header, options included
 			sum += uint32(b[i])<<8 | uint32(b[i+1])
 		}
 		for sum > 0xffff {
@@ -271,21 +313,20 @@ func (l *capsuleLink) WritePacket(b []byte) ([]byte, error) {
 	default:
 		return nil, nil
 	}
-	l.wmu.Lock()
-	defer l.wmu.Unlock()
-	l.wbuf = l.wbuf[:0]
-	l.wbuf = quicvarint.Append(l.wbuf, capsuleDatagram)
-	l.wbuf = quicvarint.Append(l.wbuf, uint64(1+len(b)))
-	l.wbuf = append(l.wbuf, 0) // context ID 0
-	l.wbuf = append(l.wbuf, b...)
-	_ = l.conn.SetWriteDeadline(time.Now().Add(l.idleTimeout))
-	if _, err := l.conn.Write(l.wbuf); err != nil {
-		select {
-		case <-l.done:
-			return nil, l.Err()
-		default:
-			return nil, err
-		}
+	c := make([]byte, 0, len(b)+10)
+	c = quicvarint.Append(c, capsuleDatagram)
+	c = quicvarint.Append(c, uint64(1+len(b)))
+	c = append(c, 0) // context ID 0
+	c = append(c, b...)
+	select {
+	case <-l.done:
+		return nil, l.Err()
+	default:
+	}
+	select {
+	case l.out <- c:
+	default:
+		l.dropped.Add(1)
 	}
 	return nil, nil
 }
@@ -322,6 +363,9 @@ func (l *capsuleLink) Close(code quic.ApplicationErrorCode, reason string) error
 		l.mu.Unlock()
 		payload := quicvarint.Append(nil, uint64(code))
 		payload = append(payload, reason...)
+		// a write that waits for a peer which stopped reading gives up now,
+		// so that closing (a revocation) never waits for it
+		_ = l.conn.SetWriteDeadline(time.Now())
 		l.wmu.Lock()
 		_ = l.conn.SetWriteDeadline(time.Now().Add(time.Second))
 		b := quicvarint.Append(nil, capsuleBGClose)

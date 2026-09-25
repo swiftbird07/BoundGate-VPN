@@ -490,8 +490,11 @@ func (c *relayConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	var b []byte
 	if c.listen {
 		ua, ok := addr.(*net.UDPAddr)
-		ip := ua.IP.To4()
-		if !ok || ip == nil {
+		var ip net.IP
+		if ok {
+			ip = ua.IP.To4()
+		}
+		if ip == nil {
 			return 0, fmt.Errorf("transport: relay address %v", addr)
 		}
 		b = make([]byte, 7, 7+len(p))
