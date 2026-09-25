@@ -70,3 +70,40 @@ func TestProxyListenerHeaders(t *testing.T) {
 	}
 	c.Close()
 }
+
+// The header is read inside the first Read: the deadline its user set for
+// that Read (the front's wait for a ClientHello) still holds afterwards, so
+// a client that sends the header and then nothing is dropped in time.
+func TestProxyHeaderKeepsTheReadDeadline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	pl := &ProxyListener{Listener: ln, Trusted: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = c.Write(ProxyV2Header(&net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 40000}, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 443}))
+	sc, err := pl.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+	_ = sc.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	done := make(chan error, 1)
+	go func() {
+		_, err := sc.Read(make([]byte, 16))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
+			t.Fatalf("read after the header: %v, want a timeout", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the read deadline was lost when the header was read")
+	}
+}

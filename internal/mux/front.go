@@ -59,8 +59,9 @@ type Front struct {
 	byName map[string]*backend
 	wild   map[string]*backend // suffix after "*"
 
-	mu      sync.Mutex
-	initial map[flowKey]*flow
+	mu       sync.Mutex
+	initial  map[flowKey]*flow
+	buffered int // bytes the unresolved flows hold (held datagrams, crypto)
 }
 
 type backend struct {
@@ -80,6 +81,27 @@ type flow struct {
 	crypto  cryptoBuf
 	held    [][]byte // datagrams waiting for the name
 	expires time.Time
+}
+
+// maxBuffered: Initials arrive from anyone, from any (spoofed) address;
+// all flows that wait for a name share this budget, or a flood of first
+// packets could hold maxFlows × maxHeld large datagrams. A variable for
+// tests.
+var maxBuffered = 32 << 20
+
+// size is what the flow holds until its name is known.
+func (fl *flow) size() int {
+	n := len(fl.crypto.data) + len(fl.crypto.have)
+	for _, h := range fl.held {
+		n += len(h)
+	}
+	return n
+}
+
+// forget drops an unresolved flow; f.mu is held.
+func (f *Front) forget(k flowKey, fl *flow) {
+	f.buffered -= fl.size()
+	delete(f.initial, k)
 }
 
 const (
@@ -199,7 +221,7 @@ func (f *Front) Run(ctx context.Context) error {
 				f.mu.Lock()
 				for k, fl := range f.initial {
 					if now.After(fl.expires) {
-						delete(f.initial, k)
+						f.forget(k, fl)
 					}
 				}
 				f.mu.Unlock()
@@ -305,25 +327,33 @@ func (f *Front) routeUDP(client netip.AddrPort, pkt []byte) (*backend, [][]byte)
 		f.initial[key] = fl
 	}
 	fl.expires = time.Now().Add(flowTTL)
+	before := fl.size()
 	_ = cryptoFrames(payload, &fl.crypto)
+	f.buffered += fl.size() - before
+	if f.buffered > maxBuffered {
+		f.forget(key, fl) // under flood: clients retry
+		return nil, nil
+	}
 	name, err := clientHelloSNI(fl.crypto.prefix())
 	switch {
 	case err == nil:
 		be := f.lookup(name)
 		if be == nil || be.conn == nil {
 			f.log.Debug("no QUIC route", "sni", name, "client", client)
-			delete(f.initial, key)
+			f.forget(key, fl)
 			return nil, nil
 		}
 		fl.be = be
 		held := fl.held
+		f.buffered -= fl.size()
 		fl.held, fl.crypto = nil, cryptoBuf{}
 		return be, held
-	case errors.Is(err, errNeedMore) && len(fl.held) < maxHeld:
+	case errors.Is(err, errNeedMore) && len(fl.held) < maxHeld && f.buffered+len(pkt) <= maxBuffered:
 		fl.held = append(fl.held, append([]byte(nil), pkt...))
+		f.buffered += len(pkt)
 		return nil, nil
 	default:
-		delete(f.initial, key)
+		f.forget(key, fl)
 		return nil, nil
 	}
 }

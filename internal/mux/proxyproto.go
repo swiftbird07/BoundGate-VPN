@@ -85,14 +85,41 @@ type proxyConn struct {
 	remote net.Addr
 	err    error
 	once   sync.Once
+
+	dmu    sync.Mutex
+	readDL time.Time // the read deadline the user of the connection set
+}
+
+// SetReadDeadline and SetDeadline remember the user's read deadline: the
+// header is read lazily, inside the user's first Read, and must leave that
+// deadline in place afterwards (a peek for the ClientHello has one).
+func (c *proxyConn) SetReadDeadline(t time.Time) error {
+	c.dmu.Lock()
+	c.readDL = t
+	c.dmu.Unlock()
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *proxyConn) SetDeadline(t time.Time) error {
+	c.dmu.Lock()
+	c.readDL = t
+	c.dmu.Unlock()
+	return c.Conn.SetDeadline(t)
 }
 
 func (c *proxyConn) header() { c.once.Do(c.readHeader) }
 
 func (c *proxyConn) readHeader() {
 	c.r = bufio.NewReader(c.Conn)
-	_ = c.Conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	defer c.Conn.SetReadDeadline(time.Time{})
+	c.dmu.Lock()
+	user := c.readDL
+	c.dmu.Unlock()
+	dl := time.Now().Add(10 * time.Second)
+	if !user.IsZero() && user.Before(dl) {
+		dl = user
+	}
+	_ = c.Conn.SetReadDeadline(dl)
+	defer c.Conn.SetReadDeadline(user)
 	first, err := c.r.Peek(6)
 	if err != nil {
 		c.err = err
