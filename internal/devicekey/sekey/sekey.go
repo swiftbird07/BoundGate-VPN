@@ -176,15 +176,26 @@ func parsePublic(x963 []byte) (*ecdsa.PublicKey, error) {
 
 // findHelper resolves the helper and refuses one that others may replace:
 // the node runs it as root with the key blob on stdin.
+//
+// As root, the helper must be no easier to replace than the daemon itself
+// (checkHelperTrust): the file and every directory above it up to / belong
+// to root or to the owner of the daemon's executable (the app bundle an
+// administrator copied to /Applications, R74), and nobody else may write to
+// them, except a group that can already replace the daemon. The resolved
+// path is what runs, so a link cannot be pointed elsewhere after the check.
+// Not as root (tests, development) only the file's own mode is checked.
 func findHelper(configured string) (string, error) {
 	path := configured
-	if path == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return "", fmt.Errorf("sekey: %w", err)
-		}
-		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+	exe := ""
+	if p, err := os.Executable(); err == nil {
+		exe = p
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
 			exe = resolved
+		}
+	}
+	if path == "" {
+		if exe == "" {
+			return "", errors.New("sekey: cannot tell where this executable is, so not where its helper is: set sekey_helper")
 		}
 		path = filepath.Join(filepath.Dir(exe), HelperName)
 	}
@@ -201,7 +212,24 @@ func findHelper(configured string) (string, error) {
 	if fi.Mode().Perm()&0o022 != 0 {
 		return "", fmt.Errorf("sekey: %s is writable by group or others (%s); refusing to run it", path, fi.Mode().Perm())
 	}
-	return path, nil
+	if os.Geteuid() != 0 {
+		return path, nil
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("sekey: %w", err)
+	}
+	if exe == "" {
+		return "", errors.New("sekey: cannot find this executable to compare the helper with; refusing to run it")
+	}
+	exeOwner, err := ownerOf(exe)
+	if err != nil {
+		return "", fmt.Errorf("sekey: %w", err)
+	}
+	if err := checkHelperTrust(resolved, exe, exeOwner); err != nil {
+		return "", fmt.Errorf("sekey: refusing to run the Secure Enclave helper as root: %w", err)
+	}
+	return resolved, nil
 }
 
 // call runs the helper once. The blob goes in on stdin (base64), never on the

@@ -41,7 +41,12 @@ chip.
   signature against the public key it enrolled with before using it, checks
   at start that the Secure Enclave still reports that same public key, and
   refuses a helper that is not an absolute path to an executable which only
-  its owner can write.
+  its owner can write. As root it also requires the helper to be no easier
+  to replace than the daemon itself: the file and every directory above it
+  belong to root or to the owner of the daemon's executable (the app bundle
+  an administrator copied), none is writable by others, and none by its
+  group unless the daemon's own executable lies below that directory too
+  (`/Applications`, writable by `admin`). The resolved path is what runs.
 
 ## `auto`, and moving an enrolled Mac over
 

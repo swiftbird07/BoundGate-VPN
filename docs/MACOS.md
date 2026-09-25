@@ -22,7 +22,7 @@ MACOS-APP.md (M8).
 | Roles | endpoint only: forwarding and NAT answer "macOS nodes are endpoints only" |
 | Device key | `key_kind: secure-enclave` or `auto`: a key in the Mac's Secure Enclave ([SECURE-ENCLAVE.md](SECURE-ENCLAVE.md)); `softkey`: a software key in the state directory |
 | DNS | the prototype pushes no DNS configuration on any platform yet, so nothing is touched (`scutil` comes with split DNS) |
-| Paths | installed: `/usr/local/bin`, `/usr/local/etc/boundgate/node.yaml`, state `/var/db/boundgate`, socket `/var/run/boundgate/node.sock` (the CLI's default on macOS; `BOUNDGATE_SOCKET` or `-socket` override), logs `/var/log/boundgate` |
+| Paths | installed: `/usr/local/bin`, `/usr/local/etc/boundgate/node.yaml` (or under `PREFIX`, see "Installing as a LaunchDaemon"), state `/var/db/boundgate`, socket `/var/run/boundgate/node.sock` (the CLI's default on macOS; `BOUNDGATE_SOCKET` or `-socket` override), logs `/var/log/boundgate` |
 
 ## Crash safety: the network journal
 
@@ -157,6 +157,18 @@ sudo deploy/macos/install.sh uninstall               # keeps /var/db/boundgate (
 
 The daemon runs as root (utun and the routing table need it); the socket is
 `0660 root:wheel`, so `boundgatectl` needs `sudo` or group membership.
+
+Whoever can replace the daemon's program, its Secure Enclave helper, its
+configuration, or a directory above one of them, runs code as root. So
+`install.sh` installs them `root:wheel`, not writable by group or others,
+and checks that every directory above them up to `/` (and
+`/Library/LaunchDaemons`, `/var/db/boundgate`, `/var/log/boundgate`)
+belongs to root and nobody else may write to it; otherwise it refuses and
+names the directory. On an Intel Mac with Homebrew, `/usr/local/bin` and
+`/usr/local/etc` belong to the user who installed Homebrew: use a tree of
+its own there, `sudo PREFIX=/opt/boundgate deploy/macos/install.sh install
+my-node.yaml` (the LaunchDaemon then names `/opt/boundgate/bin` and
+`/opt/boundgate/etc/boundgate`; `uninstall` finds them through it).
 `KeepAlive` restarts a crashed daemon, which then clears the leftovers of
 its predecessor through the journal. Unsigned binaries: Gatekeeper does not
 apply to binaries built locally; a distributed build needs a Developer ID
