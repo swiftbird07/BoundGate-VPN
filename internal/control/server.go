@@ -284,7 +284,7 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 		}
 		root = adminGate(cfg.AdminAllow, cfg.NodeServerName, onDeny, root)
-		log.Info("admin UI restricted to", "admin_allow", cfg.AdminAllow, "open to all", "GET "+api.OIDCCallbackPath+" (user sign-in)")
+		log.Info("admin UI restricted to", "admin_allow", cfg.AdminAllow, "open to all", "GET "+api.OIDCCallbackPath+", POST "+api.OIDCConfirmPath+" (user sign-in)")
 	}
 	tcpSrv := &http.Server{
 		Addr:              cfg.Listen,

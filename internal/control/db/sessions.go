@@ -9,44 +9,96 @@ import (
 	"time"
 )
 
-// LoginFlow is one pending OIDC authorization for a node.
+// LoginFlow is one OIDC authorization for a node. It is pending until the
+// browser comes back from the identity provider, then confirm (the
+// identity is known, the person has not yet confirmed the device), then
+// done or failed.
 type LoginFlow struct {
-	ID           string
-	NodeID       string
-	State        string
-	Nonce        string
-	PKCEVerifier string
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-	Status       string // pending | done | failed
-	SessionID    string
-	Error        string
+	ID               string
+	NodeID           string
+	State            string
+	Nonce            string
+	PKCEVerifier     string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	Status           string // pending | confirm | done | failed
+	SessionID        string
+	Error            string
+	StartIP          string // where the node started the flow
+	CallbackIP       string // where the browser came back from the IdP
+	Identity         LoginIdentity
+	ConfirmExpiresAt time.Time
+}
+
+// LoginIdentity is what the identity provider said about the person, kept
+// on the flow between the callback and the confirmation.
+type LoginIdentity struct {
+	Subject  string   `json:"subject"`
+	Email    string   `json:"email,omitempty"`
+	Username string   `json:"username,omitempty"`
+	Groups   []string `json:"groups,omitempty"`
 }
 
 // LoginFlowTTL is how long a started login may take.
 const LoginFlowTTL = 10 * time.Minute
 
-// CreateLoginFlow starts a flow for a node.
-func (d *DB) CreateLoginFlow(ctx context.Context, nodeID, state, nonce, verifier string) (LoginFlow, error) {
-	f := LoginFlow{ID: NewID(), NodeID: nodeID, State: state, Nonce: nonce, PKCEVerifier: verifier,
+// LoginConfirmTTL is how long the confirmation page stays valid.
+const LoginConfirmTTL = 5 * time.Minute
+
+// CreateLoginFlow starts a flow for a node. A node has at most maxOpen
+// flows open (pending or awaiting confirmation): a new one fails the oldest
+// beyond that.
+func (d *DB) CreateLoginFlow(ctx context.Context, nodeID, state, nonce, verifier, startIP string, maxOpen int) (LoginFlow, error) {
+	f := LoginFlow{ID: NewID(), NodeID: nodeID, State: state, Nonce: nonce, PKCEVerifier: verifier, StartIP: startIP,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(LoginFlowTTL), Status: "pending"}
-	_, err := d.sql.ExecContext(ctx, `INSERT INTO login_flows (id, node_id, state, nonce, pkce_verifier, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
-		f.ID, f.NodeID, f.State, f.Nonce, f.PKCEVerifier, f.CreatedAt.Format(timeFormat), f.ExpiresAt.Format(timeFormat))
+	_, err := d.tx(ctx, false, func(tx *sql.Tx) error {
+		if maxOpen > 0 {
+			rows, err := tx.QueryContext(ctx, `SELECT id FROM login_flows WHERE node_id = ? AND status IN ('pending', 'confirm') AND expires_at > ? ORDER BY created_at DESC`, nodeID, now())
+			if err != nil {
+				return err
+			}
+			var open []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					rows.Close()
+					return err
+				}
+				open = append(open, id)
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			for i := maxOpen - 1; i < len(open); i++ {
+				if _, err := tx.ExecContext(ctx, `UPDATE login_flows SET status = 'failed', error = 'replaced by a newer login of this device', confirm_hash = NULL WHERE id = ?`, open[i]); err != nil {
+					return err
+				}
+			}
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO login_flows (id, node_id, state, nonce, pkce_verifier, created_at, expires_at, status, start_ip) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+			f.ID, f.NodeID, f.State, f.Nonce, f.PKCEVerifier, f.CreatedAt.Format(timeFormat), f.ExpiresAt.Format(timeFormat), f.StartIP)
+		return err
+	})
 	return f, err
 }
 
-const flowCols = `id, node_id, state, nonce, pkce_verifier, created_at, expires_at, status, session_id, error`
+const flowCols = `id, node_id, state, nonce, pkce_verifier, created_at, expires_at, status, session_id, error, start_ip, callback_ip, identity_json, confirm_expires_at`
 
 func scanFlow(sc scanner) (LoginFlow, error) {
 	var f LoginFlow
-	var created, expires string
+	var created, expires, identity, confirmExpires string
 	var session sql.NullString
-	if err := sc.Scan(&f.ID, &f.NodeID, &f.State, &f.Nonce, &f.PKCEVerifier, &created, &expires, &f.Status, &session, &f.Error); err != nil {
+	if err := sc.Scan(&f.ID, &f.NodeID, &f.State, &f.Nonce, &f.PKCEVerifier, &created, &expires, &f.Status, &session, &f.Error,
+		&f.StartIP, &f.CallbackIP, &identity, &confirmExpires); err != nil {
 		return f, err
 	}
 	f.CreatedAt = parseTime(sql.NullString{String: created, Valid: true})
 	f.ExpiresAt = parseTime(sql.NullString{String: expires, Valid: true})
+	f.ConfirmExpiresAt = parseTime(sql.NullString{String: confirmExpires, Valid: true})
 	f.SessionID = session.String
+	if identity != "" {
+		_ = json.Unmarshal([]byte(identity), &f.Identity)
+	}
 	return f, nil
 }
 
@@ -77,9 +129,60 @@ func (d *DB) LoginFlowByState(ctx context.Context, state string) (LoginFlow, err
 	return f, nil
 }
 
+// AwaitLoginConfirmation stores the verified identity on a pending flow and
+// returns the single-use token the confirmation page carries; only its hash
+// is kept. The node keeps seeing the flow as pending until
+// CompleteLoginFlow or FailLoginFlow.
+func (d *DB) AwaitLoginConfirmation(ctx context.Context, id string, ident LoginIdentity, callbackIP string) (string, time.Time, error) {
+	f, err := d.LoginFlowByID(ctx, id)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	token, hash := NewToken("bgconfirm")
+	expires := time.Now().UTC().Add(LoginConfirmTTL)
+	if f.ExpiresAt.Before(expires) {
+		expires = f.ExpiresAt
+	}
+	raw, _ := json.Marshal(ident)
+	res, err := d.sql.ExecContext(ctx, `UPDATE login_flows SET status = 'confirm', identity_json = ?, callback_ip = ?, confirm_hash = ?, confirm_expires_at = ? WHERE id = ? AND status = 'pending'`,
+		string(raw), callbackIP, hash, expires.Format(timeFormat), id)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if affected(res) != nil {
+		return "", time.Time{}, ErrConflict
+	}
+	return token, expires, nil
+}
+
+// LoginFlowForConfirmation returns the flow a confirmation page belongs to:
+// ErrNotFound for an unknown flow or a token that does not match,
+// ErrConflict when the flow no longer awaits confirmation (done, cancelled,
+// replaced), ErrTokenExpired when the page or the flow timed out.
+func (d *DB) LoginFlowForConfirmation(ctx context.Context, id, token string) (LoginFlow, error) {
+	f, err := d.LoginFlowByID(ctx, id)
+	if err != nil {
+		return f, err
+	}
+	var hash []byte
+	if err := d.sql.QueryRowContext(ctx, `SELECT confirm_hash FROM login_flows WHERE id = ?`, id).Scan(&hash); err != nil {
+		return f, err
+	}
+	if f.Status != "confirm" {
+		return f, ErrConflict
+	}
+	if len(hash) == 0 || !hashEqual(hash, HashToken(token)) {
+		return f, ErrNotFound
+	}
+	if !time.Now().Before(f.ConfirmExpiresAt) || !time.Now().Before(f.ExpiresAt) {
+		return f, ErrTokenExpired
+	}
+	return f, nil
+}
+
 // FailLoginFlow records why a flow failed.
 func (d *DB) FailLoginFlow(ctx context.Context, id, reason string) {
-	_, _ = d.sql.ExecContext(ctx, `UPDATE login_flows SET status = 'failed', error = ? WHERE id = ? AND status = 'pending'`, reason, id)
+	_, _ = d.sql.ExecContext(ctx, `UPDATE login_flows SET status = 'failed', error = ?, confirm_hash = NULL WHERE id = ? AND status IN ('pending', 'confirm')`, reason, id)
 }
 
 // Session is an active user session bound to a node.
@@ -114,16 +217,17 @@ func scanSession(sc scanner) (Session, error) {
 	return s, nil
 }
 
-// CompleteLoginFlow turns a pending flow into a session: any previous
+// CompleteLoginFlow turns a confirmed flow into a session: any previous
 // active session of the node ends ("replaced"), the new one is stored, the
-// flow is marked done and the snapshot bumped.
+// flow is marked done and the snapshot bumped. Only a flow awaiting
+// confirmation (AwaitLoginConfirmation) can complete.
 func (d *DB) CompleteLoginFlow(ctx context.Context, flowID string, s Session) (Session, uint64, error) {
 	s.ID = NewID()
 	if s.IssuedAt.IsZero() {
 		s.IssuedAt = time.Now().UTC()
 	}
 	version, err := d.tx(ctx, true, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE login_flows SET status = 'done', session_id = ? WHERE id = ? AND status = 'pending'`, s.ID, flowID)
+		res, err := tx.ExecContext(ctx, `UPDATE login_flows SET status = 'done', session_id = ?, confirm_hash = NULL WHERE id = ? AND status = 'confirm'`, s.ID, flowID)
 		if err != nil {
 			return err
 		}

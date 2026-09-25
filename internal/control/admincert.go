@@ -91,11 +91,12 @@ func adminAllowed(allow []netip.Prefix, addr net.Addr, protos []string) bool {
 }
 
 // adminGate enforces admin_allow per request on every server name but the
-// node name. From an address outside the list exactly one request passes:
+// node name. From an address outside the list exactly two requests pass:
 // GET of the OIDC callback, because users sign in to their nodes from
-// anywhere and the identity provider sends their browser back there. It is
-// marked (api.WithAdminDenied), so the callback still refuses an admin
-// login from outside the list. Everything else gets 403.
+// anywhere and the identity provider sends their browser back there, and
+// POST of the confirmation that page asks for. They are marked
+// (api.WithAdminDenied), so the callback still refuses an admin login from
+// outside the list. Everything else gets 403.
 //
 // The check is no longer made at the TLS handshake: a handshake does not know
 // the path, and refusing it there cut off every user's sign-in from outside
@@ -114,7 +115,7 @@ func adminGate(allow []netip.Prefix, nodeServerName string, onDeny func(net.Addr
 			inner.ServeHTTP(w, r)
 			return
 		}
-		if r.Method == http.MethodGet && r.URL.Path == api.OIDCCallbackPath {
+		if r.Method == http.MethodGet && r.URL.Path == api.OIDCCallbackPath || r.Method == http.MethodPost && r.URL.Path == api.OIDCConfirmPath {
 			inner.ServeHTTP(w, api.WithAdminDenied(r))
 			return
 		}

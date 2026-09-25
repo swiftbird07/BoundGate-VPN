@@ -309,7 +309,7 @@ type SignSigners struct {
 
 func (h *Handlers) signerChangeToken(w http.ResponseWriter, r *http.Request) (db.SignerChange, string, bool) {
 	ip := remoteIP(r)
-	if !h.signLimit.allow(ip) {
+	if !h.signLimit.allowClient(ip) {
 		writeError(w, http.StatusTooManyRequests, "too many requests")
 		return db.SignerChange{}, "", false
 	}

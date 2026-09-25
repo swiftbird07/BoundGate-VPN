@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -565,8 +567,42 @@ func (e *env) withIdP(t *testing.T, lifetime time.Duration) *oidctest.Provider {
 	return fake
 }
 
-// browser follows the IdP redirect and calls the control plane's callback.
+// browser follows the IdP redirect, calls the control plane's callback and
+// confirms the device on the page it shows (any other page is returned).
 func (e *env) browser(t *testing.T, authURL string) (int, string) {
+	t.Helper()
+	code, page := e.browserUntilConfirm(t, authURL)
+	if code != http.StatusOK || !strings.Contains(page, `name="token"`) {
+		return code, page
+	}
+	return e.confirmLogin(t, page, "confirm")
+}
+
+var confirmFormRe = regexp.MustCompile(`name="flow" value="([^"]+)"><input type="hidden" name="token" value="([^"]+)"`)
+
+// confirmLogin presses a button (confirm, cancel) on a confirmation page.
+func (e *env) confirmLogin(t *testing.T, page, action string) (int, string) {
+	t.Helper()
+	m := confirmFormRe.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("no confirmation form in %s", page)
+	}
+	return e.postConfirm(t, m[1], m[2], action)
+}
+
+func (e *env) postConfirm(t *testing.T, flow, token, action string) (int, string) {
+	t.Helper()
+	rsp, err := http.PostForm(e.admin.URL+api.OIDCConfirmPath, url.Values{"flow": {flow}, "token": {token}, "action": {action}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rsp.Body.Close()
+	b, _ := io.ReadAll(rsp.Body)
+	return rsp.StatusCode, string(b)
+}
+
+// browserUntilConfirm is browser without pressing the button.
+func (e *env) browserUntilConfirm(t *testing.T, authURL string) (int, string) {
 	t.Helper()
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	rsp, err := c.Get(authURL)

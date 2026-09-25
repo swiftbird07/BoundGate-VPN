@@ -17,10 +17,19 @@ import (
 // User login (M2). The node starts a flow over mTLS and shows the user a
 // URL; the user's browser authenticates at the IdP and lands on the
 // control plane's callback (admin name, WebPKI); the control plane redeems
-// the code, verifies the ID token and stores a session bound to the node
-// that started the flow. The node learns the result by polling the flow
-// and, like every other node, from the snapshot. No token ever reaches a
-// node.
+// the code and verifies the ID token. Nothing ties that browser to the
+// device that started the flow, so the callback does not complete it: it
+// shows which device is about to be signed in and asks (R120). Only the
+// button on that page stores the session, bound to the node that started
+// the flow. The node learns the result by polling the flow and, like every
+// other node, from the snapshot. No token ever reaches a node.
+
+// Bounds per node: open flows (a new one fails the oldest) and status
+// long-polls waiting at the same time.
+const (
+	maxOpenLoginFlows = 3
+	maxLoginPolls     = 2
+)
 
 // LoginStart is what a node gets back for a new flow.
 type LoginStart struct {
@@ -90,7 +99,7 @@ func (h *Handlers) nodeLoginStart(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, h.d.Logs.System)
 		return
 	}
-	flow, err := h.d.DB.CreateLoginFlow(r.Context(), n.ID, f.State, f.Nonce, f.Verifier)
+	flow, err := h.d.DB.CreateLoginFlow(r.Context(), n.ID, f.State, f.Nonce, f.Verifier, remoteIP(r), maxOpenLoginFlows)
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
 		return
@@ -100,12 +109,18 @@ func (h *Handlers) nodeLoginStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, LoginStart{FlowID: flow.ID, URL: p.AuthURL(f), ExpiresAt: flow.ExpiresAt})
 }
 
-// nodeLoginStatus long-polls a flow the node started: ?wait=30s.
+// nodeLoginStatus long-polls a flow the node started: ?wait=30s. A flow
+// awaiting the person's confirmation in the browser is still pending here.
 func (h *Handlers) nodeLoginStatus(w http.ResponseWriter, r *http.Request) {
 	peer, ok := h.approvedPeer(w, r)
 	if !ok {
 		return
 	}
+	if !h.enterLoginPoll(string(peer.DeviceID())) {
+		writeError(w, http.StatusTooManyRequests, "too many login status requests waiting for this node")
+		return
+	}
+	defer h.leaveLoginPoll(string(peer.DeviceID()))
 	wait := 0 * time.Second
 	if v := r.URL.Query().Get("wait"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 && d <= 120*time.Second {
@@ -148,6 +163,26 @@ func (h *Handlers) nodeLoginStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// enterLoginPoll counts a waiting status request of a node; false when the
+// node has maxLoginPolls waiting already.
+func (h *Handlers) enterLoginPoll(node string) bool {
+	h.pollMu.Lock()
+	defer h.pollMu.Unlock()
+	if h.loginPolls[node] >= maxLoginPolls {
+		return false
+	}
+	h.loginPolls[node]++
+	return true
+}
+
+func (h *Handlers) leaveLoginPoll(node string) {
+	h.pollMu.Lock()
+	defer h.pollMu.Unlock()
+	if h.loginPolls[node]--; h.loginPolls[node] <= 0 {
+		delete(h.loginPolls, node)
+	}
+}
+
 func (h *Handlers) nodeLogout(w http.ResponseWriter, r *http.Request) {
 	peer, ok := h.approvedPeer(w, r)
 	if !ok {
@@ -174,12 +209,13 @@ func (h *Handlers) nodeLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// oidcCallback is where the IdP sends the browser. No admin auth: the
-// state binds the request to a flow a node started (user login) or a
-// browser started (admin login).
 // OIDCCallbackPath is where the identity provider sends browsers back, for
 // user and admin logins alike.
 const OIDCCallbackPath = "/api/v1/oidc/callback"
+
+// OIDCConfirmPath receives the button of the page that asks a person to
+// confirm the device a user login signs in (POST, a form).
+const OIDCConfirmPath = "/api/v1/oidc/confirm"
 
 type adminDeniedKey struct{}
 
@@ -191,6 +227,9 @@ func WithAdminDenied(r *http.Request) *http.Request {
 
 func adminDenied(r *http.Request) bool { v, _ := r.Context().Value(adminDeniedKey{}).(bool); return v }
 
+// oidcCallback is where the IdP sends the browser. No admin auth: the
+// state binds the request to a flow a node started (user login) or a
+// browser started (admin login).
 func (h *Handlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state := q.Get("state")
@@ -252,16 +291,141 @@ func (h *Handlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		failFlow("node is "+n.Status, http.StatusForbidden, "Node not approved", "The node that started this login is no longer approved.")
 		return
 	}
+	// The browser proved who the person is, not that the device is theirs:
+	// whoever controls a node can send anybody its login link. Ask first.
+	ident := db.LoginIdentity{Subject: id.Subject, Email: id.Email, Username: id.Username, Groups: id.Groups}
+	src := remoteIP(r)
+	token, expires, err := h.d.DB.AwaitLoginConfirmation(r.Context(), flow.ID, ident, src)
+	if err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			loginPage(w, http.StatusConflict, "Already used", "This login was already completed.")
+			return
+		}
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	differs := !sameClientNetwork(flow.StartIP, src)
+	h.audit(r.Context(), h.d.Logs.UserAuth, logging.StreamUserAuth, "idp", "login awaiting confirmation", n.ID,
+		map[string]any{"name": n.Name, "flow": flow.ID, "subject": id.Subject, "username": id.Username, "src": src, "started_from": flow.StartIP, "address_differs": differs})
+	flow.Identity, flow.CallbackIP, flow.ConfirmExpiresAt = ident, src, expires
+	confirmPage(w, n, flow, token, differs)
+}
+
+// confirmPage asks the person whether the device that started the login
+// is theirs. The form carries the flow's single-use confirmation token,
+// which a cross-site page cannot know.
+func confirmPage(w http.ResponseWriter, n db.Node, flow db.LoginFlow, token string, addressDiffers bool) {
+	who := flow.Identity.Username
+	if who == "" {
+		who = flow.Identity.Subject
+	}
+	if flow.Identity.Email != "" && flow.Identity.Email != who {
+		who += " (" + flow.Identity.Email + ")"
+	}
+	since := n.ApprovedAt
+	if since.IsZero() {
+		since = n.RequestedAt
+	}
+	fp := n.SPKI.Fingerprint()
+	if len(fp) > 19 {
+		fp = fp[:19] + " …"
+	}
+	row := func(k, v string) string {
+		if v == "" {
+			v = "–"
+		}
+		return "<dt>" + k + "</dt><dd>" + html.EscapeString(v) + "</dd>"
+	}
+	var b strings.Builder
+	b.WriteString(`You signed in as <b>` + html.EscapeString(who) + `</b>. Continuing signs this device in with your account:</p>`)
+	b.WriteString(`<dl>` + row("Device", n.Name) + row("Hostname", n.Hostname) + row("Platform", n.Platform) +
+		row("Approved", since.Local().Format("2006-01-02 15:04")) + `<dt>Key</dt><dd><code>` + html.EscapeString(fp) + `</code></dd></dl>`)
+	if addressDiffers {
+		b.WriteString(`<div class="warn strong"><b>This sign-in was started from another network.</b> The device asked from ` +
+			html.EscapeString(flow.StartIP) + `, your browser comes from ` + html.EscapeString(flow.CallbackIP) +
+			`. That can be harmless (mobile data, IPv6, a VPN), but if you did not just start this sign-in on this device yourself, someone is trying to get your access: press Cancel.</div>`)
+	}
+	b.WriteString(`<div class="warn">Only continue if you started this sign-in on this device yourself. Whoever holds this device gets your access.</div>`)
+	b.WriteString(`<form method="post" action="` + OIDCConfirmPath + `"><input type="hidden" name="flow" value="` + html.EscapeString(flow.ID) +
+		`"><input type="hidden" name="token" value="` + html.EscapeString(token) + `"><button class="primary" name="action" value="confirm">Sign in this device</button>` +
+		`<button name="action" value="cancel">Cancel</button></form><p class="small">This page is valid until ` + flow.ConfirmExpiresAt.Local().Format("15:04") + `.`)
+	page(w, http.StatusOK, "ask", "Sign in this device?", b.String())
+}
+
+// oidcConfirm is the button on the confirmation page: it completes the
+// login or cancels it.
+func (h *Handlers) oidcConfirm(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := r.ParseForm(); err != nil {
+		loginPage(w, http.StatusBadRequest, "Bad request", "This request could not be read.")
+		return
+	}
+	action := r.PostForm.Get("action")
+	flow, err := h.d.DB.LoginFlowForConfirmation(r.Context(), r.PostForm.Get("flow"), r.PostForm.Get("token"))
+	switch {
+	case errors.Is(err, db.ErrNotFound):
+		h.d.Logs.UserAuth.Warn("login confirmation with an unknown flow or token", "src", remoteIP(r))
+		loginPage(w, http.StatusBadRequest, "Unknown login", "This confirmation is not known. Start again with <code>boundgatectl login</code>.")
+		return
+	case errors.Is(err, db.ErrConflict):
+		loginPage(w, http.StatusConflict, "Already decided", "This sign-in was already completed, cancelled or replaced by a newer one.")
+		return
+	case errors.Is(err, db.ErrTokenExpired):
+		h.d.DB.FailLoginFlow(r.Context(), flow.ID, "not confirmed in time")
+		loginPage(w, http.StatusGone, "Login expired", "This confirmation took too long. Start again with <code>boundgatectl login</code>.")
+		return
+	case err != nil:
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	n, err := h.d.DB.NodeByID(r.Context(), flow.NodeID)
+	if err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	}
+	attrs := map[string]any{"name": n.Name, "flow": flow.ID, "subject": flow.Identity.Subject, "username": flow.Identity.Username,
+		"src": remoteIP(r), "started_from": flow.StartIP, "address_differs": !sameClientNetwork(flow.StartIP, flow.CallbackIP)}
+	switch action {
+	case "cancel":
+		h.d.DB.FailLoginFlow(r.Context(), flow.ID, "cancelled in the browser")
+		h.audit(r.Context(), h.d.Logs.UserAuth, logging.StreamUserAuth, flow.Identity.Subject, "login cancelled", n.ID, attrs)
+		page(w, http.StatusOK, "bad", "Sign-in cancelled", "Nothing was signed in. You can close this tab.")
+		return
+	case "confirm":
+	default:
+		loginPage(w, http.StatusBadRequest, "Bad request", "Choose to sign in the device or to cancel.")
+		return
+	}
+	if n.Status != db.StatusApproved {
+		h.d.DB.FailLoginFlow(r.Context(), flow.ID, "node is "+n.Status)
+		h.audit(r.Context(), h.d.Logs.UserAuth, logging.StreamUserAuth, flow.Identity.Subject, "login failed", n.ID, map[string]any{"name": n.Name, "flow": flow.ID, "reason": "node is " + n.Status, "src": remoteIP(r)})
+		loginPage(w, http.StatusForbidden, "Node not approved", "The node that started this login is no longer approved.")
+		return
+	}
+	p, err := h.d.OIDC.Get(r.Context())
+	if err != nil {
+		loginPage(w, http.StatusBadGateway, "Identity provider unavailable", html.EscapeString(err.Error()))
+		return
+	}
+	id := flow.Identity
 	sess, version, err := h.d.DB.CompleteLoginFlow(r.Context(), flow.ID, db.Session{
 		NodeID: n.ID, Subject: id.Subject, Email: id.Email, Username: id.Username, Groups: id.Groups,
 		LoginIP: remoteIP(r), ExpiresAt: time.Now().Add(p.SessionLifetime()),
 	})
 	if err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			loginPage(w, http.StatusConflict, "Already decided", "This sign-in was already completed, cancelled or replaced by a newer one.")
+			return
+		}
 		fail(w, err, h.d.Logs.System)
 		return
 	}
 	h.d.Snap.Notify(version)
-	h.auditSession(r, h.d.Logs.UserAuth, "idp", "login completed", sess, map[string]any{"name": n.Name, "flow": flow.ID, "snapshot_version": version})
+	delete(attrs, "subject")
+	delete(attrs, "username")
+	delete(attrs, "src")
+	attrs["snapshot_version"] = version
+	h.auditSession(r, h.d.Logs.UserAuth, id.Subject, "login completed", sess, attrs)
 	who := id.Username
 	if who == "" {
 		who = id.Subject
@@ -292,18 +456,32 @@ main{width:min(440px,100%);background:var(--card);border:1px solid var(--line);b
 svg{display:block;margin:0 auto 14px}.brand{font:750 13px/1 ui-rounded,"SF Pro Rounded",system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
 h1{font:750 24px/1.2 ui-rounded,"SF Pro Rounded",system-ui,sans-serif;letter-spacing:-.02em;margin:10px 0 10px}h1.ok::before,h1.bad::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:10px;vertical-align:middle;position:relative;top:-2px}
 h1.ok::before{background:#5fd38d}h1.bad::before{background:#ff6b6b}p{margin:0;color:var(--dim)}b{color:var(--text)}
-a{color:var(--link);font-weight:600;text-decoration:underline;text-decoration-color:#ffcc00;text-decoration-thickness:2px;text-underline-offset:3px}code{font:13px ui-monospace,"SF Mono",Menlo,monospace;background:var(--code);padding:1px 6px;border-radius:6px;color:var(--text)}`
+a{color:var(--link);font-weight:600;text-decoration:underline;text-decoration-color:#ffcc00;text-decoration-thickness:2px;text-underline-offset:3px}code{font:13px ui-monospace,"SF Mono",Menlo,monospace;background:var(--code);padding:1px 6px;border-radius:6px;color:var(--text)}
+h1.ask::before{background:#ffcc00}dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:16px 0;text-align:left}dt{color:var(--dim)}dd{margin:0;color:var(--text);overflow-wrap:anywhere}
+.warn{margin:12px 0;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--code);color:var(--text);text-align:left}.warn.strong{border-color:#ff6b6b}
+form{display:flex;gap:10px;justify-content:center;margin:18px 0 10px}button{font:650 15px/1 system-ui,sans-serif;padding:11px 18px;border-radius:12px;border:1px solid var(--line);background:var(--code);color:var(--text);cursor:pointer}
+button.primary{background:#ffcc00;border-color:#ffcc00;color:#2a2a2a}.small{font-size:13px}`
 
 // loginPage renders title and body (trusted HTML, callers escape) in the
-// BoundGate look.
+// BoundGate look; the status decides the tone.
 func loginPage(w http.ResponseWriter, status int, title, body string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
 	tone := "bad"
 	if status < 300 {
 		tone = "ok"
 	}
+	page(w, status, tone, title, body)
+}
+
+// page renders a login page with a tone (ok, bad, ask). It runs no script,
+// loads nothing but the icon, posts forms only to itself and cannot be
+// framed (the confirmation button must not be clickjacked).
+func page(w http.ResponseWriter, status int, tone, title, body string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark light">
 <title>BoundGate: ` + html.EscapeString(title) + `</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><style>` + loginPageCSS + `</style>
 <main><svg width="64" height="64" viewBox="0 0 1024 1024" role="img" aria-label="BoundGate"><rect width="1024" height="1024" rx="232" fill="var(--tile)"/><g fill="none" stroke="var(--mark)" stroke-width="57" stroke-linecap="round" stroke-linejoin="round"><rect x="148" y="268" width="462" height="300" rx="76"/><rect x="414" y="456" width="462" height="300" rx="76"/></g></svg>

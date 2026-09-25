@@ -93,7 +93,7 @@ func (h *Handlers) nodeEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "no admin signing key registered yet; ask the administrator")
 		return
 	}
-	if !h.limit.allow(ip) {
+	if !h.limit.allowClient(ip) {
 		h.d.Logs.Enrollment.Warn("enrollment rate limited", "src", ip)
 		writeError(w, http.StatusTooManyRequests, "too many enrollment requests")
 		return

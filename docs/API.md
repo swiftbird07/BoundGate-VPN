@@ -121,7 +121,8 @@ first active passkey is 401 with an explanatory message.
 
 | Method | Path | Result |
 |---|---|---|
-| GET | `/api/v1/oidc/callback?code&state` | HTML page (user login) or 302 with the admin cookie (admin login); completes the flow the `state` belongs to |
+| GET | `/api/v1/oidc/callback?code&state` | admin login: 302 with the admin cookie, completing the flow the `state` belongs to. User login: an HTML page asking the person to confirm the device (name, hostname, platform, approved since, key fingerprint; a stronger warning when the browser's address is not the node's); the flow waits (OIDC.md) |
+| POST | `/api/v1/oidc/confirm` | form `{flow, token, action (confirm\|cancel)}` from that page; `token` is single use, 5 minutes. `confirm` stores the session, `cancel` fails the flow; HTML page; 400 unknown flow or token, 409 already decided, 410 expired |
 | GET | anything not under `/api/` | the admin SPA (`index.html` for paths without an extension) |
 
 ## Sign (one-time token)
@@ -145,8 +146,8 @@ source IP.
 | GET | `/api/v1/node/enroll/status` | any device cert | 200 `EnrollStatus` or 404 `{status:"unknown"}` |
 | GET | `/api/v1/node/snapshot` | approved (signed) only, 403 otherwise | `?since=N&wait=30s`: 200 `registry.Snapshot` when version > N, else 304 after `wait` |
 | POST | `/api/v1/node/heartbeat` | approved only | `{version, active_tunnels}` → 204 |
-| POST | `/api/v1/node/login/start` | approved only | `{flow_id, url, expires_at}`; 503 without an IdP, 502 if the IdP is unreachable |
-| GET | `/api/v1/node/login/{flow}` | the node that started it | `?wait=30s`: `{status: pending\|done\|failed, session?, error?}` |
+| POST | `/api/v1/node/login/start` | approved only | `{flow_id, url, expires_at}`; 503 without an IdP, 502 if the IdP is unreachable. At most three open flows per node: a fourth fails the oldest |
+| GET | `/api/v1/node/login/{flow}` | the node that started it | `?wait=30s`: `{status: pending\|done\|failed, session?, error?}`; `pending` until the person confirmed the device in the browser; 429 when two requests of the node are already waiting |
 | POST | `/api/v1/node/logout` | approved only | 204 |
 | POST | `/api/v1/node/logs` | approved only | `{events: [{ts, stream: flow\|tunnel, message, attrs}]}` (≤ 2000 events, ≤ 4 MB) → `{accepted, rejected}`; tunnel events (`reset`, `open`, `update`, `close`) only from hubs; the reporter's id overrides `attrs.node_id` |
 

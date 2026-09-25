@@ -17,8 +17,9 @@ import (
 )
 
 // admin_allow: from an address outside the list the admin name answers 403
-// to everything but GET of the sign-in callback, which passes marked as
-// "admin denied"; the node name is untouched; on the list, everything passes.
+// to everything but GET of the sign-in callback and POST of its
+// confirmation, which pass marked as "admin denied"; the node name is
+// untouched; on the list, everything passes.
 func TestAdminAllowlist(t *testing.T) {
 	var sawDenied bool
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,10 +50,17 @@ func TestAdminAllowlist(t *testing.T) {
 	if c := do(gate, "GET", api.OIDCCallbackPath+"?state=x&code=y", "bg.example.com"); c != http.StatusNoContent || !sawDenied {
 		t.Fatalf("user sign-in callback from outside: %d, marked %v", c, sawDenied)
 	}
+	// the page the callback shows asks the person to confirm the device
+	if c := do(gate, "POST", api.OIDCConfirmPath, "bg.example.com"); c != http.StatusNoContent || !sawDenied {
+		t.Fatalf("user sign-in confirmation from outside: %d, marked %v", c, sawDenied)
+	}
+	if c := do(gate, "GET", api.OIDCConfirmPath, "bg.example.com"); c != http.StatusForbidden {
+		t.Fatalf("GET of the confirmation from outside: %d", c)
+	}
 	if c := do(gate, "GET", "/api/v1/node/snapshot", "nodes.bg.example.com"); c != http.StatusNoContent || sawDenied {
 		t.Fatalf("node name: %d", c)
 	}
-	if denied != 3 {
+	if denied != 4 {
 		t.Fatalf("denials logged: %d", denied)
 	}
 	inside := adminGate([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}, "nodes.bg.example.com", nil, inner)

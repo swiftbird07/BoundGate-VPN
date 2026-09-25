@@ -62,7 +62,7 @@ func (h *Handlers) signMux() http.Handler {
 // response on failure.
 func (h *Handlers) signToken(w http.ResponseWriter, r *http.Request) (db.SignToken, string, bool) {
 	ip := remoteIP(r)
-	if !h.signLimit.allow(ip) {
+	if !h.signLimit.allowClient(ip) {
 		writeError(w, http.StatusTooManyRequests, "too many requests")
 		return db.SignToken{}, "", false
 	}

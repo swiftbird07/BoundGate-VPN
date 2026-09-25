@@ -17,11 +17,48 @@ user's browser ──▶ IdP (Authentik): authenticate, consent
 IdP ──302──▶ https://control.example/api/v1/oidc/callback?code&state   (admin name, WebPKI)
   control plane: state → flow → node; code + PKCE verifier → tokens;
   ID token verified (signature, issuer, audience, expiry, nonce);
+  identity kept on the flow (status confirm), nothing signed in yet
+browser ◀── "Sign in this device?": device name, hostname, platform,
+            approved since, key fingerprint, the warning, two buttons
+user presses "Sign in this device" ──POST /api/v1/oidc/confirm (single-use token)──▶
   user_session {node, subject, email, username, groups, expires_at};
   snapshot++
-node polls GET /node/login/{flow} ──▶ "done" + session (no token)
+node polls GET /node/login/{flow} ──▶ "pending" until the button, then "done" + session (no token)
 every node's snapshot carries the session; hubs admit node-a
 ```
+
+### Why the browser has to confirm the device
+
+Nothing ties the browser that signs in at the IdP to the device that
+started the login: the login URL is just a link. Whoever controls an
+approved node could start a login, send the link to a colleague ("please
+sign in here"), and, since an IdP with a running session usually signs a
+person in without a prompt, receive that colleague's identity and groups on
+their own device. So the callback only asks. The page names the device
+that is about to be signed in (name, hostname, platform, when it was
+approved, the start of its key fingerprint, the same one `boundgatectl
+status` and the apps show) and says plainly: *Only continue if you started
+this sign-in on this device yourself. Whoever holds this device gets your
+access.* The login counts only when the person presses **Sign in this
+device**; **Cancel** fails the flow, and the node reports the login as
+failed.
+
+The control plane also compares the address the node started the flow
+from with the address the browser comes back from (the same /64 counts as
+the same for IPv6). When they differ the page adds a stronger warning with
+both addresses. It does not refuse: a phone on mobile data, IPv6 next to
+IPv4 or a VPN on the laptop all give legitimate differences.
+
+The button posts a single-use token bound to the flow (only its hash is
+stored), valid for five minutes and at most until the flow expires; a
+page on another site cannot know it, and the page cannot be framed. Both
+the question (`login awaiting confirmation`, with the two addresses) and
+the answer (`login completed` or `login cancelled`) are in the user-auth
+log. What remains is a person who confirms despite the warning: the page
+can make the question impossible to miss, not answer it for them (R120).
+
+A node keeps at most three login flows open (a fourth fails the oldest)
+and at most two status requests waiting at once (429 beyond that).
 
 * The node never sees a token. The session is a row in the control plane
   and a record in snapshots. Revoking it (admin, logout, expiry) bumps the
@@ -34,10 +71,12 @@ every node's snapshot carries the session; hubs admit node-a
   default 24 h); no refresh tokens, no silent renewal. Log in again.
 * The login URL host gets a bypass route while the overlay is up, so a
   full-tunnel profile does not swallow the login.
-* The callback page is served on the admin name without admin
-  authentication: the `state` binds it to a flow a node started, the code
-  is single use, PKCE binds it to the control plane, the nonce binds the
-  ID token to the flow. Flows expire after 10 minutes.
+* The callback page and its confirmation are served on the admin name
+  without admin authentication (and from outside `admin_allow`): the
+  `state` binds the callback to a flow a node started, the code is single
+  use, PKCE binds it to the control plane, the nonce binds the ID token to
+  the flow, and the confirmation token binds the button to the page the
+  callback showed. Flows expire after 10 minutes.
 
 `boundgatectl status` shows the user (`user: martin [vpn-users] until …`)
 or `LOGIN REQUIRED` when a hub refused the node.
