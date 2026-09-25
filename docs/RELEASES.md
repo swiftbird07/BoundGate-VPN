@@ -214,7 +214,13 @@ same from a terminal. A development build ("dev") looks but never installs.
 With the kits of `deploy/prod` it pulls the image by the signed digest, writes
 `BOUNDGATE_IMAGE=…@sha256:…` and `BOUNDGATE_RELEASE` to `.env`,
 `docker compose up -d`, and returns to the previous image if the containers do
-not stay up. `MODE=binaries` replaces installed binaries from the tarball
+not stay up. A host where nothing is recorded yet (a fresh install) starts
+no older than `KIT_FLOOR` in `update.sh`, or `BOUNDGATE_MIN_RELEASE` in
+`update.env` if that is later (`setup.sh` writes the release it set up
+from): an old signed release offered as the latest is refused there too.
+`release.sh` refuses to tag while `KIT_FLOOR` is older than the last
+release, so before the next release after `vX` the line says `vX` (one
+commit). `MODE=binaries` replaces installed binaries from the tarball
 (checked against the manifest) and runs `RESTART_CMD`. `update.sh check` only
 reports. `-q` is silent unless something was updated or failed, so cron mails
 exactly those. Tested by `make update-test`.

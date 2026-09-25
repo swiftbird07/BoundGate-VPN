@@ -22,6 +22,7 @@ cp internal/update/release_keys deploy/prod/release_keys
 printf 'private/\ndist/\n' > .gitignore
 GO_WANT=$(sed -n 's/^toolchain //p' "$SRC/go.mod"); [ -n "$GO_WANT" ] || fail "go.mod has no toolchain line"
 printf 'module example.test/r\n\ngo 1.26.0\n\ntoolchain %s\n' "$GO_WANT" > go.mod
+printf '#!/bin/sh\nKIT_FLOOR=v0.1.10\n' > deploy/prod/update.sh   # the last release before v0.1.11, as it would be
 git add -A; git commit -qm init
 git remote add origin "$T/origin.git"; git push -q -u origin main
 
@@ -171,6 +172,9 @@ done
 # ---- 5. refusals before anything happens ----
 if $R v0.1.5 > "$T/out" 2>&1; then fail "went back to v0.1.5"; fi
 grep -q "not newer" "$T/out" || fail "v0.1.5: $(cat "$T/out")"
+# v0.1.11 is out, and update.sh still lets a fresh install start at v0.1.10
+if NO_MAC=1 $R v0.1.12 > "$T/out" 2>&1; then fail "released while KIT_FLOOR is behind the last release"; fi
+grep -q "KIT_FLOOR in deploy/prod/update.sh is v0.1.10, older than the last release v0.1.11" "$T/out" && ! git rev-parse -q --verify refs/tags/v0.1.12 >/dev/null || fail "KIT_FLOOR: $(cat "$T/out")"
 echo x > stray; git add stray
 if $R > "$T/out" 2>&1; then fail "released with uncommitted changes"; fi
 git reset -q; rm stray

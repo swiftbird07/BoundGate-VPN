@@ -242,7 +242,9 @@ image `BOUNDGATE_IMAGE` names, and without it refuses to start. `update.sh
 pin` writes `BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate@sha256:…` and
 `BOUNDGATE_RELEASE` after checking the release's signed manifest (needs
 `curl`, `jq`, `ssh-keygen`); `./update.sh` later moves both to the next
-signed release. By hand, without `update.sh`: take the digest from the
+signed release. On a fresh install it takes nothing older than the release
+the script came with (`KIT_FLOOR`); `echo BOUNDGATE_MIN_RELEASE=v0.1.12 >>
+update.env` raises that to the release you copied the kit from. By hand, without `update.sh`: take the digest from the
 release's `manifest.json` (`.image`), check the signature as RELEASES.md
 shows, and write it yourself. CI also pushes the image of every commit on
 `main` to `gitlab.net407.com/sbh/boundgate` (`:latest`, `:sha-<commit>`);

@@ -130,6 +130,10 @@ if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
 else
   top=$(highest)
   [ -z "$top" ] || newer "$V" "$top" || die "$V is not newer than $top: nodes refuse to go back"
+  # a fresh install with this kit starts no older than KIT_FLOOR: keep it at the last release
+  floor=$(sed -n 's/^KIT_FLOOR=\(v[0-9][0-9.]*\)$/\1/p' deploy/prod/update.sh)
+  [ -n "$floor" ] || die "deploy/prod/update.sh has no KIT_FLOOR"
+  [ -z "$top" ] || ! newer "$top" "$floor" || die "KIT_FLOOR in deploy/prod/update.sh is $floor, older than the last release $top: set it to $top, commit, push, and run this again"
   [ "$(git rev-parse origin/main)" = "$HEAD" ] || die "HEAD is not origin/main: push first, releases are built from what is on the server"
   git tag -a "$V" -m "BoundGate $V"
   say "tagged $V at $(git rev-parse --short HEAD)"

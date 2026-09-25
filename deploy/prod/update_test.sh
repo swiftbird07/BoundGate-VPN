@@ -119,4 +119,28 @@ echo v9.9.9 > "$T/www/tag"; settle /tag/v9.9.9 # the files of v1.4.0 offered as 
 if gh env >/dev/null 2>&1; then fail "github: an old manifest under a new tag was installed"; fi
 echo nightly > "$T/www/tag"; settle /tag/nightly; out=$(gh env 2>&1) && fail "tag nightly"; echo "$out" | grep -q 'not a version' || fail "nightly: $out"
 
+echo "== 7. a fresh install starts no older than the kit: KIT_FLOOR, BOUNDGATE_MIN_RELEASE"
+FLOOR=$(sed -n 's/^KIT_FLOOR=//p' deploy/prod/update.sh); [ -n "$FLOOR" ] || fail "update.sh has no KIT_FLOOR"
+fresh() { rm -rf "$T/kit3"; mkdir "$T/kit3"; cp "$T/kit/docker-compose.yml" "$T/kit3/"; : > "$T/log"
+  (cd "$T/kit3" && LOG="$T/log" STATE="$T/state" DOCKER="$T/docker" SETTLE=0 RELEASE_KEYS="$T/release_keys" \
+    BOUNDGATE_UPDATE_URL=http://127.0.0.1:$PORT BOUNDGATE_UPDATE_REPO=o/r "$@" "$REPO_DIR/deploy/prod/update.sh" pin); }
+publish v0.0.9 "$T/key"   # signed, but older than every kit knows
+if out=$(fresh env 2>&1); then fail "a fresh install took $out"; fi
+echo "$out" | grep -q "older than $FLOOR" && [ ! -e "$T/kit3/.env" ] && [ ! -s "$T/log" ] || fail "below KIT_FLOOR: $out $(cat "$T/log")"
+publish v1.5.0 "$T/key"
+if out=$(fresh env BOUNDGATE_MIN_RELEASE=v1.6.0 2>&1); then fail "BOUNDGATE_MIN_RELEASE v1.6.0 took v1.5.0"; fi
+echo "$out" | grep -q 'older than v1.6.0' || fail "BOUNDGATE_MIN_RELEASE: $out"
+# the floor itself is fine, and a lower BOUNDGATE_MIN_RELEASE never lowers KIT_FLOOR
+fresh env BOUNDGATE_MIN_RELEASE=v1.5.0 | grep -q 'pinned v1.5.0' || fail "the floor itself was refused"
+publish v0.1.0 "$T/key"; if fresh env BOUNDGATE_MIN_RELEASE=v0.0.1 >/dev/null 2>&1; then fail "BOUNDGATE_MIN_RELEASE lowered KIT_FLOOR"; fi
+if fresh env BOUNDGATE_MIN_RELEASE=latest >/dev/null 2>&1; then fail "BOUNDGATE_MIN_RELEASE=latest accepted"; fi
+
+echo "== 8. plain http only to this machine, by exact host"
+for u in http://localhost.evil.test http://127.0.0.1.evil.test:$PORT "http://localhost:$PORT@evil.test" http://localhost:$PORT.evil.test http://evil.test "http://[::1].evil.test" ftp://127.0.0.1; do
+  if out=$(fresh env BOUNDGATE_UPDATE_URL="$u" 2>&1); then fail "BOUNDGATE_UPDATE_URL=$u accepted"; fi
+  echo "$out" | grep -q 'must be https' || fail "$u: $out"
+done
+publish v1.5.1 "$T/key"
+fresh env BOUNDGATE_UPDATE_URL=http://localhost:$PORT/ | grep -q 'pinned v1.5.1' || fail "http://localhost:$PORT/ refused"
+
 echo "PASS: update.sh"

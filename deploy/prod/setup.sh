@@ -137,6 +137,10 @@ main() {
     for t in jq ssh-keygen; do command -v $t >/dev/null 2>&1 || die "update.sh needs $t (packages jq and openssh-client): install it and run this again, or choose 2"; done
   fi
   kit update.sh; write_new update.sh < "$GOT"; chmod +x update.sh
+  # the release these files came from: update.sh starts no older than that
+  if printf '%s' "$REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' && ! grep -qs '^BOUNDGATE_MIN_RELEASE=' update.env; then
+    echo "BOUNDGATE_MIN_RELEASE=$REF" >> update.env
+  fi
   kit release_keys; write_new release_keys < "$GOT"
   touch .env; chmod 600 .env
   if [ "$UPD" = 2 ]; then

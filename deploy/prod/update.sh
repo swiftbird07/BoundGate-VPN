@@ -31,12 +31,20 @@
 #   BOUNDGATE_IMAGE_REPO         pull the image from this repository instead of the one
 #                                the manifest names (a mirror, your own registry); the
 #                                digest is the signed one either way
+#   BOUNDGATE_MIN_RELEASE        the oldest release a host with nothing recorded yet may
+#                                start with (setup.sh writes the version it set up); never
+#                                lower than KIT_FLOOR below
 #   RELEASE_KEYS                 public keys         (release_keys next to this script)
 #   COMPOSE_DIR                  the kit directory   (the current directory)
 #   MODE, INSTALL_DIR (/usr/local/bin), RESTART_CMD (systemctl restart boundgate-node)
 # Needs curl, jq, ssh-keygen; docker for MODE=compose. Exit: 0 done or nothing
 # to do, 1 failed (cron mails the output).
 set -eu
+# The oldest release this kit accepts where nothing is recorded yet (a fresh
+# install): otherwise a server shown an old signed release as the latest
+# would start on it, with whatever that release had to fix. release.sh refuses
+# to tag a release while this is older than the previous one.
+KIT_FLOOR=v0.1.12
 QUIET=; [ "${1:-}" != "-q" ] || { QUIET=1; shift; }
 ACTION=${1:-apply}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -61,7 +69,13 @@ DOCKER=${DOCKER:-docker}
 say() { [ -n "$QUIET" ] || echo "$*"; }
 die() { echo "update: $*" >&2; exit 1; }
 for t in curl jq ssh-keygen; do command -v $t >/dev/null 2>&1 || die "$t is needed"; done
-case "$URL" in https://*|http://127.0.0.1*|http://localhost*) ;; *) die "BOUNDGATE_UPDATE_URL must be https" ;; esac
+# https, or plain http to this machine only (tests, a tunnel): the host exactly
+# localhost, 127.0.0.1 or [::1], a numeric port, a plain path - not
+# localhost.example.net, nor localhost:1@example.net
+case "$URL" in
+  https://*) ;;
+  *) printf '%s\n' "$URL" | grep -Eq '^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?(/[A-Za-z0-9._~/%-]*)?$' || die "BOUNDGATE_UPDATE_URL must be https" ;;
+esac
 case "$ACTION" in check|apply|pin) ;; *) die "usage: update.sh [-q] [check|apply|pin]" ;; esac
 [ "$ACTION" != pin ] || [ "$MODE" = compose ] || die "pin is for MODE=compose"
 
@@ -107,8 +121,7 @@ VERSION=$(jq -r 'select(.type == "boundgate-release") | .version // empty' "$M")
 echo "$VERSION" | grep -Eq "$VPAT" || die "the signed manifest has no usable version"
 [ "$VERSION" = "$TAG" ] || die "release $TAG carries the signed manifest of $VERSION: refusing"
 
-newer() { # newer CURRENT CANDIDATE
-  [ -n "$1" ] || return 0
+newer() { # newer CURRENT CANDIDATE: is CANDIDATE a later version than CURRENT?
   a=${1#v}; b=${2#v}
   for i in 1 2 3; do
     x=$(echo "$a" | cut -d. -f$i); y=$(echo "$b" | cut -d. -f$i)
@@ -120,7 +133,19 @@ newer() { # newer CURRENT CANDIDATE
 ENVFILE="$COMPOSE_DIR/.env"
 current() { [ -f "$1" ] && sed -n 's/^BOUNDGATE_RELEASE=//p' "$1" | tail -1 || true; }
 if [ "$MODE" = binaries ]; then CUR=$(cat "$INSTALL_DIR/.boundgate-release" 2>/dev/null || true); else CUR=$(current "$ENVFILE"); fi
-if ! newer "$CUR" "$VERSION"; then say "up to date: ${CUR:-?} (latest release $VERSION)"; exit 0; fi
+if [ -n "$CUR" ]; then
+  if ! newer "$CUR" "$VERSION"; then say "up to date: $CUR (latest release $VERSION)"; exit 0; fi
+else
+  # nothing recorded: a fresh install starts no older than this kit
+  FLOOR=$KIT_FLOOR
+  if [ -n "${BOUNDGATE_MIN_RELEASE:-}" ]; then
+    echo "$BOUNDGATE_MIN_RELEASE" | grep -Eq "$VPAT" || die "BOUNDGATE_MIN_RELEASE must be vMAJOR.MINOR.PATCH, got $BOUNDGATE_MIN_RELEASE"
+    if newer "$FLOOR" "$BOUNDGATE_MIN_RELEASE"; then FLOOR=$BOUNDGATE_MIN_RELEASE; fi
+  fi
+  if newer "$VERSION" "$FLOOR"; then
+    die "the latest release offered is $VERSION, older than $FLOOR, which this kit starts with at least: refusing (an old release offered as the latest is a rollback)"
+  fi
+fi
 if [ "$ACTION" = check ]; then echo "update available: ${CUR:-unknown} -> $VERSION"; exit 0; fi
 
 if [ "$MODE" = binaries ]; then
