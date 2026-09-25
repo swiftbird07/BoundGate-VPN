@@ -27,6 +27,53 @@ func drive(t *testing.T, authURL string) (code, state string) {
 	return loc.Query().Get("code"), loc.Query().Get("state")
 }
 
+func TestIdentityFromClaims(t *testing.T) {
+	for _, c := range []struct {
+		verified any
+		email    string
+	}{
+		{nil, "u@example.test"}, // absent: the IdP did not say
+		{true, "u@example.test"},
+		{"true", "u@example.test"},
+		{false, ""},
+		{"false", ""},
+		{"FALSE", ""},
+	} {
+		claims := map[string]any{"email": "u@example.test", "preferred_username": "martin", "groups": []any{"vpn", "admins", "vpn", " ", 7, "admins"}}
+		if c.verified != nil {
+			claims["email_verified"] = c.verified
+		}
+		id := identityFrom("u1", claims, "groups")
+		if id.Email != c.email {
+			t.Errorf("email_verified %v: email %q", c.verified, id.Email)
+		}
+		if strings.Join(id.Groups, ",") != "vpn,admins" || id.Username != "martin" || id.Subject != "u1" {
+			t.Errorf("identity %+v", id)
+		}
+	}
+}
+
+func TestUnverifiedEmailIsDropped(t *testing.T) {
+	no := false
+	fake := oidctest.New("", "bg", "secret", oidctest.User{Subject: "u1", Email: "ceo@example.test", EmailVerified: &no, Username: "martin", Groups: []string{"vpn", "vpn"}})
+	srv := httptest.NewServer(fake.Handler())
+	defer srv.Close()
+	fake.Issuer = srv.URL
+	p, err := New(context.Background(), Config{Issuer: srv.URL, ClientID: "bg", ClientSecret: "secret", RedirectURL: "https://control.test/api/v1/oidc/callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := NewFlow()
+	code, _ := drive(t, p.AuthURL(f))
+	id, err := p.Exchange(context.Background(), f, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Email != "" || len(id.Groups) != 1 {
+		t.Fatalf("%+v", id)
+	}
+}
+
 func TestCodeFlow(t *testing.T) {
 	var srv *httptest.Server
 	fake := oidctest.New("", "bg", "secret", oidctest.User{Subject: "u1", Email: "u1@example.test", Username: "martin", Groups: []string{"vpn", "admins"}})

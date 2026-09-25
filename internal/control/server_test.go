@@ -121,3 +121,18 @@ func TestSNISplitWithACMECallback(t *testing.T) {
 		t.Fatal("the ACME callback was asked for the node name")
 	}
 }
+
+// Every phase of a TCP connection is bounded, and the answer to the
+// longest long-poll still fits.
+func TestTCPServerTimeouts(t *testing.T) {
+	s := newTCPServer(":443", http.NotFoundHandler(), nil)
+	if s.ReadHeaderTimeout <= 0 || s.ReadTimeout <= 0 || s.WriteTimeout <= 0 || s.IdleTimeout <= 0 || s.MaxHeaderBytes <= 0 {
+		t.Fatalf("an unbounded phase: %+v", s)
+	}
+	if s.WriteTimeout <= api.MaxLongPoll {
+		t.Fatalf("write timeout %v cuts off a long-poll of %v", s.WriteTimeout, api.MaxLongPoll)
+	}
+	if s.ReadHeaderTimeout > s.ReadTimeout {
+		t.Fatal("headers may take longer than the whole request")
+	}
+}

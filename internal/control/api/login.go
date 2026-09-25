@@ -123,7 +123,7 @@ func (h *Handlers) nodeLoginStatus(w http.ResponseWriter, r *http.Request) {
 	defer h.leaveLoginPoll(string(peer.DeviceID()))
 	wait := 0 * time.Second
 	if v := r.URL.Query().Get("wait"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 && d <= 120*time.Second {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 && d <= MaxLongPoll {
 			wait = d
 		}
 	}

@@ -153,23 +153,46 @@ func (p *Provider) Exchange(ctx context.Context, f Flow, code string) (Identity,
 	if err := idt.Claims(&claims); err != nil {
 		return Identity{}, fmt.Errorf("oidc: claims: %w", err)
 	}
-	id := Identity{Subject: idt.Subject}
-	id.Email, _ = claims["email"].(string)
-	id.Username, _ = claims["preferred_username"].(string)
-	if id.Username == "" {
-		id.Username, _ = claims["name"].(string)
-	}
-	if gs, ok := claims[p.cfg.GroupsClaim].([]any); ok {
-		for _, g := range gs {
-			if s, ok := g.(string); ok && strings.TrimSpace(s) != "" {
-				id.Groups = append(id.Groups, s)
-			}
-		}
-	}
+	id := identityFrom(idt.Subject, claims, p.cfg.GroupsClaim)
 	if id.Subject == "" {
 		return Identity{}, errors.New("oidc: id token without subject")
 	}
 	return id, nil
+}
+
+// identityFrom reads the claims BoundGate uses. An email the IdP says it
+// has not verified (email_verified false) is left out: a user may be able
+// to type any address into their profile, and policies may match on it.
+// Username (preferred_username, else name) is often editable by the user
+// as well; policies should match on subject or groups (OIDC.md). Groups
+// are de-duplicated in their order.
+func identityFrom(subject string, claims map[string]any, groupsClaim string) Identity {
+	id := Identity{Subject: subject}
+	id.Email, _ = claims["email"].(string)
+	switch v := claims["email_verified"].(type) {
+	case bool:
+		if !v {
+			id.Email = ""
+		}
+	case string: // some IdPs send it as a string
+		if strings.EqualFold(strings.TrimSpace(v), "false") {
+			id.Email = ""
+		}
+	}
+	id.Username, _ = claims["preferred_username"].(string)
+	if id.Username == "" {
+		id.Username, _ = claims["name"].(string)
+	}
+	if gs, ok := claims[groupsClaim].([]any); ok {
+		seen := make(map[string]bool, len(gs))
+		for _, g := range gs {
+			if s, ok := g.(string); ok && strings.TrimSpace(s) != "" && !seen[s] {
+				seen[s] = true
+				id.Groups = append(id.Groups, s)
+			}
+		}
+	}
+	return id
 }
 
 // Lazy defers discovery until the first login so the control plane starts

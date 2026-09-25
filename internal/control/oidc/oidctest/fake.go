@@ -28,6 +28,8 @@ type User struct {
 	Email    string
 	Username string
 	Groups   []string
+	// EmailVerified is sent as email_verified when set.
+	EmailVerified *bool
 }
 
 // Provider is the fake IdP. Mount it (Handler) under Issuer.
@@ -168,6 +170,9 @@ func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
 		"iss": p.Issuer, "sub": pd.user.Subject, "aud": p.ClientID,
 		"iat": now.Unix(), "exp": now.Add(p.TokenLifetime).Unix(), "nonce": pd.nonce,
 		"email": pd.user.Email, "preferred_username": pd.user.Username, "groups": pd.user.Groups,
+	}
+	if pd.user.EmailVerified != nil {
+		claims["email_verified"] = *pd.user.EmailVerified
 	}
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: p.key}, (&jose.SignerOptions{}).WithHeader("kid", p.kid))
 	if err != nil {

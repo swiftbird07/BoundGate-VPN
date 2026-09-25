@@ -180,6 +180,10 @@ func (h *Handlers) approvedPeer(w http.ResponseWriter, r *http.Request) (transpo
 	return peer, true
 }
 
+// MaxLongPoll is the longest wait= a node may ask for; the server's write
+// timeout is set above it.
+const MaxLongPoll = 120 * time.Second
+
 // nodeSnapshot long-polls: ?since=N&wait=30s. 200 with the node's snapshot
 // when the version exceeds N, 304 otherwise. Only approved nodes get here;
 // a revoked node sees 403 and knows it has been unenrolled.
@@ -191,7 +195,7 @@ func (h *Handlers) nodeSnapshot(w http.ResponseWriter, r *http.Request) {
 	since, _ := strconv.ParseUint(r.URL.Query().Get("since"), 10, 64)
 	wait := 30 * time.Second
 	if v := r.URL.Query().Get("wait"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 && d <= 120*time.Second {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 && d <= MaxLongPoll {
 			wait = d
 		}
 	}

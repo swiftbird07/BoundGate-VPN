@@ -40,6 +40,12 @@ Policies talk about these entities:
 `context` carries `protocol`, `port`, `has_session`, and when present `sni`,
 `dns_name`, `resolved_names` and `user {subject, username, email, groups}`.
 
+Match users by `subject` or by group. `username` is the IdP's
+`preferred_username`, which users can often change themselves, so a
+`when { context.user.username == "martin" }` admits whoever renames their
+account to `martin`; `email` is empty when the IdP says it is not
+verified (OIDC.md).
+
 ## Lists
 
 A list is a named set of addresses and prefixes (`ip`), DNS query names

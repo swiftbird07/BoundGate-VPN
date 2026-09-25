@@ -122,7 +122,20 @@ M3, the ACL's, which gets the session's user and groups per flow).
    IdP); a failing IdP makes `login/start` answer 502.
 
 Claims used: `sub` (subject, the stable identity), `email`,
-`preferred_username` (fallback `name`), `groups`. Nothing else is stored.
+`email_verified`, `preferred_username` (fallback `name`), `groups`.
+Nothing else is stored.
+
+* `email` is dropped (stored empty) when the token says
+  `email_verified: false` (also the string `"false"`): a user who can type
+  an address into their IdP profile must not match a policy on someone
+  else's address. When the claim is absent the email is taken as the IdP
+  sends it; configure the IdP to send only addresses it controls.
+* `username` is the IdP's `preferred_username`, which in many IdPs
+  (Authentik included) **the user can change** in their own profile. It is
+  shown in the UI and logs for people to read; a policy should decide by
+  `subject` or by groups (`principal in BoundGate::Group::"…"`), not by
+  `username` (ACL.md).
+* `groups` is de-duplicated, in the IdP's order.
 
 The same provider and redirect URI serve **admin logins** (M4): members of
 `admin.group` (default `admins`) get an admin session that still needs a

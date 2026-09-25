@@ -42,6 +42,27 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
 
+// ServerWriteTimeout bounds one answer over TCP: the longest long-poll and
+// a minute for the rest.
+const ServerWriteTimeout = api.MaxLongPoll + time.Minute
+
+// newTCPServer is the HTTPS server on TCP. A client that sends slowly or
+// never reads holds a connection and a goroutine, so every phase is
+// bounded: the longest answer is a long-poll (api.MaxLongPoll), the
+// largest body a 4 MiB log batch or list import.
+func newTCPServer(addr string, h http.Handler, tlsCfg *tls.Config) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      ServerWriteTimeout,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
 // Config for the control plane.
 type Config struct {
 	// Listen is the address for both the TCP and the UDP listener, e.g. ":443".
@@ -289,12 +310,7 @@ func Run(ctx context.Context, cfg Config) error {
 		root = adminGate(cfg.AdminAllow, cfg.NodeServerName, onDeny, root)
 		log.Info("admin UI restricted to", "admin_allow", cfg.AdminAllow, "open to all", "GET "+api.OIDCCallbackPath+", POST "+api.OIDCConfirmPath+" (user sign-in)")
 	}
-	tcpSrv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           root,
-		TLSConfig:         tcpTLS,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	tcpSrv := newTCPServer(cfg.Listen, root, tcpTLS)
 	udpSrv := &http3.Server{
 		Addr:      cfg.Listen,
 		Handler:   root,
