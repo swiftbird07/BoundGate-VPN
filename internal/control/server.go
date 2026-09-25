@@ -90,6 +90,9 @@ type Config struct {
 	CertReloadInterval time.Duration
 	// NoSPA disables the embedded admin UI (tests).
 	NoSPA bool
+	// ListSources fences where lists that follow a URL may be fetched from
+	// (private ranges only when allowed here; docs/ACL.md, R114).
+	ListSources listsource.Options
 }
 
 // BehindMux configures the listeners of a control plane behind a front.
@@ -237,7 +240,8 @@ func Run(ctx context.Context, cfg Config) error {
 	if !cfg.NoSPA {
 		spa = web.Handler()
 	}
-	h, err := api.NewWithError(api.Deps{DB: store, Snap: src, Logs: cfg.Logs, PendingTTL: cfg.PendingTTL, ControlSPKI: nodeSPKI, OIDC: idp, Admin: cfg.Admin, SPA: spa})
+	h, err := api.NewWithError(api.Deps{DB: store, Snap: src, Logs: cfg.Logs, PendingTTL: cfg.PendingTTL, ControlSPKI: nodeSPKI, OIDC: idp, Admin: cfg.Admin, SPA: spa,
+		ListSources: listsource.Options{AllowPrivate: cfg.ListSources.AllowPrivate}})
 	if err != nil {
 		return err
 	}
@@ -342,7 +346,7 @@ func Run(ctx context.Context, cfg Config) error {
 	go housekeeping(ctx, store, cfg, log)
 	go expireSessions(ctx, store, src, cfg.Logs)
 	// lists that follow a URL (docs/ACL.md)
-	go listsource.Run(ctx, store, src, cfg.Logs.System)
+	go listsource.Run(ctx, store, src, cfg.Logs.System, listsource.Options{AllowPrivate: cfg.ListSources.AllowPrivate})
 
 	select {
 	case <-ctx.Done():

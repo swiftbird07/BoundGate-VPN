@@ -26,6 +26,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/listsource"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
@@ -49,6 +50,8 @@ type Deps struct {
 	Admin AdminConfig
 	// SPA serves the admin UI for non-API paths on the admin name; nil = 404.
 	SPA http.Handler
+	// ListSources fences what a list source may reach ("Fetch now").
+	ListSources listsource.Options
 }
 
 // Handlers holds the muxes.

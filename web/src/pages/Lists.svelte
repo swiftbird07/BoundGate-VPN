@@ -9,7 +9,7 @@
   let loaded = $state(false);
   // the editor: a new list, or a copy of an existing one
   type Draft = { id?: string; name: string; kind: ListKind; description: string; text: string;
-    source_url: string; source_minutes: number; source_header: string; source_secret: string; secret_set: boolean };
+    source_url: string; source_minutes: number; source_header: string; source_secret: string; secret_set: boolean; stored_url: string };
   let editing = $state<Draft | null>(null);
   let busy = $state(false);
   let fetching = $state<string | null>(null);
@@ -30,9 +30,18 @@
     editing = l
       ? { id: l.id, name: l.name, kind: l.kind, description: l.description || '', text: l.entries.join('\n'),
           source_url: l.source_url || '', source_minutes: Math.round((l.source_interval || 900) / 60), source_header: l.source_header || '',
-          source_secret: '', secret_set: !!l.source_secret_set }
-      : { name: '', kind: 'dynamic', description: '', text: '', source_url: '', source_minutes: 15, source_header: '', source_secret: '', secret_set: false };
+          source_secret: '', secret_set: !!l.source_secret_set, stored_url: l.source_url || '' }
+      : { name: '', kind: 'dynamic', description: '', text: '', source_url: '', source_minutes: 15, source_header: '', source_secret: '', secret_set: false, stored_url: '' };
   }
+  // The control plane keeps a stored secret only for the same scheme, host
+  // and path (another query is fine); for any other URL it must be typed again.
+  function sameSource(a: string, b: string): boolean {
+    try {
+      const x = new URL(a), y = new URL(b.trim());
+      return x.protocol === y.protocol && x.host === y.host && x.pathname === y.pathname;
+    } catch { return false; }
+  }
+  const secretKept = $derived(!!editing && editing.secret_set && sameSource(editing.stored_url, editing.source_url));
   const entryCount = $derived(editing ? editing.text.split(/\r?\n/).map((s) => s.replace(/#.*/, '').trim()).filter(Boolean).length : 0);
   async function save() {
     if (!editing) return;
@@ -121,8 +130,9 @@
           <label class="field">Header for a private repository <input class="mono" placeholder="Private-Token" bind:value={editing.source_header} /></label>
         </div>
         <label class="field">Its value
-          <input type="password" autocomplete="off" placeholder={editing.secret_set ? '•••••••• (stored; type to replace)' : 'only for a private repository'} bind:value={editing.source_secret} />
-          <span class="hint">Kept by the control plane and never sent back to this page. Leave empty to keep what is stored; save with an empty field and no stored value to clear it.</span>
+          <input type="password" autocomplete="off" placeholder={secretKept ? '•••••••• (stored; type to replace)' : 'only for a private repository'} bind:value={editing.source_secret} />
+          <span class="hint">Kept by the control plane and never sent back to this page. Leave empty to keep what is stored; save with an empty field and no stored value to clear it.
+            {#if editing.secret_set && !secretKept}<strong>The URL points somewhere else now: the stored value (and the header) will be dropped on save. Type it again if the new address needs it.</strong>{/if}</span>
         </label>
         <div class="hint">With a URL the control plane fetches the file itself and replaces the entries with what it finds: one entry per line (# comments) or a JSON array, the same form as the export. A raw file URL of GitHub, GitLab or Gitea works. What you type above is only the starting point, and a file that cannot be read leaves the list as it is, with the reason under the list.</div>
       </div>

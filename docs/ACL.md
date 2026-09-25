@@ -48,9 +48,12 @@ below), kept apart from the rules that use it
 (Lists in the admin UI, `/api/v1/admin/lists`). Names are lowercase; a
 leading `*.` matches any number of labels below the name and not the name
 itself (`*.github.com` matches `api.github.com`, not `github.com`; list
-both for both). Up to 10 000 entries per list; every node receives every
-list with its snapshot, and a change takes effect within seconds like a
-policy change.
+both for both). Up to 10 000 entries per list; a node receives the lists
+its policies name (the enabled policies scoped to it) with its snapshot,
+and a change takes effect within seconds like a policy change. A list no
+policy of a node names never reaches that node: a list is the
+organisation's data (internal hosts, a partner's addresses), and only the
+admin's global view shows all of them.
 
 ```cedar
 // an allow-list: the NAS reaches nothing but these servers
@@ -164,15 +167,39 @@ that file itself every interval (at least a minute, 15 minutes by default)
 and replaces the entries with what it finds, so a list lives in a Git
 repository next to the rest of the configuration (a raw file URL of GitHub,
 GitLab or Gitea), or follows a feed someone else maintains. Only `http` and
-`https` addresses, at most 4 MiB, redirects only within the same host; a
+`https` addresses, at most 4 MiB, redirects only within the same host and
+scheme (never from `https` to `http`), no proxy from the environment; a
 private repository can be given one request header (`Private-Token`,
 `Authorization`) whose value the control plane keeps and never sends back.
+The value belongs to the URL it was entered with: a PUT that changes the
+scheme, host or path without giving `source_secret` again drops the value
+and the header (another query keeps them), so a changed URL never carries
+the old token somewhere else.
 An unchanged file costs one conditional request (`ETag`), and only entries
 that really changed bump the snapshot. A source that cannot be read leaves
 the list exactly as it was, and the reason stands under the list in the UI
 and in the control plane's log; **Fetch now** tries again at once. The
-entries of such a list can still be edited by hand, but the next fetch
-replaces them (R114).
+reason never quotes the file: a line that is not an entry is named by its
+number and length only. The entries of such a list can still be edited by
+hand, but the next fetch replaces them (R114).
+
+The control plane can reach networks the admin API's users cannot, so the
+address a source resolves to is checked when the connection is made (after
+DNS, so a name that changes its answer does not get around it): loopback,
+link-local (169.254/16, fe80::/10), multicast, unspecified addresses and
+the cloud metadata services (169.254.169.254, fd00:ec2::254,
+100.100.100.200; also written as IPv4-mapped or NAT64 addresses) are always
+refused. Private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7)
+are refused as well unless the control plane's configuration file admits
+them, for a Git server on the organisation's own network:
+
+```yaml
+list_sources:
+  allow_private: true
+```
+
+This switch is in the file on the control-plane host, not in the admin API:
+an admin account alone cannot open the internal network to the fetch.
 
 A list that a policy refers to keeps its name and kind and cannot be
 deleted (409); its entries can change at any time. A policy may only name

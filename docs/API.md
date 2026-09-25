@@ -57,10 +57,10 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | POST | `/api/v1/admin/policies/validate` | `{cedar}` | `{ok, error?}` |
 | GET | `/api/v1/admin/lists` | | `[ListView]`: `{id, name, kind (ip|dns|sni|dynamic), description?, entries[], used_by[] (policy names), created_at, created_by?, updated_at, updated_by?, source_url?, source_interval? (seconds), source_header?, source_secret_set?, source_fetched_at?, source_status? (empty: the last fetch worked)}`. The source secret is never part of an answer |
 | POST | `/api/v1/admin/lists` | `{name, kind, description?, entries[], source_url?, source_interval? (seconds, at least 60, default 900), source_header?, source_secret?}` (entries: one address, prefix or name each; a `dynamic` list also takes ranges and ports, `10.60.0.0/24:8000-8100`, `[2001:db8::1]:443`; blank lines and `#` comments are dropped, the rest normalized, sorted, de-duplicated; at most 10 000) | 201 `ListView`; 400 with the first bad entry or a source url that is not http(s); 409 duplicate name |
-| GET/PUT/DELETE | `/api/v1/admin/lists/{id}` | as POST; `source_secret` absent keeps the stored one, `""` clears it | `ListView` / 204; 409 when policies refer to the list and the name or kind would change, or on delete; every change bumps the snapshot |
+| GET/PUT/DELETE | `/api/v1/admin/lists/{id}` | as POST; `source_secret` absent keeps the stored one for the same scheme, host and path (another query is fine) and drops it together with `source_header` for any other URL; `""` clears it | `ListView` / 204; 409 when policies refer to the list and the name or kind would change, or on delete; every change bumps the snapshot |
 | GET | `/api/v1/admin/lists/{id}/export` | | `text/plain`: the list as a file (one entry per line, a `#` header), the form `/import` and a source read |
 | POST | `/api/v1/admin/lists/{id}/import` | the file as the body (text or a JSON array), at most 4 MiB; `?mode=add` adds instead of replacing | `ListView`; 400 with the first bad entry |
-| POST | `/api/v1/admin/lists/{id}/fetch` | | fetches the list's source now: `ListView`; 400 without a source; 502 `{error, list}` when the source cannot be read, and the list keeps its entries |
+| POST | `/api/v1/admin/lists/{id}/fetch` | | fetches the list's source now: `ListView`; 400 without a source; 502 `{error, list}` when the source cannot be read or its address is refused (loopback, link-local, metadata; private ranges unless `list_sources.allow_private`, docs/ACL.md), and the list keeps its entries. The error names a line that is not an entry by number and length, never by content |
 | POST | `/api/v1/admin/acl/evaluate` | `{node, dst, port?, proto?, sni?, dns_name?, resolved_names? (up to 8; what the node would have learned from DNS answers, see ACL.md), enforcer?, draft? {id, name, cedar}, draft_only?}` | `{allow, policies, reasons, errors?, policy_count, policy_errors?, principal, user?, groups?, owner?, owner_name?}` (dry run on live state; `draft` replaces the stored policy with the same id or is added, without being stored; `draft_only` evaluates it alone; 400 if the draft does not parse) |
 | GET | `/api/v1/admin/tunnels` | `?node=&active=1&since=&limit=` | `[Tunnel]` newest first: `id, hub_id, hub_name, peer_id, peer_name, peer_addr, opened_at, closed_at?, close_reason, bytes_in/out, packets_in/out, last_report_at` |
 | GET | `/api/v1/admin/flows` | `?node=&principal=&user=&decision=&event=&dst=&sni=&dns_name=&from=&to=&before=&limit=` | `[LogEvent]` of stream `flow` (see ACL.md for the attributes) |
@@ -172,7 +172,7 @@ receipt and cross-check `control_spki` with the key they pinned in TLS.
 self {id, name, spki, kind, roles, overlay_ip, prefixes, public_addr,
 key_version, binding, signature, signed_by}, peers [same shape], sessions
 [{id, node_id, subject, email, username, groups, expires_at}] (own and
-peers'), policies [{id, name, cedar}] (enabled and scoped to the node), lists [{name, kind, entries}] (all of them),
+peers'), policies [{id, name, cedar}] (enabled and scoped to the node), lists [{name, kind, entries}] (those its policies name; all of them in the admin's global view),
 pool`. `binding` is the canonical JSON that was
 signed, `signature` the armored SSHSIG; nodes verify both before using a
 record.

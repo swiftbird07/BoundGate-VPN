@@ -18,6 +18,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/listsource"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
@@ -60,6 +61,12 @@ type config struct {
 		Trusted         []string `yaml:"trusted"`           // the front's addresses, e.g. [127.0.0.1]
 		NoProxyProtocol bool     `yaml:"no_proxy_protocol"` // the TCP front sends no PROXY v2 header
 	} `yaml:"behind_mux"`
+	ListSources struct {
+		// lists that follow a URL may be fetched from private ranges (a Git
+		// server on the own network); loopback, link-local and cloud
+		// metadata addresses stay refused (docs/ACL.md)
+		AllowPrivate bool `yaml:"allow_private"`
+	} `yaml:"list_sources"`
 	ACME struct {
 		Enabled      bool   `yaml:"enabled"`       // admin certificate from Let's Encrypt (TLS-ALPN-01 on :443)
 		Email        string `yaml:"email"`         // optional contact for the CA
@@ -210,5 +217,6 @@ func run(cfgPath string, args []string) error {
 		BehindMux:          behindMux,
 		AdminAllow:         adminAllow,
 		ACME:               control.ACMEConfig{Enabled: cfg.ACME.Enabled, Email: cfg.ACME.Email, CacheDir: cfg.ACME.CacheDir, DirectoryURL: cfg.ACME.DirectoryURL},
+		ListSources:        listsource.Options{AllowPrivate: cfg.ListSources.AllowPrivate},
 	})
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -401,7 +402,9 @@ type ListView struct {
 // name each; blank lines and # comments are dropped. With a source_url the
 // control plane fetches the entries itself every source_interval seconds
 // and what is sent as entries is only the starting point. source_secret is
-// write-only: absent keeps what is stored, "" clears it.
+// write-only: absent keeps what is stored as long as the source keeps its
+// scheme, host and path (otherwise the secret and its header are dropped),
+// "" clears it.
 type ListBody struct {
 	Name           string   `json:"name"`
 	Kind           string   `json:"kind"`
@@ -483,15 +486,36 @@ func (h *Handlers) readList(w http.ResponseWriter, r *http.Request) (db.List, bo
 		SourceURL: url, SourceInterval: interval, SourceHeader: header}
 	if body.SourceSecret != nil {
 		l.SourceSecret = strings.TrimSpace(*body.SourceSecret)
-	} else if id := r.PathValue("id"); id != "" { // absent: keep what is stored
-		if cur, err := h.d.DB.ListByID(r.Context(), id); err == nil {
-			l.SourceSecret = cur.SourceSecret
+	} else if id := r.PathValue("id"); id != "" { // absent: keep what is stored, for the same source
+		if cur, err := h.d.DB.ListByID(r.Context(), id); err == nil && cur.SourceSecret != "" {
+			if sameSource(cur.SourceURL, url) {
+				l.SourceSecret = cur.SourceSecret
+			} else {
+				// the secret was given for another address: it must not
+				// follow a changed URL to a host someone else chose
+				l.SourceHeader = ""
+			}
 		}
 	}
 	if l.SourceURL == "" {
 		l.SourceHeader, l.SourceSecret = "", ""
 	}
 	return l, true
+}
+
+// sameSource says whether a stored secret may stay with a new source URL:
+// the same scheme, host (with port) and path. A changed query keeps it.
+func sameSource(a, b string) bool {
+	ua, err1 := neturl.Parse(a)
+	ub, err2 := neturl.Parse(b)
+	return err1 == nil && err2 == nil && ua.Scheme == ub.Scheme && strings.EqualFold(ua.Host, ub.Host) && urlPath(ua) == urlPath(ub)
+}
+
+func urlPath(u *neturl.URL) string {
+	if p := u.EscapedPath(); p != "" {
+		return p
+	}
+	return "/"
 }
 
 func (h *Handlers) adminLists(w http.ResponseWriter, r *http.Request) {
@@ -659,7 +683,7 @@ func (h *Handlers) adminFetchList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "this list has no source url")
 		return
 	}
-	l, version, ferr := listsource.New(h.d.Logs.System).Fetch(r.Context(), h.d.DB, h.d.Snap, l)
+	l, version, ferr := listsource.New(h.d.Logs.System, h.d.ListSources).Fetch(r.Context(), h.d.DB, h.d.Snap, l)
 	if ferr != nil {
 		h.audit(r.Context(), h.d.Logs.Audit, logging.StreamAudit, a.Subject, "list source fetched", "", map[string]any{"list": l.ID, "name": l.Name, "url": l.SourceURL, "err": ferr.Error()})
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": ferr.Error(), "list": h.listView(r, l, nil)})

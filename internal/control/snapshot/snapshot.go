@@ -4,6 +4,7 @@ package snapshot
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,8 +135,15 @@ func toRegistry(n db.Node) registry.Node {
 
 // BuildFor creates the snapshot as node self sees it: its own record,
 // every other approved node as a peer, the active user sessions of itself
-// and its peers, and the enabled policies scoped to it. An empty self
-// yields the global view for admins (every policy).
+// and its peers, the enabled policies scoped to it and the lists those
+// policies name. An empty self yields the global view for admins (every
+// policy, every list).
+//
+// Sessions go to every node: any node can be the receiving end of a hub
+// tunnel, a direct path or a relayed one (PATHS.md), and it decides a
+// connection by the user behind the peer (groups, subject, email) and
+// refuses an interactive peer without a session. Which peer will connect
+// is not known in advance (R123).
 func (s *Source) BuildFor(ctx context.Context, self transport.DeviceID) (*registry.Snapshot, error) {
 	l, err := s.load(ctx)
 	if err != nil {
@@ -156,7 +164,13 @@ func (s *Source) BuildFor(ctx context.Context, self transport.DeviceID) (*regist
 			snap.Policies = append(snap.Policies, registry.Policy{ID: p.ID, Name: p.Name, Cedar: p.Cedar})
 		}
 	}
+	// a node gets the lists its policies name, nothing else: a list is the
+	// organisation's data (internal hosts, partners' addresses), and a node
+	// that decides nothing by it has no use for it
 	for _, x := range l.lists {
+		if self != "" && !namesList(snap.Policies, x.Name) {
+			continue
+		}
 		snap.Lists = append(snap.Lists, registry.List{Name: x.Name, Kind: x.Kind, Entries: x.Entries})
 	}
 	known := make(map[transport.DeviceID]bool, len(l.nodes))
@@ -175,6 +189,19 @@ func (s *Source) BuildFor(ctx context.Context, self transport.DeviceID) (*regist
 	}
 	snap.Index()
 	return snap, nil
+}
+
+// namesList reports whether one of the policies refers to the list. List
+// names are lowercase letters, digits and . _ -, so the reference is
+// always spelled the same way (db.ListRef).
+func namesList(ps []registry.Policy, name string) bool {
+	ref := db.ListRef(name)
+	for _, p := range ps {
+		if strings.Contains(p.Cedar, ref) {
+			return true
+		}
+	}
+	return false
 }
 
 // Notify wakes every long-poll waiter. Call it after the database version

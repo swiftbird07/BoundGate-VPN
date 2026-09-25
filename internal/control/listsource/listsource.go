@@ -9,7 +9,14 @@
 // (docs/ACL.md): one entry per line with # comments, or a JSON array of
 // strings. Entries are checked and normalized like every other entry, and a
 // file the control plane cannot read leaves the list as it was, with the
-// reason in the list's status.
+// reason in the list's status. The reason never quotes the file: whatever
+// the control plane was made to fetch must not come back through it.
+//
+// The control plane reaches networks the admin API's users do not, so the
+// fetch is fenced (R114): the address it connects to is checked at connect
+// time, after DNS, and loopback, link-local, multicast, unspecified and the
+// cloud metadata addresses are always refused; private ranges only when the
+// control plane's own configuration allows them (Options.AllowPrivate).
 package listsource
 
 import (
@@ -19,8 +26,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
+	"syscall"
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
@@ -33,6 +43,62 @@ const (
 	timeout  = 30 * time.Second
 )
 
+// Options fence the fetch. They come from the control plane's
+// configuration file (list_sources), never from the admin API.
+type Options struct {
+	// AllowPrivate admits sources in private ranges (RFC 1918, 100.64/10,
+	// IPv6 unique local): a Git server on the organisation's own network.
+	AllowPrivate bool
+	// AllowLoopback admits 127.0.0.0/8 and ::1. Tests only: their servers
+	// listen there.
+	AllowLoopback bool
+}
+
+// Always refused, whatever the options say: where cloud providers answer
+// with the machine's credentials.
+var metadataAddrs = []netip.Addr{
+	netip.MustParseAddr("169.254.169.254"), // AWS, GCP, Azure, OpenStack, …
+	netip.MustParseAddr("fd00:ec2::254"),   // AWS over IPv6
+	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud
+}
+
+var (
+	cgnat       = netip.MustParsePrefix("100.64.0.0/10")
+	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+	nat64       = netip.MustParsePrefix("64:ff9b::/96")
+)
+
+// CheckAddr says whether the fetch may connect to a.
+func CheckAddr(a netip.Addr, o Options) error {
+	a = a.Unmap().WithZone("")
+	if nat64.Contains(a) { // the IPv4 address it translates to decides
+		b := a.As16()
+		a = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	}
+	for _, m := range metadataAddrs {
+		if a == m {
+			return fmt.Errorf("%s is a cloud metadata address", a)
+		}
+	}
+	switch {
+	case a.IsLoopback():
+		if o.AllowLoopback {
+			return nil
+		}
+		return fmt.Errorf("%s is a loopback address", a)
+	case a.IsLinkLocalUnicast(), a.IsLinkLocalMulticast():
+		return fmt.Errorf("%s is a link-local address", a)
+	case a.IsUnspecified(), a.Is4() && thisNetwork.Contains(a), a.IsMulticast(), a.IsInterfaceLocalMulticast(), a == netip.AddrFrom4([4]byte{255, 255, 255, 255}):
+		return fmt.Errorf("%s is not a unicast address", a)
+	case a.IsPrivate(), cgnat.Contains(a):
+		if o.AllowPrivate {
+			return nil
+		}
+		return fmt.Errorf("%s is a private address; list_sources.allow_private in the control plane's configuration admits it", a)
+	}
+	return nil
+}
+
 // Notifier is the snapshot source: a list that changed reaches the nodes.
 type Notifier interface{ Notify(version uint64) }
 
@@ -42,17 +108,41 @@ type Fetcher struct {
 	Log    *slog.Logger
 }
 
-// New returns a Fetcher with a client that follows no redirect to another
-// host silently: a source is the URL an admin entered.
-func New(log *slog.Logger) *Fetcher {
+// New returns a Fetcher whose client connects only where CheckAddr allows
+// (checked on the resolved address, so DNS rebinding does not help), uses
+// no proxy from the environment (the proxy's address would be checked, not
+// the source's), and follows redirects only on the same host and scheme: a
+// source is the URL an admin entered, and its header must not travel to
+// another host or in clear text.
+func New(log *slog.Logger, o Options) *Fetcher {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: func(network, address string, _ syscall.RawConn) error {
+		ap, err := netip.ParseAddrPort(address)
+		if err != nil {
+			return fmt.Errorf("list source: %q is not an address", address)
+		}
+		return CheckAddr(ap.Addr(), o)
+	}}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConns:          4,
+		IdleConnTimeout:       30 * time.Second,
+	}
 	return &Fetcher{Log: log, Client: &http.Client{
-		Timeout: timeout,
+		Timeout:   timeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
 			}
 			if req.URL.Host != via[0].URL.Host {
 				return fmt.Errorf("redirect to another host (%s)", req.URL.Host)
+			}
+			if req.URL.Scheme != via[0].URL.Scheme {
+				return fmt.Errorf("redirect from %s to %s", via[0].URL.Scheme, req.URL.Scheme)
 			}
 			return nil
 		},
@@ -139,22 +229,33 @@ func (f *Fetcher) get(ctx context.Context, l db.List) ([]string, string, error) 
 }
 
 // Parse turns the bytes of a source or an import into entries of a kind: a
-// JSON array of strings, or one entry per line with # comments.
+// JSON array of strings, or one entry per line with # comments. An error
+// names the line (or array element) and never quotes it: the text may be
+// whatever answered at the source's address.
 func Parse(kind string, body []byte) ([]string, error) {
 	text := strings.TrimSpace(string(body))
 	var lines []string
+	unit := "line"
 	if strings.HasPrefix(text, "[") {
 		if err := json.Unmarshal([]byte(text), &lines); err != nil {
-			return nil, fmt.Errorf("the source looks like JSON but is not an array of strings: %w", err)
+			return nil, errors.New("the source looks like JSON but is not an array of strings")
 		}
+		unit = "element"
 	} else {
 		lines = strings.Split(text, "\n")
 	}
 	entries, err := db.CleanListEntries(kind, lines)
-	if err != nil {
-		return nil, fmt.Errorf("the source does not fit a list of kind %s: %w", kind, err)
+	if err == nil {
+		return entries, nil
 	}
-	return entries, nil
+	for i, l := range lines {
+		if _, lerr := db.CleanListEntries(kind, []string{l}); lerr != nil {
+			return nil, fmt.Errorf("the source does not fit a list of kind %s: %s %d: not a valid %s entry (%d characters)",
+				kind, unit, i+1, kind, len(strings.TrimSpace(l)))
+		}
+	}
+	// not a single entry: the kind or the number of entries
+	return nil, fmt.Errorf("the source does not fit a list of kind %s: %w", kind, err)
 }
 
 // cleanErr keeps a secret out of an error a transport built from the
@@ -169,8 +270,8 @@ func cleanErr(err error, l db.List) string {
 
 // Run fetches every list whose source is due, for as long as ctx lives. It
 // is the control plane's background loop.
-func Run(ctx context.Context, store *db.DB, src Notifier, log *slog.Logger) {
-	f := New(log)
+func Run(ctx context.Context, store *db.DB, src Notifier, log *slog.Logger, o Options) {
+	f := New(log, o)
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	for {

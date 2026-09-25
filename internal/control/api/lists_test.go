@@ -47,17 +47,34 @@ func TestListsAndPolicyGroups(t *testing.T) {
 	if len(got.Entries) != 2 {
 		t.Fatalf("entries after update: %v", got.Entries)
 	}
-	// the lists travel in every snapshot
+	// a node gets the lists its policies name, not the others
 	e.registerSigner()
 	hub := e.device("hub1")
 	hst := e.enroll(hub, `{}`)
 	e.approve(hst.NodeID, `{"kind":"workload","roles":["hub"]}`)
 	_, snap := e.snapshot(hub, 0, "1s")
-	if len(snap.Lists) != 2 || snap.Lists[0].Name != "allowed-sites" || snap.Lists[0].Kind != "sni" || len(snap.Lists[0].Entries) != 2 {
+	if len(snap.Lists) != 1 || snap.Lists[0].Name != "allowed-sites" || snap.Lists[0].Kind != "sni" || len(snap.Lists[0].Entries) != 2 {
 		b, _ := json.Marshal(snap.Lists)
 		t.Fatalf("lists in the snapshot: %s", b)
 	}
+	// a policy scoped to another node brings its list to that node only
+	spoke := e.device("spoke1")
+	sst := e.enroll(spoke, `{}`)
+	e.approve(sst.NodeID, `{"kind":"workload","roles":["endpoint"]}`)
+	var p2 api.PolicyView
+	e.adminCall("POST", "/api/v1/admin/policies", `{"name":"p2","scope":["`+sst.NodeID+`"],"cedar":"forbid(principal, action, resource in BoundGate::List::\"blocked\");"}`, http.StatusCreated, &p2)
+	_, snap = e.snapshot(hub, 0, "1s")
+	if len(snap.Lists) != 1 || snap.Lists[0].Name != "allowed-sites" {
+		b, _ := json.Marshal(snap.Lists)
+		t.Fatalf("the hub got another node's list: %s", b)
+	}
+	_, snap = e.snapshot(spoke, 0, "1s")
+	if len(snap.Lists) != 2 {
+		b, _ := json.Marshal(snap.Lists)
+		t.Fatalf("lists in the spoke's snapshot: %s", b)
+	}
 	// unused: delete
+	e.adminCall("DELETE", "/api/v1/admin/policies/"+p2.ID, "", http.StatusNoContent, nil)
 	e.adminCall("DELETE", "/api/v1/admin/policies/"+p.ID, "", http.StatusNoContent, nil)
 	e.adminCall("DELETE", "/api/v1/admin/lists/"+l.ID, "", http.StatusNoContent, nil)
 	e.adminCall("DELETE", "/api/v1/admin/lists/"+ipl.ID, "", http.StatusNoContent, nil)
@@ -118,6 +135,24 @@ func TestListImportExportAndSource(t *testing.T) {
 	if len(l.Entries) != 1 || l.Entries[0] != "10.9.0.0/16" {
 		t.Fatalf("fetch after the PUT: %+v", l.Entries)
 	}
+	// another query on the same file keeps it too
+	var requery api.ListView
+	e.adminCall("PUT", "/api/v1/admin/lists/"+l.ID, `{"name":"from-git","kind":"ip","entries":["10.0.0.1"],"source_url":"`+srv.URL+`/?ref=main","source_interval":300,"source_header":"Private-Token"}`, http.StatusOK, &requery)
+	if !requery.SourceSecretSet || requery.SourceHeader != "Private-Token" {
+		t.Fatalf("the secret was dropped for another query: %+v", requery)
+	}
+	// another path or host does not: the secret belongs to the URL it was
+	// entered for, and an admin who changes the URL must enter it again
+	for _, other := range []string{srv.URL + "/other.txt", "https://example.test/"} {
+		e.adminCall("PUT", "/api/v1/admin/lists/"+l.ID, `{"name":"from-git","kind":"ip","entries":["10.0.0.1"],"source_url":"`+srv.URL+`","source_interval":300,"source_header":"Private-Token","source_secret":"s3cret"}`, http.StatusOK, &l)
+		var moved api.ListView
+		e.adminCall("PUT", "/api/v1/admin/lists/"+l.ID, `{"name":"from-git","kind":"ip","entries":["10.0.0.1"],"source_url":"`+other+`","source_interval":300,"source_header":"Private-Token"}`, http.StatusOK, &moved)
+		if moved.SourceURL != other || moved.SourceSecretSet || moved.SourceHeader != "" {
+			t.Fatalf("%s: the secret went along to another URL: %+v", other, moved)
+		}
+	}
+	e.adminCall("PUT", "/api/v1/admin/lists/"+l.ID, `{"name":"from-git","kind":"ip","entries":["10.0.0.1"],"source_url":"`+srv.URL+`","source_interval":300,"source_header":"Private-Token","source_secret":"s3cret"}`, http.StatusOK, &l)
+	e.adminCall("POST", "/api/v1/admin/lists/"+l.ID+"/fetch", "", http.StatusOK, &l)
 
 	// a source that refuses: the list keeps its entries, the reason is in it
 	e.adminCall("PUT", "/api/v1/admin/lists/"+l.ID, `{"name":"from-git","kind":"ip","entries":["10.9.0.0/16"],"source_url":"`+srv.URL+`","source_interval":300,"source_header":"Private-Token","source_secret":""}`, http.StatusOK, &l)

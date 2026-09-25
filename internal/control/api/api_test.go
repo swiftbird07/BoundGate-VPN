@@ -24,6 +24,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/listsource"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/oidc/oidctest"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
@@ -66,7 +67,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := api.New(api.Deps{DB: store, Snap: snapshot.New(store), Logs: logs})
+	h := api.New(api.Deps{DB: store, Snap: snapshot.New(store), Logs: logs, ListSources: listsource.Options{AllowLoopback: true}})
 
 	cert, _, err := servercert.LoadOrCreate(filepath.Join(dir, "s.crt"), filepath.Join(dir, "s.key"), []string{"127.0.0.1"})
 	if err != nil {
