@@ -28,6 +28,9 @@ const (
 	Grace = 5 * time.Minute
 	// MaxNames bounds the names kept for one address and peer.
 	MaxNames = 8
+	// fullScan: while the map is full, what expired is looked for at most
+	// this often; every answer would otherwise walk the whole map.
+	fullScan = 5 * time.Second
 )
 
 // key is one peer's view of one address.
@@ -38,10 +41,12 @@ type key struct {
 
 // Map is the learned name cache. The zero value is not usable; call New.
 type Map struct {
-	max int
+	max, perPeer int
 
 	mu      sync.Mutex
 	m       map[key][]entry
+	count   map[transport.DeviceID]int // addresses per peer
+	scanned time.Time                  // last expiry scan while full
 	dropped uint64
 }
 
@@ -50,12 +55,14 @@ type entry struct {
 	until time.Time
 }
 
-// New creates a map for at most max addresses (over all peers).
-func New(max int) *Map {
-	if max <= 0 {
-		max = 4096
+// New creates a map for at most max addresses over all peers, and an
+// eighth of that per peer: one device that resolves a flood of names must
+// not push every other device's names out.
+func New(limit int) *Map {
+	if limit <= 0 {
+		limit = 4096
 	}
-	return &Map{max: max, m: make(map[key][]entry)}
+	return &Map{max: limit, perPeer: max(limit/8, 64), m: make(map[key][]entry), count: make(map[transport.DeviceID]int)}
 }
 
 // Learn records that name resolved to addrs for this peer. ttl is the
@@ -70,12 +77,18 @@ func (m *Map) Learn(peer transport.DeviceID, name string, addrs []netip.Addr, tt
 	for _, a := range addrs {
 		k := key{peer, a.Unmap()}
 		es, known := m.m[k]
-		if !known && len(m.m) >= m.max {
-			m.expireLocked(now)
-			if es, known = m.m[k]; !known && len(m.m) >= m.max {
+		if !known && (len(m.m) >= m.max || m.count[peer] >= m.perPeer) {
+			if now.Sub(m.scanned) >= fullScan {
+				m.scanned = now
+				m.expireLocked(now)
+			}
+			if es, known = m.m[k]; !known && (len(m.m) >= m.max || m.count[peer] >= m.perPeer) {
 				m.dropped++
 				continue
 			}
+		}
+		if !known {
+			m.count[peer]++
 		}
 		found := false
 		for i := range es {
@@ -129,6 +142,9 @@ func (m *Map) expireLocked(now time.Time) {
 		}
 		if len(keep) == 0 {
 			delete(m.m, k)
+			if m.count[k.peer]--; m.count[k.peer] <= 0 {
+				delete(m.count, k.peer)
+			}
 			continue
 		}
 		m.m[k] = keep

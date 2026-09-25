@@ -81,3 +81,26 @@ func TestManyNamesForOneAddressAreBounded(t *testing.T) {
 		t.Fatalf("%d names for one address", len(got))
 	}
 }
+
+// One device that resolves a flood of names fills its own share, not the
+// map: the names of every other device are still learned.
+func TestOnePeerCannotFillTheMap(t *testing.T) {
+	m := New(1024)
+	for i := range 1024 {
+		a := netip.AddrFrom4([4]byte{10, 70, byte(i >> 8), byte(i)})
+		m.Learn("greedy", "flood.example", []netip.Addr{a}, time.Hour, t0)
+	}
+	if m.Len() != 1024/8 || m.Dropped() != 1024-1024/8 {
+		t.Fatalf("one peer holds %d addresses, %d dropped", m.Len(), m.Dropped())
+	}
+	m.Learn("node-a", "a.example", addrs("10.60.0.10"), time.Hour, t0)
+	if got := m.Names("node-a", netip.MustParseAddr("10.60.0.10"), t0); len(got) != 1 {
+		t.Fatalf("another peer learns nothing: %v", got)
+	}
+	// what expires gives the share back
+	later := t0.Add(2 * time.Hour)
+	m.Learn("greedy", "again.example", addrs("10.70.9.9"), time.Hour, later)
+	if got := m.Names("greedy", netip.MustParseAddr("10.70.9.9"), later); len(got) != 1 {
+		t.Fatalf("the share was not given back: %v", got)
+	}
+}
