@@ -119,6 +119,16 @@ among admin flows first, then node flows. A callback without the flow
 cookie is refused, so a link captured from one browser cannot finish the
 login in another.
 
+`GET /api/v1/admin/auth/login` needs no authentication and stores a flow
+per request, so it is bounded: 10 per minute per client address (per /64
+for IPv6), at most 1000 flows waiting for the IdP at once (then 503), and
+the housekeeping loop deletes expired flows and sessions every minute.
+`next` must be a path on the control plane: it has to start with a single
+`/`, and a backslash, a control character or whitespace anywhere (also
+percent-encoded in the path) sends the browser to `/` instead, because
+browsers read `/\evil.example` and `/<tab>/evil.example` as
+`//evil.example`.
+
 ## The admin UI
 
 `web/` is a Svelte 5 + Vite + TypeScript app, built with `make web` into

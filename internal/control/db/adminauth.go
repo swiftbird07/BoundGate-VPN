@@ -175,7 +175,9 @@ func (d *DB) ListAdminSessions(ctx context.Context) ([]AdminSession, error) {
 }
 
 // ExpireAdminSessions deletes sessions that ended more than a day ago and
-// expired login flows.
+// login flows past their expiry (ten minutes, finished or not). The login
+// entry point is unauthenticated, so the housekeeping loop runs this every
+// minute.
 func (d *DB) ExpireAdminSessions(ctx context.Context) error {
 	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(timeFormat)
 	if _, err := d.sql.ExecContext(ctx, `DELETE FROM admin_sessions WHERE expires_at < ? OR revoked_at < ?`, cutoff, cutoff); err != nil {
@@ -183,6 +185,14 @@ func (d *DB) ExpireAdminSessions(ctx context.Context) error {
 	}
 	_, err := d.sql.ExecContext(ctx, `DELETE FROM admin_login_flows WHERE expires_at < ?`, now())
 	return err
+}
+
+// CountPendingAdminLoginFlows returns how many admin logins are waiting for
+// the identity provider.
+func (d *DB) CountPendingAdminLoginFlows(ctx context.Context) (int, error) {
+	var n int
+	err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_login_flows WHERE status = 'pending' AND expires_at > ?`, now()).Scan(&n)
+	return n, err
 }
 
 // Passkey is a registered WebAuthn credential of an admin.

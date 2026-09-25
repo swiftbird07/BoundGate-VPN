@@ -339,6 +339,17 @@ func (d *DB) ExpireSessions(ctx context.Context) (int64, uint64, error) {
 	return n, version, err
 }
 
+// PruneSessions deletes user sessions that ended longer than retention
+// ago (the history the admin UI shows with ?all=1).
+func (d *DB) PruneSessions(ctx context.Context, retention time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-retention).Format(timeFormat)
+	res, err := d.sql.ExecContext(ctx, `DELETE FROM user_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // sessionEnded is a helper for tests.
 func (s Session) Active(at time.Time) bool { return s.RevokedAt.IsZero() && at.Before(s.ExpiresAt) }
 

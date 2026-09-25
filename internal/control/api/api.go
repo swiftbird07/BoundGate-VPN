@@ -53,13 +53,14 @@ type Deps struct {
 
 // Handlers holds the muxes.
 type Handlers struct {
-	d         Deps
-	limit     *rateLimiter // enrollment, per client (clientKey)
-	signLimit *rateLimiter // sign-token routes, per client
-	lookup    transport.DeviceLookup
-	admin     http.Handler
-	node      http.Handler
-	wa        *webauthn.WebAuthn // nil: passkeys not configured
+	d          Deps
+	limit      *rateLimiter // enrollment, per client (clientKey)
+	signLimit  *rateLimiter // sign-token routes, per client
+	loginLimit *rateLimiter // admin login entry point, per client
+	lookup     transport.DeviceLookup
+	admin      http.Handler
+	node       http.Handler
+	wa         *webauthn.WebAuthn // nil: passkeys not configured
 
 	pollMu     sync.Mutex
 	loginPolls map[string]int // waiting login status requests per node
@@ -80,8 +81,8 @@ func NewWithError(d Deps) (*Handlers, error) {
 	if d.PendingTTL == 0 {
 		d.PendingTTL = 24 * time.Hour
 	}
-	h := &Handlers{d: d, limit: newRateLimiter(5, time.Minute), signLimit: newRateLimiter(30, time.Minute), lookup: dbLookup{d.DB},
-		loginPolls: map[string]int{}}
+	h := &Handlers{d: d, limit: newRateLimiter(5, time.Minute), signLimit: newRateLimiter(30, time.Minute), loginLimit: newRateLimiter(10, time.Minute),
+		lookup: dbLookup{d.DB}, loginPolls: map[string]int{}}
 	wa, err := h.newWebAuthn()
 	if err != nil {
 		return nil, fmt.Errorf("admin passkeys: %w", err)

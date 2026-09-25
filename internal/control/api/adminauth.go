@@ -7,8 +7,10 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -178,8 +180,25 @@ func levelOIDCAllowed(p string) bool {
 
 // --- browser login (OIDC) --------------------------------------------------
 
+// maxPendingAdminLogins bounds the admin login flows waiting for the IdP:
+// the entry point is unauthenticated and every request stores one.
+const maxPendingAdminLogins = 1000
+
 // adminLoginStart redirects the browser to the IdP.
 func (h *Handlers) adminLoginStart(w http.ResponseWriter, r *http.Request) {
+	if !h.loginLimit.allowClient(remoteIP(r)) {
+		h.d.Logs.AdminAuth.Warn("admin login rate limited", "src", remoteIP(r))
+		loginPage(w, http.StatusTooManyRequests, "Too many logins", "Too many logins from this address. Wait a minute and try again.")
+		return
+	}
+	if n, err := h.d.DB.CountPendingAdminLoginFlows(r.Context()); err != nil {
+		fail(w, err, h.d.Logs.System)
+		return
+	} else if n >= maxPendingAdminLogins {
+		h.d.Logs.AdminAuth.Warn("admin login refused: too many pending logins", "src", remoteIP(r), "pending", n)
+		loginPage(w, http.StatusServiceUnavailable, "Too many logins", "Too many admin logins are in progress. Try again in a few minutes.")
+		return
+	}
 	p, err := h.d.OIDC.Get(r.Context())
 	if err != nil {
 		if errors.Is(err, oidc.ErrDisabled) {
@@ -189,10 +208,7 @@ func (h *Handlers) adminLoginStart(w http.ResponseWriter, r *http.Request) {
 		loginPage(w, http.StatusBadGateway, "Identity provider unavailable", html.EscapeString(err.Error()))
 		return
 	}
-	next := r.URL.Query().Get("next")
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
-		next = "/"
-	}
+	next := localPath(r.URL.Query().Get("next"))
 	f, err := oidc.NewFlow()
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
@@ -262,7 +278,33 @@ func (h *Handlers) adminCallback(w http.ResponseWriter, r *http.Request, flow db
 	http.SetCookie(w, &http.Cookie{Name: cookieSession, Value: s.ID, Path: "/", HttpOnly: true, Secure: h.secureCookie(r), SameSite: http.SameSiteLaxMode, MaxAge: int(lifetime.Seconds())})
 	http.SetCookie(w, &http.Cookie{Name: cookieFlow, Value: "", Path: "/api/v1/", HttpOnly: true, MaxAge: -1})
 	h.audit(r.Context(), h.d.Logs.AdminAuth, logging.StreamAdminAuth, id.Subject, "admin login (oidc)", "", map[string]any{"email": id.Email, "username": id.Username, "groups": id.Groups, "flow": flow.ID, "src": remoteIP(r), "session": s.ID[:12]})
-	http.Redirect(w, r, flow.Next, http.StatusFound)
+	http.Redirect(w, r, localPath(flow.Next), http.StatusFound)
+}
+
+// localPath returns next if it is a path on this server, else "/". A
+// browser reads "/\evil.example" and "/\t/evil.example" as
+// //evil.example, another host, so beyond a leading single slash there
+// must be no backslash, no control character and no whitespace anywhere,
+// not even percent-encoded in the path, and the URL must parse without
+// scheme or host.
+func localPath(next string) string {
+	unsafe := func(s string) bool {
+		for _, c := range s {
+			if c == '\\' || unicode.IsSpace(c) || unicode.IsControl(c) {
+				return true
+			}
+		}
+		return false
+	}
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || unsafe(next) {
+		return "/"
+	}
+	u, err := url.Parse(next)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || u.Opaque != "" ||
+		!strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") || unsafe(u.Path) {
+		return "/"
+	}
+	return next
 }
 
 // AuthStatus tells the SPA where it stands.

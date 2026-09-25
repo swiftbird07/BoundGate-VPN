@@ -19,7 +19,7 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | GET | `/api/v1/admin/me` | | `Admin {subject, email, name, level, via}` (also for `oidc_only` sessions) |
 | GET | `/api/v1/admin/overview` | | `{nodes{pending,confirmed,approved,revoked}, active_sessions, active_tunnels, policies, policies_enabled, denied_last_24h, pending_passkeys, signers, snapshot_version}` |
 | GET | `/api/v1/admin/auth/status` | (no auth needed) | `AuthStatus`: `level (none\|oidc_only\|full), subject, email, name, via (session\|token\|bootstrap), own_passkeys, own_pending, total_passkeys, bootstrap_active, oidc_configured, passkeys_enabled, rp_id, error?` |
-| GET | `/api/v1/admin/auth/login?next=/path` | (no auth) | 302 to the IdP; sets the flow cookie `bg_login`; `next` must be a local path |
+| GET | `/api/v1/admin/auth/login?next=/path` | (no auth) | 302 to the IdP; sets the flow cookie `bg_login`; `next` must be a local path (single leading `/`, no backslash, control character or whitespace; otherwise `/`); 429 beyond 10/min per client, 503 with 1000 logins pending |
 | POST | `/api/v1/admin/auth/logout` | cookie | 204; revokes the session |
 | POST | `/api/v1/admin/auth/passkey/register/begin` | cookie (`oidc_only` ok) | `{label, bootstrap_token?}` → `{mode (first\|self\|pending), options}` (WebAuthn creation options JSON); 403 first passkey without the bootstrap token |
 | POST | `/api/v1/admin/auth/passkey/register/finish` | cookie | the browser's `PublicKeyCredential` JSON → 201 `{id, status (active\|pending), level}`; 409 credential already registered |
