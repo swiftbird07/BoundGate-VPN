@@ -585,6 +585,11 @@ func (n *Node) applyEnrollStatus(st api.EnrollStatus) {
 func (n *Node) verifySnapshot(s *registry.Snapshot) error {
 	n.followSigners(s.SignerChain) // first: bindings are judged by the list this snapshot brings, if it is legitimate
 	rejected, err := binding.VerifySnapshot(s, n.signers())
+	if err == nil && s.Self.SPKI != n.spki {
+		// another node's record, validly signed: taking it would give this
+		// machine that node's address, roles and networks
+		err = fmt.Errorf("the snapshot describes key %s as this node, but this node's key is %s", s.Self.SPKI.Fingerprint(), n.spki.Fingerprint())
+	}
 	n.mu.Lock()
 	n.status.IgnoredPeers = nil
 	for _, r := range rejected {
@@ -1264,7 +1269,9 @@ type session struct {
 	profile *profile.Profile
 	self    registry.Node
 	pool    netip.Prefix
-	isHub   bool
+	// nets is announced() of the current snapshot, for allowedSource
+	nets  atomic.Pointer[[]netip.Prefix]
+	isHub bool
 
 	dev    tun.Device
 	ifname string
@@ -1307,6 +1314,8 @@ func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *sessio
 		bypass: make(map[netip.Addr]bool), peerRoute: make(map[netip.Prefix]int), done: make(chan struct{}),
 		tunnels: make(map[string]*tunnelStats),
 	}
+	nets := announced(snap)
+	s.nets.Store(&nets)
 	s.flows = flow.New(flow.Timeouts{}, s.onFlowEvent)
 	s.dns = dnsmap.New(maxLearnedAddrs)
 	s.flows.SetLearner(s.learnDNS)
@@ -1370,6 +1379,7 @@ func (s *session) apply(ctx context.Context) error {
 	}
 	s.dp = newDataplane(dev, ifname, n.log)
 	s.dp.s = s
+	s.dp.table.SetReserved(s.pool, s.self.PrefixList())
 	go s.flowSweeper()
 
 	if s.isHub {
@@ -1494,6 +1504,8 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 		s.close("node no longer approved by the control plane")
 		return
 	}
+	nets := announced(snap)
+	s.nets.Store(&nets)
 	if s.srv != nil {
 		for _, id := range diff.RemovedPeers {
 			if c := s.srv.CloseDevice(id, transport.ErrCodeRevoked, "peer unenrolled or reconfigured"); c > 0 {
@@ -1519,6 +1531,9 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 		old := s.self
 		s.self = snap.Self
 		s.pool = snap.Pool.Masked()
+		if s.dp != nil {
+			s.dp.table.SetReserved(s.pool, s.self.PrefixList())
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := s.applyNAT(ctx); err != nil {
 			n.log.Error("reapply nat", "err", err)
@@ -1682,8 +1697,16 @@ func (s *session) repinBypass() {
 
 // addPeerRoute installs a kernel route for a peer prefix via the TUN so the
 // hub's host stack (and its LAN) can reach it. Counted per announcer.
+//
+// A default route is not installed: an exit node carries the spokes'
+// traffic, never the hub's own. Its 0.0.0.0/0 in the hub's kernel would send
+// everything the hub itself sends (its control channel, its updates, its
+// LAN) to that node.
 func (s *session) addPeerRoute(p netip.Prefix) {
 	p = p.Masked()
+	if p.Bits() == 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.peerRoute[p]++
@@ -1701,6 +1724,9 @@ func (s *session) addPeerRoute(p netip.Prefix) {
 
 func (s *session) delPeerRoute(p netip.Prefix) {
 	p = p.Masked()
+	if p.Bits() == 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.peerRoute[p]--
@@ -1713,6 +1739,15 @@ func (s *session) delPeerRoute(p netip.Prefix) {
 	for _, q := range splitDefault(p) {
 		_ = s.n.net.DelRoute(ctx, q, s.ifname)
 	}
+}
+
+// networks is every announced network of the current snapshot, longest
+// first.
+func (s *session) networks() []netip.Prefix {
+	if p := s.nets.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 func (s *session) close(reason string) {

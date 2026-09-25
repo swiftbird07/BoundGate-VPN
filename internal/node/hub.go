@@ -155,7 +155,7 @@ func (h *hubService) Serve(ctx context.Context, t *transport.Tunnel) {
 		ts.inPkts.Add(1)
 		pkt := buf[forward.Offset : forward.Offset+n]
 		hdr, ok := netparse.Parse(pkt)
-		if !ok || !allowedSource(p, hdr.Src) {
+		if !ok || !allowedSource(p, s.pool, s.networks(), hdr.Src) {
 			// spoofed or malformed: never forward
 			dropped++
 			if dropped == 1 || dropped%1000 == 0 {
@@ -190,17 +190,55 @@ func (s *session) reset(pkt []byte, from forward.PacketWriter) {
 }
 
 // allowedSource: a peer may send from its overlay address or, as a subnet
-// router in routed mode, from the networks it announces.
-func allowedSource(p registry.Node, src netip.Addr) bool {
+// router in routed mode, from the networks it announces, and from those only
+// where no more specific network in the snapshot is someone else's (or this
+// node's own). An exit node announces 0.0.0.0/0: without these limits it
+// could send as the hub, as any other node, or as a host in a router's LAN,
+// and the nodes behind the hub would decide its packets as theirs. An
+// address in the overlay pool is only ever its owner's.
+//
+// announced is every network of the snapshot, longest first (announced).
+func allowedSource(p registry.Node, pool netip.Prefix, announced []netip.Prefix, src netip.Addr) bool {
 	if src == p.OverlayIP {
 		return true
 	}
+	if pool.Contains(src) {
+		return false
+	}
+	best := -1
 	for _, pf := range p.Prefixes {
-		if pf.Prefix.Contains(src) {
-			return true
+		if pf.Prefix.Contains(src) && pf.Prefix.Bits() > best {
+			best = pf.Prefix.Bits()
 		}
 	}
-	return false
+	if best < 0 {
+		return false
+	}
+	for _, a := range announced {
+		if a.Bits() <= best {
+			break
+		}
+		if a.Contains(src) {
+			return false
+		}
+	}
+	return true
+}
+
+// announced lists every network the snapshot's nodes announce, this node's
+// own included, longest first; default routes are left out (every address
+// is in one).
+func announced(snap *registry.Snapshot) []netip.Prefix {
+	var out []netip.Prefix
+	for _, n := range append([]registry.Node{snap.Self}, snap.Peers...) {
+		for _, p := range n.Prefixes {
+			if p.Prefix.Bits() > 0 {
+				out = append(out, p.Prefix.Masked())
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bits() > out[j].Bits() })
+	return out
 }
 
 // advertisedRoutes is what a hub tells a peer it can reach: the overlay

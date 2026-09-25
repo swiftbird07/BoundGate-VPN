@@ -143,6 +143,15 @@ type Node struct {
 	SignedBy string `json:"signed_by,omitempty"`
 }
 
+// PrefixList is the networks the node announces, without their modes.
+func (n Node) PrefixList() []netip.Prefix {
+	out := make([]netip.Prefix, len(n.Prefixes))
+	for i, p := range n.Prefixes {
+		out[i] = p.Prefix
+	}
+	return out
+}
+
 // IsHub reports whether the node accepts tunnels.
 func (n Node) IsHub() bool { return HasRole(n.Roles, RoleHub) && n.PublicAddr != "" }
 
@@ -376,6 +385,8 @@ func diff(old, cur *Snapshot) Diff {
 			// key or configuration changed: the old tunnel is invalid
 			d.RemovedPeers = append(d.RemovedPeers, id)
 			d.AddedPeers = append(d.AddedPeers, id)
+		} else if !samePolicyAttrs(*o, *n) {
+			d.PoliciesChanged = true
 		}
 	}
 	for id, se := range old.sessBy {
@@ -392,7 +403,7 @@ func diff(old, cur *Snapshot) Diff {
 	}
 	d.HubsChanged = !slices.EqualFunc(old.Hubs(), cur.Hubs(), sameNode)
 	d.SelfChanged = !sameNode(old.Self, cur.Self)
-	d.PoliciesChanged = !slices.Equal(old.Policies, cur.Policies) || !slices.EqualFunc(old.Lists, cur.Lists, func(a, b List) bool {
+	d.PoliciesChanged = d.PoliciesChanged || !samePolicyAttrs(old.Self, cur.Self) || !slices.Equal(old.Policies, cur.Policies) || !slices.EqualFunc(old.Lists, cur.Lists, func(a, b List) bool {
 		return a.Name == b.Name && a.Kind == b.Kind && slices.Equal(a.Entries, b.Entries)
 	})
 	d.PoolChanged = old.Pool != cur.Pool
@@ -406,10 +417,44 @@ func sameNode(a, b Node) bool {
 		a.HardwareBound == b.HardwareBound && slices.Equal(a.Roles, b.Roles) && slices.Equal(a.Prefixes, b.Prefixes)
 }
 
+// privateRanges are where an overlay pool may lie.
+var privateRanges = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+}
+
+// PrivatePool reports whether p is acceptable as the overlay pool: inside a
+// private or shared range, and no larger than a /8.
+func PrivatePool(p netip.Prefix) bool {
+	if !p.IsValid() || !p.Addr().Is4() || p.Bits() < 8 {
+		return false
+	}
+	for _, r := range privateRanges {
+		if r.Bits() <= p.Bits() && r.Contains(p.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// samePolicyAttrs compares what policies can read of a node besides what
+// sameNode compares: a node that gains or loses a tag keeps its tunnels,
+// but every flow it has open is decided again.
+func samePolicyAttrs(a, b Node) bool {
+	return slices.Equal(a.Tags, b.Tags) && a.Name == b.Name && a.Platform == b.Platform && a.KeyKind == b.KeyKind
+}
+
 // Validate checks internal consistency.
 func (s *Snapshot) Validate() error {
 	if !s.Pool.IsValid() || !s.Pool.Addr().Is4() {
 		return fmt.Errorf("registry: pool %q must be a valid IPv4 prefix", s.Pool)
+	}
+	if !PrivatePool(s.Pool) {
+		// the pool is not signed: a control plane that could hand out
+		// 0.0.0.0/1 would pull every node's traffic into the overlay
+		return fmt.Errorf("registry: pool %s must be a private range (10/8, 172.16/12, 192.168/16, 100.64/10) of at least /8", s.Pool)
 	}
 	seenKey := make(map[devicekey.SPKIHash]bool, len(s.Peers)+1)
 	seenIP := make(map[netip.Addr]bool, len(s.Peers)+1)
@@ -430,6 +475,11 @@ func (s *Snapshot) Validate() error {
 		for _, p := range n.Prefixes {
 			if err := p.Validate(); err != nil {
 				return fmt.Errorf("node %q: %w", n.ID, err)
+			}
+			if p.Prefix.Bits() > 0 && p.Prefix.Overlaps(s.Pool) {
+				// the pool's addresses are the nodes'; only a default route
+				// (an exit node) may contain it
+				return fmt.Errorf("registry: node %q announces %s, which overlaps the overlay pool %s", n.ID, p.Prefix, s.Pool)
 			}
 		}
 		return nil

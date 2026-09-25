@@ -115,13 +115,24 @@ func (m *spokeManager) retryNow(session bool) {
 
 // networkChanged moves every hub tunnel to the network the device is on
 // now (Node.migrate); one that cannot move ends and is dialed again.
+//
+// migrate takes the node's lock, and the status (under the node's lock)
+// reads the links: the links are collected first and moved outside m.mu.
 func (m *spokeManager) networkChanged() {
+	type move struct {
+		t    *transport.ClientTunnel
+		what string
+	}
+	var moves []move
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	for _, l := range m.links {
 		if l.tunnel != nil {
-			m.s.n.migrate(l.tunnel, "hub "+l.hub.Name)
+			moves = append(moves, move{l.tunnel, "hub " + l.hub.Name})
 		}
+	}
+	m.mu.Unlock()
+	for _, mv := range moves {
+		m.s.n.migrate(mv.t, mv.what)
 	}
 }
 

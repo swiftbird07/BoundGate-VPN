@@ -353,7 +353,7 @@ func (pm *pathManager) pump(ctx context.Context, p *path) {
 func (s *session) fromPeer(buf []byte, peer registry.Node, back forward.PacketWriter) {
 	pkt := buf[forward.Offset:]
 	h, ok := netparse.Parse(pkt)
-	if !ok || !allowedSource(peer, h.Src) || !s.forMe(h.Dst) {
+	if !ok || !allowedSource(peer, s.pool, s.networks(), h.Src) || !s.forMe(h.Dst) {
 		return
 	}
 	switch out, _ := s.admit(h, pkt, flow.Origin{Principal: peer.ID}); out {
@@ -410,8 +410,12 @@ func (pm *pathManager) closeIdle() {
 // cannot move and end, to be dialed again on demand.
 func (pm *pathManager) networkChanged() {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	dialed := make([]*path, 0, len(pm.dialed))
 	for _, p := range pm.dialed {
+		dialed = append(dialed, p)
+	}
+	pm.mu.Unlock()
+	for _, p := range dialed { // outside pm.mu: see spokeManager.networkChanged
 		pm.s.n.migrate(p.t, "peer "+p.peer.Name)
 	}
 }
