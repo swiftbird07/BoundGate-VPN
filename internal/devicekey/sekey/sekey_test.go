@@ -99,10 +99,58 @@ func fakeHelper(args []string) int {
 	return fail("unknown command")
 }
 
+// helperDir is a directory this package would run a helper from. Below root
+// that is any temporary directory. As root — a CI container runs the tests
+// as root — the package walks the chain up to / and refuses a helper anyone
+// could replace (checkHelperTrust), and TMPDIR is usually /tmp, writable by
+// everyone. The candidates are tried in order and the first trusted one is
+// used; a machine where none of them qualifies has nothing to show here,
+// and the guard itself is covered by TestHelperTrust.
+func helperDir(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		return t.TempDir()
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := ownerOf(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	cwd, _ := os.Getwd()
+	var why []string
+	for _, base := range []string{os.TempDir(), home, cwd} {
+		if base == "" {
+			continue
+		}
+		dir, err := os.MkdirTemp(base, "sekey")
+		if err != nil {
+			why = append(why, err.Error())
+			continue
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			why = append(why, err.Error())
+			continue
+		}
+		if err := checkHelperTrust(resolved, exe, owner); err != nil {
+			why = append(why, err.Error())
+			continue
+		}
+		return resolved
+	}
+	t.Skipf("running as root, and no directory of this machine can hold a helper the package would run: %s", strings.Join(why, "; "))
+	return ""
+}
+
 // installHelper copies the test binary to dir/boundgate-sekey.
 func installHelper(t *testing.T, perm os.FileMode) (helper, dir string) {
 	t.Helper()
-	dir = t.TempDir()
+	dir = helperDir(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
