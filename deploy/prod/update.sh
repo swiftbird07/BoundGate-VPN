@@ -44,7 +44,7 @@ set -eu
 # install): otherwise a server shown an old signed release as the latest
 # would start on it, with whatever that release had to fix. release.sh refuses
 # to tag a release while this is older than the previous one.
-KIT_FLOOR=v0.1.13
+KIT_FLOOR=v0.1.14
 QUIET=; [ "${1:-}" != "-q" ] || { QUIET=1; shift; }
 ACTION=${1:-apply}
 HERE=$(cd "$(dirname "$0")" && pwd)
