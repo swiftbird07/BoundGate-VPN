@@ -345,6 +345,8 @@ cython_debug/
 *.webarchive
 Dream VPN Architektur.html
 .DS_Store
+# worktrees Claude Code makes for its subagents: whole copies of this repo
+/.claude/
 # Local dev state
 /.dev/
 /var/
