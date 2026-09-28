@@ -1,0 +1,73 @@
+# Known vulnerabilities in the standard library and in the modules, checked
+# once a week instead of on every push: the database changes on its own
+# schedule, not with the commits, and a cold run costs ten minutes and more
+# (the tool is compiled from source and the whole dependency graph with it,
+# because nothing here takes objects from a shared runner's cache).
+#
+# The push trigger is narrow on purpose: go.mod, go.sum and this file are
+# where new code from others enters, and that is the moment a check pays for
+# itself. Everything else waits for Monday.
+#
+# A release is still gated by its own run (release.yml): nothing ships past
+# a finding, whatever day it is.
+#
+# By hand: Actions > vulncheck > Run workflow.
+name: vulncheck
+on:
+  schedule:
+    - cron: '23 5 * * 1'     # Mondays, 05:23 UTC
+  push:
+    branches: [main]
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - '.gitea/workflows/vulncheck.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: vulncheck
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # the Go that setup-go installs, never one that go.mod would download
+  GOTOOLCHAIN: local
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Exactly the toolchain of go.mod's `toolchain` line: the standard
+      # library is linked into every binary, so its patch level is the one
+      # that fixes or leaves its vulnerabilities. The next step refuses a
+      # drift. No cache, as everywhere here: a build cache on a shared runner
+      # would feed this run objects that nothing checks.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.7'
+          check-latest: false
+          cache: false
+      - name: toolchain
+        run: |
+          want=$(sed -n 's/^toolchain //p' go.mod)
+          have=$(go env GOVERSION)
+          [ -n "$want" ] && [ "$have" = "$want" ] || { echo "Go is $have, go.mod's toolchain line says ${want:-nothing}: change both together"; exit 1; }
+      # The admin SPA is not built here: the placeholder in
+      # internal/control/web/dist keeps go:embed compiling, and no Svelte
+      # reaches the Go call graph anyway.
+      #
+      # Both builds are scanned, Linux and Windows: a vulnerability may sit
+      # in code that only one of them compiles. golang.org/x/vuln pinned
+      # (released 2026-09-08), as in release.yml.
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+          go run -exec 'env GOOS=windows' golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

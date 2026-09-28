@@ -67,9 +67,9 @@ jobs:
           want=$(sed -n 's/^toolchain //p' go.mod)
           have=$(go env GOVERSION)
           [ -n "$want" ] && [ "$have" = "$want" ] || { echo "Go is $have, go.mod's toolchain line says ${want:-nothing}: change both together"; exit 1; }
-      # reachable known vulnerabilities stop the image (release.yml does the same for releases)
-      - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      # Known vulnerabilities are checked weekly (vulncheck.yml) and before
+      # every release (release.yml), not here: a cold scan costs ten minutes
+      # and more on every push, and the database changes without the commits.
       - name: binaries for every platform
         run: |
           # One go build per platform: the packages are loaded once and the four
