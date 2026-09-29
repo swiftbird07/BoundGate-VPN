@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"golang.zx2c4.com/wireguard/tun"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/safefile"
 )
 
 // Journal wraps a Configurator and records what it changed on the host in a
@@ -58,7 +60,10 @@ func NewJournal(c Configurator, path string) *Journal {
 func (j *Journal) Recover(ctx context.Context) int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	b, err := os.ReadFile(j.path)
+	// only a journal this process wrote: under privilege separation the
+	// directory belongs to the worker, which must not dictate what root
+	// removes (safefile)
+	b, err := safefile.ReadOwn(j.path, 1<<20)
 	if err != nil {
 		return 0
 	}
@@ -96,13 +101,10 @@ func (j *Journal) save() {
 		return
 	}
 	b, _ := json.MarshalIndent(j.st, "", "  ")
-	tmp := j.path + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o700); err != nil {
 		return
 	}
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, j.path)
-	}
+	_ = safefile.WriteAtomic(j.path, b)
 }
 
 func (j *Journal) CreateTUN(name string, mtu int) (tun.Device, string, error) {

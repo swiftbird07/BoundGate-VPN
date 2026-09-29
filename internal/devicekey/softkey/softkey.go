@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/safefile"
 )
 
 const pemType = "EC PRIVATE KEY"
@@ -58,7 +59,9 @@ func (o Opener) Open(ctx context.Context) (devicekey.DeviceKey, error) {
 	if o.Path == "" {
 		return nil, errors.New("softkey: empty path")
 	}
-	b, err := os.ReadFile(o.Path)
+	// the file must be this user's own, not a link someone who can write
+	// the directory put there (safefile, docs/PRIVSEP.md)
+	b, err := safefile.ReadOwn(o.Path, 64<<10)
 	switch {
 	case err == nil:
 		return load(b)
@@ -96,30 +99,10 @@ func create(path string) (*Key, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("softkey: mkdir: %w", err)
 	}
-	// Write atomically with 0600 so a crash never leaves a half-written or
-	// world-readable key behind.
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("softkey: create: %w", err)
-	}
-	if err := pem.Encode(f, &pem.Block{Type: pemType, Bytes: der}); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	// atomically with 0600, so a crash never leaves a half-written or
+	// world-readable key behind
+	if err := safefile.WriteAtomic(path, pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: der})); err != nil {
 		return nil, fmt.Errorf("softkey: write: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return nil, err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return nil, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return nil, fmt.Errorf("softkey: rename: %w", err)
 	}
 	return &Key{priv: priv}, nil
 }

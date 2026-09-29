@@ -26,6 +26,7 @@ import (
 	"github.com/google/go-tpm/tpm2/transport"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/safefile"
 )
 
 // Kind is the key kind reported at enrollment.
@@ -121,7 +122,7 @@ func open(tpm transport.TPMCloser, raw bool, path string) (*Key, error) {
 	parent := tpm2.NamedHandle{Handle: srk.ObjectHandle, Name: srk.Name}
 
 	var blob blobFile
-	b, err := os.ReadFile(path)
+	b, err := safefile.ReadOwn(path, 64<<10)
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(b, &blob); err != nil {
@@ -266,29 +267,8 @@ func writeBlob(path string, blob blobFile) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("tpm2key: mkdir: %w", err)
 	}
-	tmp := path + ".tmp"
-	os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("tpm2key: create: %w", err)
-	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	if err := safefile.WriteAtomic(path, append(b, '\n')); err != nil {
 		return fmt.Errorf("tpm2key: write: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("tpm2key: rename: %w", err)
 	}
 	return nil
 }
