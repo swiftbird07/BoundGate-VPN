@@ -227,6 +227,23 @@ func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return d.overTCP(tcp, req)
 	}
 	rsp, err := h3.RoundTrip(req)
+	if err != nil && req.Context().Err() == nil {
+		// reset (the machine's network changed) closed the transport under
+		// this request: that says nothing about the path. Once more, over
+		// the transport that replaced it
+		d.mu.Lock()
+		replaced := d.h3 != h3
+		h3 = d.h3
+		d.mu.Unlock()
+		if replaced && (req.Body == nil || req.GetBody != nil) {
+			if req.Body != nil {
+				if req.Body, err = req.GetBody(); err != nil {
+					return nil, err
+				}
+			}
+			rsp, err = h3.RoundTrip(req)
+		}
+	}
 	if err == nil {
 		d.mu.Lock()
 		d.last = "h3"
@@ -259,12 +276,14 @@ func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // answeredOverUDP: the control plane was reached over UDP and the
 // connection failed on its content (a key that is not pinned yet, a refused
-// certificate, a closed connection). TCP would fail the same way; falling
-// back is for a path that carries no UDP.
+// certificate, a closed connection), or ended as HTTP/3, by the control
+// plane or by this node itself. TCP would fail the same way; falling back
+// is for a path that carries no UDP.
 func answeredOverUDP(err error) bool {
 	var te *quic.TransportError
 	var ae *quic.ApplicationError
-	return errors.As(err, &te) || errors.As(err, &ae)
+	var he *http3.Error
+	return errors.As(err, &te) || errors.As(err, &ae) || errors.As(err, &he)
 }
 
 func (d *dualTransport) overTCP(tcp *http.Transport, req *http.Request) (*http.Response, error) {
