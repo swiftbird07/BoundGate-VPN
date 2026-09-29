@@ -313,3 +313,45 @@ func TestRedirectKeepsTheScheme(t *testing.T) {
 		t.Fatal("the fetcher spoke clear text")
 	}
 }
+
+// A private repository answers the sign-in page to a request without a
+// token: HTML, 200, and a redirect behind it. The status says that instead
+// of letting the parser stumble over "<!DOCTYPE html>".
+func TestSignInPageIsNamedForWhatItIs(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/login" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte("<!DOCTYPE html>\n<html>sign in</html>\n"))
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			http.Redirect(w, r, "/user/login", http.StatusSeeOther)
+			return
+		}
+		_, _ = w.Write([]byte("10.60.0.10\n"))
+	}))
+	defer srv.Close()
+
+	store := open(t)
+	l := newList(t, store, db.List{Name: "private-git", Kind: "ip", Entries: []string{"172.16.0.1/32"},
+		SourceURL: srv.URL + "/BDH/ACL-Lists/raw/branch/main/acl-nas.txt", SourceInterval: time.Minute})
+	f := listsource.New(quiet(), loopback)
+
+	got, _, err := f.Fetch(ctx, store, nil, l)
+	if err == nil || !strings.Contains(err.Error(), "HTML page") {
+		t.Fatalf("the sign-in page: %v", err)
+	}
+	if !strings.Contains(got.SourceStatus, "redirected") || !strings.Contains(got.SourceStatus, "token") {
+		t.Fatalf("the status does not say what to do: %q", got.SourceStatus)
+	}
+	if len(got.Entries) != 1 || got.Entries[0] != "172.16.0.1/32" {
+		t.Fatalf("the list lost its entries: %v", got.Entries)
+	}
+
+	// with the header the same URL answers the file
+	l.SourceHeader, l.SourceSecret = "Authorization", "token s3cret"
+	if l, _, err = f.Fetch(ctx, store, nil, l); err != nil || len(l.Entries) != 1 || l.Entries[0] != "10.60.0.10/32" {
+		t.Fatalf("with the token: %v %v", err, l.Entries)
+	}
+}

@@ -207,6 +207,18 @@ list_sources:
 This switch is in the file on the control-plane host, not in the admin API:
 an admin account alone cannot open the internal network to the fetch.
 
+A source in a private repository needs the request header and its token: a
+Gitea or GitLab that does not know the caller answers its **sign-in page**,
+with HTTP 200 behind a redirect, and its first line is `<!DOCTYPE html>`.
+The status says so ("the source answered with an HTML page, not a list")
+instead of reporting a broken entry in line 1. For Gitea the API path is
+the reliable one, with `Authorization` as the header name and
+`token <access token>` as its value:
+
+```
+https://git.example.com/api/v1/repos/<owner>/<repo>/raw/<file>?ref=main
+```
+
 A list that a policy refers to keeps its name and kind and cannot be
 deleted (409); its entries can change at any time. A policy may only name
 lists that exist (400 otherwise). Lists of server names work like
