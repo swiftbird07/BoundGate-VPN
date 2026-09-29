@@ -8,6 +8,8 @@ control:
   server_name: nodes.bg.example.com
 privsep:                           # the node runs as this user, the device key and the host's network stay with
   user: "65531"                    # a root parent (docs/PRIVSEP.md); remove the block to run it as root alone
+  # sandbox: enforce               # the worker confines itself (seccomp, Landlock); audit only logs what the
+                                   # filter would refuse, off runs without. `boundgatectl status` shows what applies
 # Roles are requested here and granted by the admin at approval. Pick one block:
 #
 # subnet router: the LAN behind this host becomes reachable through the overlay

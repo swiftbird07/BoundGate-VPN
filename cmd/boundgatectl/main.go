@@ -433,6 +433,10 @@ func printStatus(s node.Status, asJSON bool) error {
 		fmt.Printf(" (the control plane does not know this key: never enrolled, or the request was rejected; run `boundgatectl enroll`)")
 	}
 	fmt.Printf("\nnode:         %s (%s, hardware-bound: %v)\nfingerprint:  %s\nsnapshot:     v%d from %s\n", s.NodeName, s.KeyKind, s.HardwareBound, s.Fingerprint, s.SnapshotVersion, s.Control)
+	if s.PrivilegeSeparation != "" {
+		fmt.Printf("separation:   %s\n", s.PrivilegeSeparation)
+		fmt.Printf("sandbox:      %s\n", s.Sandbox)
+	}
 	if s.KeyWarning != "" {
 		fmt.Printf("\nWARNING:      %s\n", s.KeyWarning)
 		if s.HardwareKeyAvailable {

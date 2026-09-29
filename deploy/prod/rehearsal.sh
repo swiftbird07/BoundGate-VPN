@@ -128,6 +128,7 @@ if $C logs hub 2>&1 | grep -q 'falling back to TCP'; then fail "the hub fell bac
 # the kit's hub.yaml turns on privilege separation: the node as 65531, the key root's
 hub boundgatectl -json status | jq -e '.privilege_separation | test("65531")' >/dev/null || fail "the hub does not run separated (docs/PRIVSEP.md)"
 hub sh -c 'ps -o user,args' | grep -q '^65531 .*privsep-worker' || fail "no worker process as 65531 in the hub"
+hub boundgatectl -json status | jq -e '.sandbox | test("^seccomp \\([0-9]+ system calls\\), landlock v[0-9]+$")' >/dev/null || fail "the hub's worker is not confined: $(hub boundgatectl -json status | jq -r .sandbox)"
 HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
 
 echo "== 4. a client in its own network namespace: same address, same port, other server name"

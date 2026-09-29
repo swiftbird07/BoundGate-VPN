@@ -161,6 +161,8 @@ type Config struct {
 	// Separation describes the privilege separation this node runs under
 	// (internal/privsep), for its status; empty: none.
 	Separation string
+	// Sandbox describes what confines that worker (Status.Sandbox).
+	Sandbox string
 	// Platform is what the node reports at enrollment; default runtime.GOOS.
 	Platform string
 	// PowerSave: a quiet node sends nothing, so a phone's radio can sleep
@@ -237,7 +239,10 @@ type Status struct {
 	// PrivilegeSeparation: how this node's packets are kept away from root
 	// (docs/PRIVSEP.md); empty when they are not.
 	PrivilegeSeparation string `json:"privilege_separation,omitempty"`
-	HardwareBound       bool   `json:"hardware_bound"`
+	// Sandbox: what confines the separated node (seccomp, Landlock), and
+	// what of it is missing on this machine.
+	Sandbox       string `json:"sandbox,omitempty"`
+	HardwareBound bool   `json:"hardware_bound"`
 	// KeyWarning is set when the device key is weaker than it should be (a
 	// software key on a Mac); HardwareKeyAvailable: a new identity
 	// (`reset -new-identity`) would be hardware-bound.
@@ -514,6 +519,7 @@ func (n *Node) init(enclave bool) (*Node, error) {
 		KeyKind:              key.Kind(),
 		Version:              version.Version,
 		PrivilegeSeparation:  cfg.Separation,
+		Sandbox:              cfg.Sandbox,
 		HardwareBound:        key.HardwareBound(),
 		KeyWarning:           keyWarning(key.Kind(), enclave),
 		HardwareKeyAvailable: enclave && !key.HardwareBound(),
@@ -1418,7 +1424,12 @@ func (s *session) apply(ctx context.Context) error {
 		var gen quic.ConnectionIDGenerator
 		var tcpLn net.Listener
 		if !n.cfg.NoTCPFallback {
-			ln, err := net.Listen("tcp", n.cfg.Listen)
+			// plain TCP, not MPTCP (Go's default for listeners where the
+			// kernel has it): the worker's sandbox lets it listen on this
+			// port as TCP and has no MPTCP at all (internal/sandbox)
+			var lc net.ListenConfig
+			lc.SetMultipathTCP(false)
+			ln, err := lc.Listen(ctx, "tcp", n.cfg.Listen)
 			if err != nil {
 				return fmt.Errorf("hub tcp listener: %w", err)
 			}

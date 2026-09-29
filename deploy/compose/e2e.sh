@@ -60,9 +60,14 @@ wait_for 20 status_is hub1 '.state == "up" and .binding == "verified" and .polic
 wait_for 20 status_is hub2 '.state == "up"' || fail "hub2 not up"
 wait_for 20 status_is node-r '[.hubs[] | select(.state == "connected")] | length == 2' || fail "node-r not connected to both hubs"
 
-echo "== 2b. privilege separation on hub1, node-r and node-a: the node runs as uid 65531, the key stays root's"
+echo "== 2b. privilege separation on hub1, node-r and node-a: the node runs as uid 65531 in its sandbox, the key stays root's"
+# every thread of the worker: the seccomp filter (mode 2) and no way to new privileges
+confined() { x "$1" sh -c 'w=$(ps -o pid,user,args | awk "/privsep-worker/ && \$2 == \"65531\" {print \$1}"); [ -n "$w" ] || exit 1
+  n=0; for t in /proc/$w/task/*/status; do n=$((n+1)); grep -q "^Seccomp:[[:space:]]*2$" $t && grep -q "^NoNewPrivs:[[:space:]]*1$" $t || exit 1; done; [ $n -gt 3 ]'; }
 for svc in hub1 node-r node-a; do
   status_is $svc '.privilege_separation | test("worker uid 65531")' || fail "$svc does not report privilege separation"
+  status_is $svc '.sandbox | test("^seccomp \\([0-9]+ system calls\\), landlock v[0-9]+$")' || fail "$svc: the worker's sandbox is not complete: $(x $svc boundgatectl -json status | jq -r .sandbox)"
+  confined $svc || fail "$svc: a thread of the worker runs without the seccomp filter"
   x $svc sh -c 'ps -o user,args | grep -q "^65531 .*privsep-worker"' || fail "$svc: no worker running as 65531"
   x $svc sh -c 'ps -o user,args | grep -v privsep-worker | grep -q "^root .*boundgate-node"' || fail "$svc: no privileged parent"
   x $svc sh -c 'stat -c "%u %a" /var/lib/boundgate/device.key' | grep -q '^0 600$' || fail "$svc: the key file is not root's alone"
@@ -88,6 +93,8 @@ OLDW=$(psx $PS sh -c 'ps -o pid,user,args | awk "/privsep-worker/ && \$2 == \"65
 psx -u 65531 $PS kill -9 "$OLDW"     # the worker ending itself, as its own user could
 wait_for 15 sh -c "docker exec $PS sh -c 'ps -o pid,user,args' | awk '/privsep-worker/ && \$2 == \"65531\" && \$1 != \"$OLDW\" {f=1} END {exit !f}'" || fail "privsep: the parent did not start a killed worker again"
 wait_for 15 sh -c "docker exec $PS boundgatectl -json status >/dev/null" || fail "privsep: the socket does not answer after the worker came back"
+docker exec $PS boundgatectl -json status | jq -e '.sandbox | test("^seccomp \\([0-9]+ system calls\\), landlock v[0-9]+$")' >/dev/null || fail "privsep: the worker that came back is not confined"
+docker exec $PS boundgatectl status | grep -q '^sandbox: *seccomp' || fail "privsep: status does not show the sandbox"
 docker rm -f $PS >/dev/null
 docker run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID --cap-add CHOWN --entrypoint sh "$IMG" -c \
   'printf "name: ps\nstate_dir: /tmp/s\ncontrol: {addr: \"127.0.0.1:9\", server_name: nodes.example}\nsocket: /tmp/node.sock\nprivsep: {user: \"65531\"}\n" > /tmp/node.yaml && boundgate-node -config /tmp/node.yaml' 2>&1 \

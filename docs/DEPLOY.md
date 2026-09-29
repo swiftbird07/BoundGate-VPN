@@ -262,7 +262,9 @@ behind the mux), lego as 65532 as well. The hub and every node are split
 `NET_ADMIN` keeps the device key and changes the host's network, and has
 `SETUID`, `SETGID`, `CHOWN` and `KILL` to start, stop and hand its
 directories to the worker, which runs the node as 65531 with no capability
-but `NET_BIND_SERVICE` (in the node kit, for a hub on `:443`). No
+but `NET_BIND_SERVICE` (in the node kit, for a hub on `:443`), inside a
+sandbox of its own (seccomp and Landlock: no other program, some 80 system
+calls, its own directories). No
 `NET_RAW`, no `DAC_OVERRIDE`, so root in the container reaches only files
 root owns. All of them with `no-new-privileges` and a read-only
 root file system; what they write is their volume and a small tmpfs (`/tmp`,
@@ -302,7 +304,12 @@ privsep:
 
 and `docker compose up -d`. The parent hands `state/hub` (`state`) and the
 logs to 65531 at the first start, except the device key and its own
-journal; `boundgatectl status` then shows `privilege_separation`. Back to
+journal; `boundgatectl status` then shows `separation` and `sandbox`. The
+sandbox's list of system calls was run in the lab on arm64: on the first
+amd64 node, look at `docker compose logs` for a worker that ends
+(`privsep: the worker ended`) and at the host's `dmesg | grep type=1326`
+for refused calls after a day; `sandbox: audit` under `privsep` logs
+instead of refusing, should something be missing (PRIVSEP.md). Back to
 one process: remove the block and `chown -R 0:0 state/hub logs/hub` (node
 kit: `state logs`) before the start; root in these containers does not read
 other users' files.

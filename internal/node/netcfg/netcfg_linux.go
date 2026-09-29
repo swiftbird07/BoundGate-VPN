@@ -23,6 +23,9 @@ type linuxCfg struct {
 	// arrival: routes through the tunnel go into arrivalTable
 	// (ReplyViaArrival) instead of the main table
 	arrival *atomic.Bool
+	// tables: the routing tables as opened files (NewWatcher); without,
+	// they are opened at every look
+	tables *routeTables
 }
 
 // New returns the Linux configurator. It shells out to iproute2 and

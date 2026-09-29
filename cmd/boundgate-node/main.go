@@ -108,6 +108,11 @@ type config struct {
 	// only what its rules allow (docs/PRIVSEP.md). Empty: one process.
 	Privsep struct {
 		User string `yaml:"user"`
+		// Sandbox: the worker confines itself before it reads anything from
+		// the network (seccomp, Landlock; internal/sandbox). enforce (the
+		// default), audit (system calls off the list are logged by the
+		// kernel, not refused) or off.
+		Sandbox string `yaml:"sandbox"`
 	} `yaml:"privsep"`
 	MTU       int    `yaml:"mtu"`
 	LogDir    string `yaml:"log_dir"`
@@ -186,6 +191,10 @@ type separated struct {
 	net    netcfg.Configurator
 	socket *os.File
 	uid    int
+	// sandbox is what confines the worker, in words; incomplete says what
+	// of it this machine does not have
+	sandbox    string
+	incomplete []string
 }
 
 // parseConfig reads the configuration and fills in the defaults.
@@ -325,6 +334,12 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	if sep != nil {
 		nc.Key, nc.Net = sep.key, sep.net
 		nc.Separation = fmt.Sprintf("worker uid %d; key and host network in the privileged parent", sep.uid)
+		nc.Sandbox = sep.sandbox
+		if len(sep.incomplete) > 0 {
+			logs.System.Warn("the worker's sandbox is incomplete", "sandbox", sep.sandbox)
+		} else {
+			logs.System.Info("the worker is confined", "sandbox", sep.sandbox)
+		}
 	}
 	n, err := node.New(nc)
 	if err != nil {

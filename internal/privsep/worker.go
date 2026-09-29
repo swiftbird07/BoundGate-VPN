@@ -221,8 +221,15 @@ func (k *remoteKey) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]
 
 // Net is the host's network as the worker may change it, through the
 // parent. Watching the machine's networks needs no privileges and stays in
-// the worker.
-func (c *Client) Net() netcfg.Configurator { return &remoteNet{c: c, local: netcfg.New()} }
+// the worker; what it reads for that is opened here, before the worker
+// enters its sandbox.
+func (c *Client) Net() (netcfg.Configurator, error) {
+	local, err := netcfg.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("privsep: %w", err)
+	}
+	return &remoteNet{c: c, local: local}, nil
+}
 
 type remoteNet struct {
 	c     *Client

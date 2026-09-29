@@ -16,7 +16,8 @@ process that has neither the device key nor root.
   │   bypass, forwarding, NAT         │ socket │ every packet: parsers, flows,    │
   │ the local socket's place          │  pair  │   ACL, DNS learning              │
   │ restarts the worker, cleans up    │        │ the local socket (boundgatectl)  │
-  └───────────────────────────────────┘        └──────────────────────────────────┘
+  └───────────────────────────────────┘        └───── in a sandbox: seccomp, ─────┘
+                                                      Landlock (below)
           TUN device ──── passed as a descriptor ────▶ read and written here
 ```
 
@@ -95,7 +96,10 @@ files; a root service outside a container does.
 It can no longer: read or copy the device key, change another interface's
 addresses or routes, change the host's firewall beyond the node's own
 rules, load kernel modules, read other users' files, or keep anything of
-root when the parent restarts it.
+root when the parent restarts it. With the sandbox (below) it can neither
+start a program nor make memory executable, reads and writes no file
+outside its state, its logs and `/etc`, signals no other process, and
+reaches the kernel through some 80 system calls instead of 400.
 
 ## Containers
 
@@ -115,10 +119,82 @@ into the VM, and keep no owners): the key is root's, uid 65531 cannot read
 it, a worker killed by its own user is started again, and a parent without
 `KILL` refuses to start.
 
+## The worker's sandbox
+
+Before the worker reads anything from the network it confines itself, for
+good (`internal/sandbox`). Two mechanisms of the kernel, neither of which
+the worker can take back, and both on every thread:
+
+**seccomp**: a filter over the system calls.
+
+| A call | |
+|---|---|
+| on the list (about 80: threads, memory, timers, signals, sockets, files) | goes through |
+| `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev` | ends the worker (SIGSYS). The node starts no program and looks into no other process: whoever asks is not the node |
+| `mmap`, `mprotect` with `PROT_EXEC` | ends the worker. Memory that was written and is then executed is how injected code runs; a Go program without cgo never asks for it |
+| `clone` | threads only; a new process is refused |
+| `kill`, `tgkill` | to the worker itself only |
+| `socket` | unix sockets, TCP and UDP over IPv4 and IPv6, netlink's routing protocol (reading the machine's networks). No packet or raw sockets, no other netlink protocol, no SCTP, no MPTCP |
+| `ioctl` | the tunnel device's name and offloads, an interface's index and MTU |
+| `prctl` | naming memory regions (the Go runtime) |
+| another instruction set (32-bit, x32) | ends the worker |
+| everything else (`mount`, `setuid`, `bpf`, `io_uring`, `keyctl`, `unshare`, `perf_event_open`, `userfaultfd`, the module calls, …) | fails with "function not implemented" and is written to the kernel's log |
+
+**Landlock**: a domain over files and listening ports.
+
+| | |
+|---|---|
+| `state_dir`, `log_dir` | plain files and directories: read, write, create, remove. Nothing is executed, no device, socket or link is made |
+| `/etc`, `profiles_dir`, where `/etc/resolv.conf` points to | read (the resolver's configuration, the profiles) |
+| everything else (`/proc`, `/sys`, `/tmp`, `/home`, the host's other files) | neither read nor written |
+| TCP | listening only on the port of `listen` (a hub with the TCP fallback), on none otherwise |
+
+What the worker has open when it enters stays open: the socket pair to the
+parent, the local socket, the routing tables it watches; the tunnel device
+comes from the parent as a descriptor. CA roots and the time zone are read
+before.
+
+```yaml
+privsep:
+  user: "65531"
+  sandbox: enforce     # the default. audit | off
+```
+
+`boundgatectl status` shows what applies (`sandbox: seccomp (82 system
+calls), landlock v4`), and what is missing where something is: a kernel
+without Landlock (before 5.13, or without the `landlock` security module)
+still gets the filter, and says so; a machine that is neither amd64 nor
+arm64 has no filter. Landlock's rules grow with the kernel: ports from
+version 4 (Linux 6.7), device `ioctl` from 5, abstract unix sockets from 6.
+
+**When the list lacks a call.** It was read from the sources of Go's runtime
+and libraries and run against the lab; a new Go release or a rare path may
+ask for one more. The kernel logs every refusal (`dmesg | grep type=1326`,
+or the audit log: `syscall=` is the number, `code=0x5…` a refusal,
+`code=0x7ffc0000` one that `audit` let through, `sig=31` a worker that was
+ended). `sandbox: audit` lets through and only logs what the filter would refuse
+(and executable memory), to find all of it at once; starting a program
+still ends the worker, and the file rules stay as they are. `sandbox: off`
+runs the worker without.
+Both are in `node.yaml`, which the worker cannot write.
+
+The tests: `internal/sandbox` confines a child process and has it try
+(the node's work goes on; files outside, other ports, packet sockets,
+signals to others and new programs are refused; `execve` and executable
+memory end it), and runs the filter's logic on every platform against a
+BPF machine in Go. `deploy/compose/e2e.sh` checks on three nodes that every
+thread of the worker carries the filter, and runs everything else with the
+sandbox on.
+
+**What it does not do.** The worker still talks to the network as it
+likes (UDP anywhere, TCP connections anywhere: where the hubs are is not
+known before the control plane says it), still uses the key as a signer
+while it runs, and still owns its state. The kernel remains reachable
+through the calls on the list: a bug in the network stack, in `epoll` or
+`futex` is not what a filter stops.
+
 ## Not yet
 
-- seccomp and Landlock for the worker (no `execve`, no kernel attack surface
-  it does not need, file access limited to its state and logs).
 - The parent verifying pins and the admin key list before the worker may
   change them.
 - macOS: the same split with the utun descriptor; Windows keeps one service

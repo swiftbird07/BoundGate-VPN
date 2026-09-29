@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -25,6 +26,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/privsep"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/sandbox"
 )
 
 // workerArg starts the worker of privilege separation (docs/PRIVSEP.md);
@@ -52,6 +54,9 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 	}
 	if err := parentCapabilities(); err != nil {
 		return err
+	}
+	if _, err := sandbox.ParseMode(cfg.Privsep.Sandbox); err != nil {
+		return fmt.Errorf("privsep.%w", err)
 	}
 	if err := handOver(cfg.StateDir, uid, parentFiles, log); err != nil {
 		return err
@@ -306,6 +311,51 @@ func parentCapabilities() error {
 	return nil
 }
 
+// confine puts the worker into its sandbox (internal/sandbox): its state
+// and its logs to write, the resolver's configuration to read, its own
+// TCP port to listen on, and the system calls of a network daemon.
+func confine(cfg config) (sandbox.Report, error) {
+	mode, err := sandbox.ParseMode(cfg.Privsep.Sandbox)
+	if err != nil {
+		return sandbox.Report{}, err
+	}
+	if mode == sandbox.Off {
+		return sandbox.Apply(sandbox.Policy{Mode: mode})
+	}
+	p := sandbox.Policy{Mode: mode, ReadWrite: []string{cfg.StateDir}}
+	if cfg.LogDir != "" {
+		p.ReadWrite = append(p.ReadWrite, cfg.LogDir)
+	}
+	// /etc as a directory, not its files: resolv.conf is replaced, not
+	// rewritten, where something manages it, and a rule about a file is
+	// about the file that was there
+	p.ReadOnly = []string{"/etc", cfg.ProfilesDir, cfg.Update.TokenFile}
+	if target, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && filepath.Dir(target) != "/etc" {
+		p.ReadOnly = append(p.ReadOnly, filepath.Dir(target)) // /run/systemd/resolve and its like
+	}
+	if cfg.Listen != "" && (cfg.TCPFallback == nil || *cfg.TCPFallback) {
+		if _, port, err := net.SplitHostPort(cfg.Listen); err == nil {
+			if n, err := net.LookupPort("tcp", port); err == nil && n > 0 {
+				p.BindTCP = append(p.BindTCP, uint16(n))
+			}
+		}
+	}
+	readOnce()
+	return sandbox.Apply(p)
+}
+
+// readOnce has Go's library read now what it reads once and keeps: the
+// CA roots (the release check is the one connection that asks the
+// system's), the time zone, the kernel's limit for a listener's queue.
+// What is in memory needs no rule in the sandbox.
+func readOnce() {
+	_, _ = x509.SystemCertPool()
+	_ = time.Now().Local().String()
+	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
+		ln.Close()
+	}
+}
+
 // runWorker is the worker: fd 3 is its end of the socket pair, fd 4 the
 // local socket the parent made. It never runs as root.
 func runWorker() int {
@@ -338,7 +388,19 @@ func runWorker() int {
 		<-c.Done()
 		cancel()
 	}()
-	sep := &separated{key: key, net: c.Net(), socket: os.NewFile(4, "node.sock"), uid: os.Getuid()}
+	hostNet, err := c.Net()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "boundgate-node:", err)
+		return 1
+	}
+	// from here on the worker talks to the network: it confines itself first
+	confined, err := confine(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "boundgate-node:", err, "(privsep.sandbox: off runs the worker without)")
+		return 1
+	}
+	sep := &separated{key: key, net: hostNet, socket: os.NewFile(4, "node.sock"), uid: os.Getuid(),
+		sandbox: confined.String(), incomplete: confined.Missing}
 	if err := runWith(ctx, cfg, sep); err != nil {
 		fmt.Fprintln(os.Stderr, "boundgate-node:", err)
 		return 1
