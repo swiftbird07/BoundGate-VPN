@@ -6,6 +6,8 @@ key_kind: softkey                  # tpm2 with a TPM or vTPM (docs/TPM.md): pass
 control:
   addr: bg.example.com:443
   server_name: nodes.bg.example.com
+privsep:                           # the node runs as this user, the device key and the host's network stay with
+  user: "65531"                    # a root parent (docs/PRIVSEP.md); remove the block to run it as root alone
 # Roles are requested here and granted by the admin at approval. Pick one block:
 #
 # subnet router: the LAN behind this host becomes reachable through the overlay

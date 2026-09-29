@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -63,6 +64,11 @@ type Options struct {
 	Reset func(newIdentity bool) error
 	// Update, when set, answers /v1/update: release checks and installation.
 	Update *update.Service
+	// Listener, when set, is the socket to serve, made by someone else: the
+	// privileged parent of a separated node, which owns the socket's place
+	// (internal/privsep). Serve takes a copy of it every time and leaves
+	// the socket file alone.
+	Listener *os.File
 }
 
 // ResetRequest is the optional body of POST /v1/reset.
@@ -78,7 +84,7 @@ var ErrReset = errors.New("ipc: node was reset")
 // Serve runs the IPC server until ctx ends. The socket is created with mode
 // 0660 so only root and the socket's group can talk to the daemon.
 func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) error {
-	ln, err := listen(socketPath, opt.Group, opt.Users)
+	ln, err := listenFor(socketPath, opt)
 	if err != nil {
 		return err
 	}
@@ -89,7 +95,7 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		wasReset.Store(true)
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	})
-	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
+	if err := serveMux(ctx, ln, socketPath, opt.Listener == nil, mux); err != nil {
 		return err
 	}
 	if wasReset.Load() {

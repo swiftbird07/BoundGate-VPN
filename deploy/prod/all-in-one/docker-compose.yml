@@ -24,7 +24,9 @@
 # NET_BIND_SERVICE for port 443: add it to their cap_add below.
 #
 # Who runs as whom: the mux as 65534 and the control plane (and lego) as
-# 65532, without any capability; the hub as root with NET_ADMIN only. Their
+# 65532, without any capability; the hub as a root parent with NET_ADMIN
+# that runs the node itself as 65531 (privsep in hub.yaml, docs/PRIVSEP.md).
+# Their
 # directories belong to those users (setup.sh does that; by hand:
 # docs/DEPLOY.md, "Install").
 #
@@ -114,14 +116,15 @@ services:
         done
 
   # A router: its tunnel device, routes and nftables rules are the host's.
-  # NET_ADMIN is all of that (ip, nft, the TUN device); no NET_RAW, no
-  # other default capability.
+  # NET_ADMIN is all of that (ip, nft, the TUN device); SETUID, SETGID,
+  # CHOWN and KILL start, stop and hand ./state/hub to the unprivileged
+  # worker (privsep); no NET_RAW, no other default capability.
   hub:
     image: *image
     network_mode: host
     restart: unless-stopped
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN]                       # + NET_BIND_SERVICE without the mux, when hub.yaml listens on :443
+    cap_add: [NET_ADMIN, SETUID, SETGID, CHOWN, KILL]   # + NET_BIND_SERVICE without the mux, when hub.yaml listens on :443
     security_opt: [no-new-privileges:true]
     read_only: true
     tmpfs:

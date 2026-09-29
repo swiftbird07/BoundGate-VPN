@@ -402,3 +402,8 @@ func (t *swapTUN) Close() error {
 	}
 	return err
 }
+
+// TUNFromFD makes a device from a descriptor someone else opened: the
+// platform (an app's network extension) or, under privilege separation,
+// the privileged parent (internal/privsep).
+func TUNFromFD(fd int) (tun.Device, error) { return tunFromFD(fd) }

@@ -239,6 +239,8 @@ key_kind: $TPM
 control:
   addr: $NAME:443
   server_name: nodes.$NAME
+privsep:                           # the node runs as this user; the key and the host's network stay with a root parent
+  user: "65531"                    # (docs/PRIVSEP.md)
 # requested here, granted by the admin at approval
 $EXTRA
 auto_up: true

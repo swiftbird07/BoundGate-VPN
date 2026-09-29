@@ -12,9 +12,13 @@
 #   docker compose exec node boundgatectl enroll   # then confirm + sign in the admin UI
 #   docker compose exec node boundgatectl status
 #
-# The node runs as root with NET_ADMIN (routes, nftables, the TUN device) and
-# NET_BIND_SERVICE (a hub on :443), nothing else, on a read-only root; ./state
-# and ./logs belong to root (docs/DEPLOY.md).
+# Privilege separation (privsep in node.yaml, docs/PRIVSEP.md): a root
+# parent keeps the device key and changes the host's network, the node itself
+# (every packet, the control channel) runs as uid 65531. The parent has
+# NET_ADMIN (routes, nftables, the TUN device) and what it takes to start and
+# stop the worker and hand it ./state and ./logs (SETUID, SETGID, CHOWN,
+# KILL); the worker keeps only NET_BIND_SERVICE (a hub on :443). Nothing
+# else, on a read-only root.
 #
 # Updating: ./update.sh (signed releases, docs/RELEASES.md)
 name: boundgate-node
@@ -25,7 +29,7 @@ services:
     network_mode: host
     restart: unless-stopped
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, NET_BIND_SERVICE]
+    cap_add: [NET_ADMIN, NET_BIND_SERVICE, SETUID, SETGID, CHOWN, KILL]   # the last four only for privsep
     security_opt: [no-new-privileges:true]
     read_only: true
     tmpfs:

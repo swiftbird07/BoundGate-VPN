@@ -158,6 +158,9 @@ type Config struct {
 	// Net, when set, applies the network configuration instead of the host
 	// implementation (netcfg.New with its cleanup journal).
 	Net netcfg.Configurator
+	// Separation describes the privilege separation this node runs under
+	// (internal/privsep), for its status; empty: none.
+	Separation string
 	// Platform is what the node reports at enrollment; default runtime.GOOS.
 	Platform string
 	// PowerSave: a quiet node sends nothing, so a phone's radio can sleep
@@ -221,17 +224,20 @@ type Status struct {
 	SkippedRoutes []string `json:"skipped_routes,omitempty"`
 	Tunnels       int      `json:"tunnels"` // accepted tunnels (hub role)
 	// Relay: what this hub relays between spokes right now and relayed so far.
-	Relay         *transport.RelayStats `json:"relay,omitempty"`
-	Since         time.Time             `json:"since,omitempty"`
-	LastError     string                `json:"last_error,omitempty"`
-	LastClose     string                `json:"last_close,omitempty"`
-	NodeName      string                `json:"node_name"`
-	NodeID        string                `json:"node_id,omitempty"`
-	SPKI          string                `json:"spki"`
-	Fingerprint   string                `json:"fingerprint"`
-	KeyKind       string                `json:"key_kind"`
-	Version       string                `json:"version"` // release tag of this daemon, or "dev"
-	HardwareBound bool                  `json:"hardware_bound"`
+	Relay       *transport.RelayStats `json:"relay,omitempty"`
+	Since       time.Time             `json:"since,omitempty"`
+	LastError   string                `json:"last_error,omitempty"`
+	LastClose   string                `json:"last_close,omitempty"`
+	NodeName    string                `json:"node_name"`
+	NodeID      string                `json:"node_id,omitempty"`
+	SPKI        string                `json:"spki"`
+	Fingerprint string                `json:"fingerprint"`
+	KeyKind     string                `json:"key_kind"`
+	Version     string                `json:"version"` // release tag of this daemon, or "dev"
+	// PrivilegeSeparation: how this node's packets are kept away from root
+	// (docs/PRIVSEP.md); empty when they are not.
+	PrivilegeSeparation string `json:"privilege_separation,omitempty"`
+	HardwareBound       bool   `json:"hardware_bound"`
 	// KeyWarning is set when the device key is weaker than it should be (a
 	// software key on a Mac); HardwareKeyAvailable: a new identity
 	// (`reset -new-identity`) would be hardware-bound.
@@ -423,6 +429,14 @@ func New(cfg Config) (*Node, error) {
 	return n.init(enclave)
 }
 
+// OpenDeviceKey opens the device key cfg names (KeyKind, StateDir,
+// TPMDevice, SEKeyHelper, Log): the privileged parent of a separated node
+// holds it and signs for the worker (internal/privsep).
+func OpenDeviceKey(cfg Config) (devicekey.DeviceKey, error) {
+	key, _, err := openKey(cfg)
+	return key, err
+}
+
 // openKey opens the configured device key, or returns the one an embedding
 // app brought along. enclave: this Mac has a usable Secure Enclave.
 func openKey(cfg Config) (key devicekey.DeviceKey, enclave bool, err error) {
@@ -499,6 +513,7 @@ func (n *Node) init(enclave bool) (*Node, error) {
 		Fingerprint:          spki.Fingerprint(),
 		KeyKind:              key.Kind(),
 		Version:              version.Version,
+		PrivilegeSeparation:  cfg.Separation,
 		HardwareBound:        key.HardwareBound(),
 		KeyWarning:           keyWarning(key.Kind(), enclave),
 		HardwareKeyAvailable: enclave && !key.HardwareBound(),

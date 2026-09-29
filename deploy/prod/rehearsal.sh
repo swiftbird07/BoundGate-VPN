@@ -125,6 +125,9 @@ wait_for 30 hub boundgatectl -json enroll -accept-new-pin || fail "hub cannot en
 approve "$(hub boundgatectl -json enroll -accept-new-pin)" '"kind":"workload","roles":["hub","exit-node"],"prefixes":[{"prefix":"0.0.0.0/0","mode":"snat"}],"public_addr":"bg.test:443"'
 wait_for 40 sh -c "$C exec -T hub boundgatectl -json status | jq -e '.state == \"up\"'" || fail "hub did not come up"
 if $C logs hub 2>&1 | grep -q 'falling back to TCP'; then fail "the hub fell back to TCP: HTTP/3 through the mux does not work"; fi
+# the kit's hub.yaml turns on privilege separation: the node as 65531, the key root's
+hub boundgatectl -json status | jq -e '.privilege_separation | test("65531")' >/dev/null || fail "the hub does not run separated (docs/PRIVSEP.md)"
+hub sh -c 'ps -o user,args' | grep -q '^65531 .*privsep-worker' || fail "no worker process as 65531 in the hub"
 HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
 
 echo "== 4. a client in its own network namespace: same address, same port, other server name"

@@ -5,6 +5,8 @@ key_kind: softkey                  # tpm2 with a TPM or vTPM (docs/TPM.md)
 control:
   addr: bg.example.com:443
   server_name: nodes.bg.example.com
+privsep:                           # the hub runs as this user, the device key and the host's network stay with
+  user: "65531"                    # a root parent (docs/PRIVSEP.md); remove the block to run it as root alone
 roles: [hub]                       # requested; granted at approval. Add subnet-router / exit-node with prefixes to route beyond this host
 # prefixes:
 #   - {prefix: 10.0.0.0/24, mode: snat}     # e.g. a Hetzner private network behind this server

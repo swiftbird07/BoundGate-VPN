@@ -60,6 +60,39 @@ wait_for 20 status_is hub1 '.state == "up" and .binding == "verified" and .polic
 wait_for 20 status_is hub2 '.state == "up"' || fail "hub2 not up"
 wait_for 20 status_is node-r '[.hubs[] | select(.state == "connected")] | length == 2' || fail "node-r not connected to both hubs"
 
+echo "== 2b. privilege separation on hub1, node-r and node-a: the node runs as uid 65531, the key stays root's"
+for svc in hub1 node-r node-a; do
+  status_is $svc '.privilege_separation | test("worker uid 65531")' || fail "$svc does not report privilege separation"
+  x $svc sh -c 'ps -o user,args | grep -q "^65531 .*privsep-worker"' || fail "$svc: no worker running as 65531"
+  x $svc sh -c 'ps -o user,args | grep -v privsep-worker | grep -q "^root .*boundgate-node"' || fail "$svc: no privileged parent"
+  x $svc sh -c 'stat -c "%u %a" /var/lib/boundgate/device.key' | grep -q '^0 600$' || fail "$svc: the key file is not root's alone"
+done
+
+echo "== 2c. privilege separation with the node kit's rights, on a real Linux file system: the worker cannot read the key, and comes back when killed"
+# the lab's state directories are the Mac's, shared into the VM, which keeps
+# no owners; this node runs on tmpfs, with cap_drop ALL and what the kit adds
+IMG=$(docker inspect --format '{{.Config.Image}}' "$($COMPOSE ps -q hub1)")
+PS=bg-e2e-privsep
+docker rm -f $PS >/dev/null 2>&1 || true
+docker run -d --name $PS --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_BIND_SERVICE --cap-add SETUID --cap-add SETGID --cap-add CHOWN --cap-add KILL \
+  --security-opt no-new-privileges:true --read-only --tmpfs /var/lib/boundgate --tmpfs /var/log/boundgate --tmpfs /run/boundgate --tmpfs /tmp \
+  --entrypoint sh "$IMG" -c 'printf "name: ps\nstate_dir: /var/lib/boundgate\ncontrol: {addr: \"127.0.0.1:9\", server_name: nodes.example}\nsocket: /run/boundgate/node.sock\nlog_dir: /var/log/boundgate\nprivsep: {user: \"65531\"}\n" > /tmp/node.yaml && exec boundgate-node -config /tmp/node.yaml' >/dev/null
+psx() { docker exec "$@"; }
+wait_for 15 sh -c "docker exec $PS boundgatectl -json status | jq -e '.privilege_separation | test(\"65531\")'" || { docker logs $PS | tail -20; fail "privsep node did not come up"; }
+psx $PS stat -c '%u %a' /var/lib/boundgate/device.key | grep -q '^0 600$' || fail "privsep: the key is not root's alone"
+psx $PS stat -c '%u %g %a' /var/lib/boundgate | grep -q '^65531 0 770$' || fail "privsep: the state directory was not handed to the worker"
+psx $PS stat -c '%u' /var/lib/boundgate/device.crt | grep -q '^65531$' || fail "privsep: the worker's own files are not its own"
+if psx -u 65531 $PS cat /var/lib/boundgate/device.key >/dev/null 2>&1; then fail "privsep: uid 65531 can read the device key"; fi
+OLDW=$(psx $PS sh -c 'ps -o pid,user,args | awk "/privsep-worker/ && \$2 == \"65531\" {print \$1}"')
+[ -n "$OLDW" ] || fail "privsep: no worker process"
+psx -u 65531 $PS kill -9 "$OLDW"     # the worker ending itself, as its own user could
+wait_for 15 sh -c "docker exec $PS sh -c 'ps -o pid,user,args' | awk '/privsep-worker/ && \$2 == \"65531\" && \$1 != \"$OLDW\" {f=1} END {exit !f}'" || fail "privsep: the parent did not start a killed worker again"
+wait_for 15 sh -c "docker exec $PS boundgatectl -json status >/dev/null" || fail "privsep: the socket does not answer after the worker came back"
+docker rm -f $PS >/dev/null
+docker run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID --cap-add CHOWN --entrypoint sh "$IMG" -c \
+  'printf "name: ps\nstate_dir: /tmp/s\ncontrol: {addr: \"127.0.0.1:9\", server_name: nodes.example}\nsocket: /tmp/node.sock\nprivsep: {user: \"65531\"}\n" > /tmp/node.yaml && boundgate-node -config /tmp/node.yaml' 2>&1 \
+  | grep -q 'lacks the capabilities KILL' || fail "privsep: a parent that could not stop its worker started anyway"
+
 echo "== 3. node-a (interactive): up, but every hub refuses it until the user logs in; node-r (workload) needs no login"
 x node-a boundgatectl up >/dev/null
 wait_for 20 status_is node-a '.login_required == true and ([.hubs[] | select(.state == "login required")] | length == 2)' || fail "hubs did not refuse node-a without a session"

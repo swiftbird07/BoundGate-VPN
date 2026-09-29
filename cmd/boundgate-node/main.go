@@ -17,10 +17,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/update"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/version"
@@ -99,7 +101,14 @@ type config struct {
 	// PowerSave: a quiet node sends nothing (no keep-alives, the snapshot
 	// polled every 10 min instead of a long-poll), for a laptop on battery.
 	// Peers reach it only after it sent something itself (docs/POWER.md).
-	PowerSave bool   `yaml:"power_save"`
+	PowerSave bool `yaml:"power_save"`
+	// Privsep (Linux): the control channel, the tunnels and every packet run
+	// in a worker process as this user (name, or uid[:gid]); this process
+	// keeps the device key and the host's network and answers the worker
+	// only what its rules allow (docs/PRIVSEP.md). Empty: one process.
+	Privsep struct {
+		User string `yaml:"user"`
+	} `yaml:"privsep"`
 	MTU       int    `yaml:"mtu"`
 	LogDir    string `yaml:"log_dir"`
 	LogStdout bool   `yaml:"log_stdout"`
@@ -116,6 +125,9 @@ type config struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == workerArg {
+		os.Exit(runWorker())
+	}
 	if handled, err := serviceCommand(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "boundgate-node:", err)
@@ -152,13 +164,35 @@ func defaultConfigPath() string {
 // run is the daemon until ctx ends: a signal on Unix, the service manager on
 // Windows.
 func run(ctx context.Context, cfgPath string) error {
-	var cfg config
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return err
 	}
+	cfg, err := parseConfig(b)
+	if err != nil {
+		return err
+	}
+	if cfg.Privsep.User != "" {
+		return runPrivileged(ctx, b, cfg)
+	}
+	return runWith(ctx, cfg, nil)
+}
+
+// separated is what a worker of privilege separation brings to runWith:
+// the key and the host's network through the parent, and the socket the
+// parent made (internal/privsep).
+type separated struct {
+	key    devicekey.DeviceKey
+	net    netcfg.Configurator
+	socket *os.File
+	uid    int
+}
+
+// parseConfig reads the configuration and fills in the defaults.
+func parseConfig(b []byte) (config, error) {
+	var cfg config
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return fmt.Errorf("config: %w", err)
+		return cfg, fmt.Errorf("config: %w", err)
 	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = defaults.stateDir
@@ -172,6 +206,12 @@ func run(ctx context.Context, cfgPath string) error {
 	if cfg.LogDir == "" {
 		cfg.LogDir = defaults.logDir // Windows: a service has no console to write to
 	}
+	return cfg, nil
+}
+
+// runWith is the daemon with its configuration; sep is set in the worker of
+// privilege separation.
+func runWith(ctx context.Context, cfg config, sep *separated) error {
 	logs, err := logging.Open(logging.Options{Dir: cfg.LogDir, Stdout: cfg.LogStdout || cfg.LogDir == "", Component: "node"})
 	if err != nil {
 		return err
@@ -206,7 +246,11 @@ func run(ctx context.Context, cfgPath string) error {
 			if s.ControlAddr == "" {
 				logs.System.Info("no control plane configured; waiting for `boundgatectl configure`", "socket", cfg.Socket)
 				host, _ := os.Hostname()
-				if _, err := ipc.ServeSetup(ctx, cfg.Socket, ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers}, node.Status{NodeName: host, Enrollment: "unknown"}, upd,
+				access := ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers}
+				if sep != nil {
+					access.Listener = sep.socket
+				}
+				if _, err := ipc.ServeSetup(ctx, cfg.Socket, access, node.Status{NodeName: host, Enrollment: "unknown"}, upd,
 					func(s ipc.Settings) error { return ipc.SaveSettings(settingsPath, s) }); err != nil {
 					return err
 				}
@@ -217,7 +261,7 @@ func run(ctx context.Context, cfgPath string) error {
 				local.Name = s.Name
 			}
 		}
-		err := runNode(ctx, cfg, local, logs, fromFile, settingsPath, upd)
+		err := runNode(ctx, cfg, local, logs, fromFile, settingsPath, upd, sep)
 		if errors.Is(err, ipc.ErrReset) {
 			logs.System.Warn("control plane forgotten; back to setup mode")
 			continue
@@ -229,7 +273,7 @@ func run(ctx context.Context, cfgPath string) error {
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
-func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.Streams, fromFile bool, settingsPath string, upd *update.Service) error {
+func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.Streams, fromFile bool, settingsPath string, upd *update.Service, sep *separated) error {
 	var behindMux *node.BehindMux
 	if m := cfg.BehindMux; m != nil {
 		if m.ID < 1 || m.ID > 255 {
@@ -241,7 +285,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		}
 		behindMux = &node.BehindMux{ID: byte(m.ID), Trusted: trusted, NoProxyProtocol: m.NoProxyProtocol}
 	}
-	n, err := node.New(node.Config{
+	nc := node.Config{
 		Name:              local.Name,
 		StateDir:          cfg.StateDir,
 		KeyKind:           cfg.KeyKind,
@@ -277,7 +321,12 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		MTU:               cfg.MTU,
 		Log:               logs.System,
 		FlowLog:           logs.Flow,
-	})
+	}
+	if sep != nil {
+		nc.Key, nc.Net = sep.key, sep.net
+		nc.Separation = fmt.Sprintf("worker uid %d; key and host network in the privileged parent", sep.uid)
+	}
+	n, err := node.New(nc)
 	if err != nil {
 		return err
 	}
@@ -294,6 +343,9 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	running.Store(n)
 	defer running.Store(nil)
 	opt := ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers, Update: upd}
+	if sep != nil {
+		opt.Listener = sep.socket
+	}
 	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", cfg.AutoUp)
 	if !fromFile {
 		// Forget the control plane: its address, its pinned key and the admin
@@ -301,7 +353,14 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		// control plane this is simply a node that enrolls - unless a new
 		// identity is asked for (from a software key to the Secure Enclave,
 		// key_kind auto): then the key files go as well.
-		opt.Reset = func(newIdentity bool) error { return ipc.Forget(cfg.StateDir, settingsPath, newIdentity) }
+		opt.Reset = func(newIdentity bool) error {
+			if sep != nil && newIdentity {
+				// the key is the parent's; a new one comes with a restart of the
+				// service after the key file is gone
+				return errors.New("with privilege separation a new identity needs the service stopped and the key file removed by root (docs/PRIVSEP.md)")
+			}
+			return ipc.Forget(cfg.StateDir, settingsPath, newIdentity)
+		}
 	}
 	return ipc.Serve(ctx, cfg.Socket, n, opt)
 }

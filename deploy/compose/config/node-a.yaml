@@ -16,3 +16,7 @@ socket: /run/boundgate/node.sock
 tun_name: bg0
 log_dir: /var/log/boundgate
 log_stdout: true
+# privilege separation (docs/PRIVSEP.md): packets, tunnels and the control
+# channel run as uid 65531; root keeps the key and the host's network
+privsep:
+  user: "65531"

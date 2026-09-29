@@ -90,10 +90,19 @@ func SaveSettings(path string, s Settings) error {
 	return os.Rename(tmp, path)
 }
 
-// listen creates the socket: 0660, owned by root and, when group is set,
+// listenFor is the socket for opt: the one handed over, or a new one.
+func listenFor(socketPath string, opt Options) (net.Listener, error) {
+	if opt.Listener != nil {
+		return net.FileListener(opt.Listener)
+	}
+	return Listen(socketPath, opt.Group, opt.Users)
+}
+
+// Listen creates the socket: 0660, owned by root and, when group is set,
 // that group (name or gid), so its members can drive the daemon without
-// sudo. On a Mac that is "admin" for the app.
-func listen(socketPath, group string, users []string) (net.Listener, error) {
+// sudo. On a Mac that is "admin" for the app. The privileged parent of a
+// separated node makes it and hands it to the worker (Options.Listener).
+func Listen(socketPath, group string, users []string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return nil, err
 	}
@@ -109,14 +118,16 @@ func listen(socketPath, group string, users []string) (net.Listener, error) {
 	return ln, nil
 }
 
-func serveMux(ctx context.Context, ln net.Listener, socketPath string, mux *http.ServeMux) error {
+func serveMux(ctx context.Context, ln net.Listener, socketPath string, removeAtEnd bool, mux *http.ServeMux) error {
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
-		_ = os.Remove(socketPath)
+		if removeAtEnd {
+			_ = os.Remove(socketPath)
+		}
 	}()
 	err := srv.Serve(ln)
 	if errors.Is(err, http.ErrServerClosed) {
@@ -130,7 +141,7 @@ func serveMux(ctx context.Context, ln net.Listener, socketPath string, mux *http
 // they do on a node's socket (upd may be nil). It returns the settings once
 // they are stored, or an error / ctx end.
 func ServeSetup(ctx context.Context, socketPath string, access Options, status node.Status, upd *update.Service, save func(Settings) error) (Settings, error) {
-	ln, err := listen(socketPath, access.Group, access.Users)
+	ln, err := listenFor(socketPath, access)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -144,7 +155,7 @@ func ServeSetup(ctx context.Context, socketPath string, access Options, status n
 		mu.Unlock()
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first, then hand over to the node
 	})
-	if err := serveMux(ctx, ln, socketPath, mux); err != nil {
+	if err := serveMux(ctx, ln, socketPath, access.Listener == nil, mux); err != nil {
 		return Settings{}, err
 	}
 	mu.Lock()

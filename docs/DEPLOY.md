@@ -230,7 +230,7 @@ echo COMPOSE_PROFILES=mux > .env && chmod 600 .env                      # one ad
 (umask 077; mkdir -p state/control state/certs state/hub; printf '%s\n' 'THE-OIDC-CLIENT-SECRET' > state/control/oidc.secret)
 mkdir -p logs/control logs/hub
 chown -R 65532:65532 state/control state/certs logs/control              # the control plane (and lego) run as 65532
-chown -R 0:0 state/hub logs/hub                                          # the hub as root, but without the right to override file permissions
+chown -R 0:0 state/hub logs/hub                                          # the hub's root parent; it hands them to its worker (PRIVSEP.md)
 sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000          # QUIC wants larger UDP buffers; persist in /etc/sysctl.d
 ./update.sh pin                                                          # checks the latest release's signature, pulls its image by digest, writes BOUNDGATE_IMAGE to .env
 docker compose up -d mux control
@@ -257,10 +257,14 @@ image` builds `boundgate:local` for this machine only.
 **What the containers may do.** None of them runs with Docker's default
 privileges. The mux runs as user 65534 with `NET_BIND_SERVICE` only, the
 control plane as 65532 with no capability at all (it listens on loopback
-behind the mux), lego as 65532 as well, the hub and every node as root with
-`NET_ADMIN` only (`NET_BIND_SERVICE` too in the node kit, for a hub on
-`:443`): no `NET_RAW`, no `DAC_OVERRIDE`, so root in the container reaches
-only files root owns. All of them with `no-new-privileges` and a read-only
+behind the mux), lego as 65532 as well. The hub and every node are split
+(PRIVSEP.md, `privsep` in `hub.yaml`/`node.yaml`): a root parent with
+`NET_ADMIN` keeps the device key and changes the host's network, and has
+`SETUID`, `SETGID`, `CHOWN` and `KILL` to start, stop and hand its
+directories to the worker, which runs the node as 65531 with no capability
+but `NET_BIND_SERVICE` (in the node kit, for a hub on `:443`). No
+`NET_RAW`, no `DAC_OVERRIDE`, so root in the container reaches only files
+root owns. All of them with `no-new-privileges` and a read-only
 root file system; what they write is their volume and a small tmpfs (`/tmp`,
 the node's socket in `/run/boundgate`). The directories therefore belong to
 those users, as above; `setup.sh` does that. With **two addresses** instead
@@ -286,6 +290,22 @@ docker compose up -d
 The bootstrap token and other files under `state/control` then belong to
 65532: read them with `sudo`, or `docker compose exec control cat
 /var/lib/boundgate/bootstrap.token`.
+
+**Privilege separation on an existing hub or node** (PRIVSEP.md; needs a
+release that knows `privsep`): take the compose file as above, for its four
+added capabilities, then add to `hub.yaml` (node kit: `node.yaml`)
+
+```yaml
+privsep:
+  user: "65531"
+```
+
+and `docker compose up -d`. The parent hands `state/hub` (`state`) and the
+logs to 65531 at the first start, except the device key and its own
+journal; `boundgatectl status` then shows `privilege_separation`. Back to
+one process: remove the block and `chown -R 0:0 state/hub logs/hub` (node
+kit: `state logs`) before the start; root in these containers does not read
+other users' files.
 
 On its first start the control plane creates its database, the long-lived
 node-channel key (`state/control/nodes.key`: **back it up**, every node pins
@@ -427,7 +447,9 @@ docker compose exec node boundgatectl status
 ```
 
 Host network, `NET_ADMIN` and `/dev/net/tun` are what a node needs (plus
-`NET_BIND_SERVICE` for a hub on `:443`; nothing else, on a read-only root); a
+`NET_BIND_SERVICE` for a hub on `:443`, and `SETUID`, `SETGID`, `CHOWN`,
+`KILL` for its privilege separation, PRIVSEP.md; nothing else, on a
+read-only root); a
 router additionally `net.ipv4.ip_forward=1` on the host (Docker sets it
 itself); the `DOCKER-USER` rules above it writes itself. A VM with a
 vTPM (Proxmox: add a TPM 2.0 device) passes `/dev/tpmrm0` into the
