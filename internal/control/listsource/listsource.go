@@ -215,15 +215,16 @@ func (f *Fetcher) get(ctx context.Context, l db.List) ([]string, string, error) 
 	case rsp.StatusCode != http.StatusOK:
 		return nil, "", fmt.Errorf("the source answered HTTP %d", rsp.StatusCode)
 	}
-	// A private repository answers its sign-in page to a request without a
-	// token, with 200 and a redirect behind it, and its first line reads as
-	// a broken entry. Say what came back instead of letting the parser
+	// A repository that does not answer anonymous requests — a private one,
+	// or a Gitea whose REQUIRE_SIGNIN_VIEW asks everyone to sign in — sends
+	// its sign-in page instead, with 200 and a redirect behind it, and its
+	// first line reads as a broken entry. Say what came back instead of letting the parser
 	// puzzle over it. Only the media type is named, never the answer: at
 	// that address may sit something else entirely (R114).
 	if mt, _, err := mime.ParseMediaType(rsp.Header.Get("Content-Type")); err == nil && (mt == "text/html" || mt == "application/xhtml+xml") {
 		hint := "a list is a text file (or a JSON array)"
 		if rsp.Request != nil && rsp.Request.URL != nil && rsp.Request.URL.String() != l.SourceURL {
-			hint = "the request was redirected to another path of that host: a private repository needs its request header and the token in it"
+			hint = "the request was redirected to another path of that host: a repository that does not answer anonymous requests needs its request header and the token in it"
 		}
 		return nil, "", fmt.Errorf("the source answered with an HTML page, not a list: %s", hint)
 	}

@@ -314,8 +314,9 @@ func TestRedirectKeepsTheScheme(t *testing.T) {
 	}
 }
 
-// A private repository answers the sign-in page to a request without a
-// token: HTML, 200, and a redirect behind it. The status says that instead
+// A repository that does not answer anonymous requests (a private one, or a
+// Gitea that asks everyone to sign in) sends the sign-in page: HTML, 200,
+// and a redirect behind it. The status says that instead
 // of letting the parser stumble over "<!DOCTYPE html>".
 func TestSignInPageIsNamedForWhatItIs(t *testing.T) {
 	ctx := context.Background()
