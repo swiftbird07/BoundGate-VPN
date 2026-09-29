@@ -32,8 +32,13 @@ type DeviceInfo struct {
 // DeviceLookup answers "is this key an approved device?". It must only return
 // approved devices; pending and revoked devices are unknown to it. It is
 // consulted on every TLS handshake and again when a tunnel is requested.
+//
+// The three results are three different things, and a lookup that answers
+// from a database must keep them apart: found and approved; a definite no
+// (false, nil error); and "I could not answer" (a non-nil error), which says
+// nothing about the device. Only the first two decide anything about it.
 type DeviceLookup interface {
-	LookupSPKI(h devicekey.SPKIHash) (DeviceInfo, bool)
+	LookupSPKI(h devicekey.SPKIHash) (DeviceInfo, bool, error)
 }
 
 // AuthenticatedPeer is a device whose key was proven in the TLS handshake and
@@ -85,6 +90,11 @@ var (
 	ErrBadClientCert    = errors.New("transport: client certificate rejected")
 	ErrUnknownDevice    = errors.New("transport: device key not approved")
 	ErrNotAuthenticated = errors.New("transport: connection has no authenticated peer")
+	// ErrLookupFailed: the registry could not be asked at all. It is not an
+	// answer about this device, and nothing may report it as one — a caller
+	// that turns it into "not approved" locks out every device for as long
+	// as the registry is slow, and tells each of them its key was revoked.
+	ErrLookupFailed = errors.New("transport: the registry could not be asked")
 )
 
 // parseDeviceCert enforces the structural rules for a device certificate:
@@ -127,7 +137,10 @@ func parseDeviceCert(rawCerts [][]byte, now time.Time) (*x509.Certificate, devic
 
 // verifyDevice is the handshake-time check used by ServerTLSConfig. A lookup
 // miss fails the TLS handshake, so no HTTP/3 layer ever exists for an
-// unapproved device.
+// unapproved device. A lookup that cannot answer fails it too — fail closed —
+// but with its own error: the peer sees a broken connection and tries again,
+// which is what a busy registry deserves, instead of being told it is not
+// approved.
 func verifyDevice(lookup DeviceLookup, rawCerts [][]byte) error {
 	_, h, err := parseDeviceCert(rawCerts, time.Now())
 	if err != nil {
@@ -136,7 +149,11 @@ func verifyDevice(lookup DeviceLookup, rawCerts [][]byte) error {
 	if lookup == nil {
 		return nil
 	}
-	if _, ok := lookup.LookupSPKI(h); !ok {
+	_, ok, err := lookup.LookupSPKI(h)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrLookupFailed, err)
+	}
+	if !ok {
 		return ErrUnknownDevice
 	}
 	return nil
@@ -163,7 +180,10 @@ func PeerFromTLSState(st *tls.ConnectionState, lookup DeviceLookup, src netip.Ad
 	if lookup == nil {
 		return AuthenticatedPeer{}, ErrNotAuthenticated
 	}
-	info, ok := lookup.LookupSPKI(h)
+	info, ok, err := lookup.LookupSPKI(h)
+	if err != nil {
+		return AuthenticatedPeer{}, fmt.Errorf("%w: %w", ErrLookupFailed, err)
+	}
 	if !ok {
 		return AuthenticatedPeer{}, ErrUnknownDevice
 	}

@@ -186,3 +186,12 @@ expiry sweep and policy change (same transaction). Nodes keep `since`
 at the last applied version; a restart starts at 0 and receives the full
 state. A 403 on the snapshot route tells a node it is no longer approved
 (revoked, or demoted to confirmed by a grant change).
+
+A 403 is therefore an answer about the node, and only ever given as one. When
+the control plane cannot ask its own database — it holds a single connection,
+and confirming a node with the snapshot build behind it occupies it — every
+route of the node channel answers **503** with `Retry-After`, and the
+enrollment status does not report `unknown` either. A node treats 503 like any
+other interruption and keeps its snapshot; only 403 makes it give up its
+enrollment, which is why nothing but a decision about that node may produce
+one (R133).

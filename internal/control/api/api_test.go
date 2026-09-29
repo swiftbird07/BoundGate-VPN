@@ -414,7 +414,7 @@ func TestEnrollmentApprovalRevocationFlow(t *testing.T) {
 	if hs == nil || string(hs.Self.ID) != hst.NodeID || len(hs.Peers) != 1 || string(hs.Peers[0].ID) != st.NodeID || len(hs.Peers[0].Prefixes) != 1 || len(hs.Hubs()) != 0 {
 		t.Fatalf("hub snapshot: %+v", hs)
 	}
-	if _, ok := hs.LookupSPKI(mustSPKI(t, a.spki)); !ok {
+	if _, ok, _ := hs.LookupSPKI(mustSPKI(t, a.spki)); !ok {
 		t.Fatal("hub snapshot does not admit the laptop")
 	}
 

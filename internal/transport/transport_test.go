@@ -33,11 +33,11 @@ type staticLookup struct {
 	m  map[devicekey.SPKIHash]transport.DeviceInfo
 }
 
-func (l *staticLookup) LookupSPKI(h devicekey.SPKIHash) (transport.DeviceInfo, bool) {
+func (l *staticLookup) LookupSPKI(h devicekey.SPKIHash) (transport.DeviceInfo, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	d, ok := l.m[h]
-	return d, ok
+	return d, ok, nil
 }
 
 func (l *staticLookup) remove(h devicekey.SPKIHash) {

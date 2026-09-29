@@ -102,14 +102,31 @@ func NewWithError(d Deps) (*Handlers, error) {
 // approved nodes exist as far as transport is concerned.
 type dbLookup struct{ db *db.DB }
 
-func (l dbLookup) LookupSPKI(h devicekey.SPKIHash) (transport.DeviceInfo, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+// lookupTimeout is how long a lookup waits for the database. The control
+// plane holds a single connection (db.Open), so a lookup queues behind
+// whatever writes at that moment — confirming a node, signing it, building
+// the snapshot that follows. It must stay above the busy_timeout SQLite
+// itself waits with, or the lookup gives up while the database is still
+// working on its answer.
+const lookupTimeout = 10 * time.Second
+
+func (l dbLookup) LookupSPKI(h devicekey.SPKIHash) (transport.DeviceInfo, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	defer cancel()
 	n, err := l.db.NodeBySPKI(ctx, h)
-	if err != nil || n.Status != db.StatusApproved || n.Signature == "" {
-		return transport.DeviceInfo{}, false
+	if errors.Is(err, db.ErrNotFound) {
+		return transport.DeviceInfo{}, false, nil
 	}
-	return transport.DeviceInfo{ID: transport.DeviceID(n.ID), HardwareBound: n.HardwareBound}, true
+	if err != nil {
+		// Not an answer about this key: the database did not give one. Saying
+		// "not approved" here would tell every node at once that it has been
+		// revoked, for as long as the database is busy.
+		return transport.DeviceInfo{}, false, err
+	}
+	if n.Status != db.StatusApproved || n.Signature == "" {
+		return transport.DeviceInfo{}, false, nil
+	}
+	return transport.DeviceInfo{ID: transport.DeviceID(n.ID), HardwareBound: n.HardwareBound}, true, nil
 }
 
 // Lookup exposes the node lookup for the mTLS listener.

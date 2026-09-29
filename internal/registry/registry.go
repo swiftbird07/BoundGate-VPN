@@ -260,16 +260,17 @@ func (s *Snapshot) Index() {
 }
 
 // LookupSPKI implements transport.DeviceLookup for one snapshot: only peers
-// are admitted, never the node itself.
-func (s *Snapshot) LookupSPKI(h devicekey.SPKIHash) (transport.DeviceInfo, bool) {
+// are admitted, never the node itself. A snapshot is a map in memory, so
+// every answer here is a definite one and the error is always nil.
+func (s *Snapshot) LookupSPKI(h devicekey.SPKIHash) (transport.DeviceInfo, bool, error) {
 	if s == nil || s.bySPKI == nil {
-		return transport.DeviceInfo{}, false
+		return transport.DeviceInfo{}, false, nil
 	}
 	n, ok := s.bySPKI[h]
 	if !ok {
-		return transport.DeviceInfo{}, false
+		return transport.DeviceInfo{}, false, nil
 	}
-	return transport.DeviceInfo{ID: n.ID, HardwareBound: n.HardwareBound}, true
+	return transport.DeviceInfo{ID: n.ID, HardwareBound: n.HardwareBound}, true, nil
 }
 
 // Peer returns the peer record by ID.
@@ -366,9 +367,9 @@ func (h *Holder) Stale(now time.Time) bool {
 
 // LookupSPKI implements transport.DeviceLookup against the current snapshot.
 // No snapshot, or a stale one, means no approved peers (fail closed).
-func (h *Holder) LookupSPKI(k devicekey.SPKIHash) (transport.DeviceInfo, bool) {
+func (h *Holder) LookupSPKI(k devicekey.SPKIHash) (transport.DeviceInfo, bool, error) {
 	if h.Stale(time.Now()) {
-		return transport.DeviceInfo{}, false
+		return transport.DeviceInfo{}, false, nil
 	}
 	return h.p.Load().LookupSPKI(k)
 }

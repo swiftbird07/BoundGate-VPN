@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -162,22 +164,47 @@ func (h *Handlers) nodeEnrollStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n, err := h.d.DB.NodeBySPKI(r.Context(), spki)
-	if err != nil {
+	if errors.Is(err, db.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, EnrollStatus{Status: "unknown", Fingerprint: spki.Fingerprint()})
+		return
+	}
+	if err != nil {
+		busy(w, err, h.d.Logs.System) // the database, not this node
 		return
 	}
 	writeJSON(w, http.StatusOK, h.enrollStatus(r, n))
 }
 
 // approvedPeer authenticates an approved node or writes a 403.
+//
+// A registry that cannot be asked is not a refusal: it answers 503, because
+// 403 is what tells a node it has been unenrolled, and it believes it (it
+// clears its snapshot and reports itself revoked). One slow moment in the
+// database would otherwise throw the whole fleet out at once and tell every
+// device its key was revoked.
 func (h *Handlers) approvedPeer(w http.ResponseWriter, r *http.Request) (transport.AuthenticatedPeer, bool) {
 	src, _ := netip.ParseAddr(remoteIP(r))
 	peer, err := transport.PeerFromTLSState(r.TLS, h.lookup, src)
+	if errors.Is(err, transport.ErrLookupFailed) {
+		busy(w, err, h.d.Logs.System)
+		return transport.AuthenticatedPeer{}, false
+	}
 	if err != nil {
 		writeError(w, http.StatusForbidden, "node not approved")
 		return transport.AuthenticatedPeer{}, false
 	}
 	return peer, true
+}
+
+// busy answers a request the control plane could not serve for a reason that
+// has nothing to do with the node asking. Retry-After keeps a fleet that all
+// polls at once from returning in one wave.
+func busy(w http.ResponseWriter, err error, log *slog.Logger) {
+	if log != nil {
+		log.Error("the registry could not be asked; answering 503, not 403", "err", err)
+	}
+	w.Header().Set("Retry-After", "5")
+	writeError(w, http.StatusServiceUnavailable, "the control plane cannot answer right now; this says nothing about this node")
 }
 
 // MaxLongPoll is the longest wait= a node may ask for; the server's write
