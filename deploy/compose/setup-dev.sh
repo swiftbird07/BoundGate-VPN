@@ -135,6 +135,7 @@ grant_for() {
     node-r) echo '"kind":"workload","roles":["endpoint","subnet-router"],"prefixes":[{"prefix":"192.168.178.0/24","mode":"snat"}]' ;;
     node-a|node-m|mac) echo '"kind":"interactive","roles":["endpoint"]' ;;
     node-t) echo '"kind":"workload","roles":["endpoint"]' ;;   # TPM key: hardware_bound follows the node's claim
+    node-p) echo '"kind":"workload","roles":["endpoint"]' ;;   # privilege separation on a real file system
     *) echo "unknown service $1" >&2; exit 2 ;;
   esac
 }
@@ -220,7 +221,7 @@ sign_revocation() {
 }
 
 case "${1:-all}" in
-  all)     ensure_signer; set_network; default_policies; for s in hub1 hub2 node-r node-a node-t node-m; do confirm_node "$s" sign; done ;;
+  all)     ensure_signer; set_network; default_policies; for s in hub1 hub2 node-r node-a node-t node-m node-p; do confirm_node "$s" sign; done ;;
   policy)  shift; set_policy "$@" ;;
   policy-rm) rm_policy "$2" ;;
   policies) api GET /api/v1/admin/policies | jq -r '.[] | "\(.name)\t\(if .enabled then "enabled" else "disabled" end)\tscope=\(.scope | length)\t\(.cedar | gsub("\n"; " "))"' ;;

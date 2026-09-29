@@ -7,12 +7,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
@@ -50,8 +52,9 @@ func TestFilePinNeedsAcceptance(t *testing.T) {
 			c.Close()
 		}
 	}()
-	path := filepath.Join(t.TempDir(), "control.pin")
-	pins := &filePin{path: path}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "control.pin")
+	pins := &filePin{a: filesIn(t, dir, "")}
 	dial := func() error {
 		c, err := tls.Dial("tcp", ln.Addr().String(), transport.ClientTLSConfigControl(device, "nodes.test", pins, nil))
 		if err == nil {
@@ -88,6 +91,14 @@ func TestFilePinNeedsAcceptance(t *testing.T) {
 	}
 	<-sawClientCert
 
+	// a pin is set once: another key is refused until the person who owns
+	// the state directory removes the pin
+	if err := pins.Accept(want); !errors.Is(err, anchors.ErrPinned) {
+		t.Fatalf("a second pin: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
 	if err := pins.Accept(want); err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,10 @@ import (
 	"syscall"
 )
 
-func openOwn(path string) (*os.File, error) {
+func openOf(path string, uid int) (*os.File, error) {
+	if uid < 0 {
+		uid = os.Geteuid()
+	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
@@ -28,8 +31,8 @@ func openOwn(path string) (*os.File, error) {
 		err = fmt.Errorf("%w: %s is not a regular file", ErrNotOwn, path)
 	case !ok:
 		err = fmt.Errorf("%w: %s: no owner information", ErrNotOwn, path)
-	case int(st.Uid) != os.Geteuid():
-		err = fmt.Errorf("%w: %s belongs to uid %d, not to this process (uid %d)", ErrNotOwn, path, st.Uid, os.Geteuid())
+	case int(st.Uid) != uid:
+		err = fmt.Errorf("%w: %s belongs to uid %d, not to uid %d", ErrNotOwn, path, st.Uid, uid)
 	case st.Nlink != 1:
 		err = fmt.Errorf("%w: %s has %d names (hard links)", ErrNotOwn, path, st.Nlink)
 	}

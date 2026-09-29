@@ -19,6 +19,8 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/tun"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 )
@@ -310,4 +312,67 @@ func (r *remoteNet) Watch(ctx context.Context, changed func()) bool {
 		return w.Watch(ctx, changed)
 	}
 	return false
+}
+
+// Anchors is what the node trusts across restarts, as the worker has it:
+// read from the parent's files in dir, which must be the parent's own
+// (owner), and changed by asking the parent, which decides by its rules.
+func (c *Client) Anchors(dir string, owner int, o anchors.Options) (anchors.Anchors, error) {
+	o.Dir, o.Owner, o.ReadOnly, o.Shared = dir, owner, true, false
+	read, err := anchors.Open(o)
+	if err != nil {
+		return nil, fmt.Errorf("privsep: %w", err)
+	}
+	return &remoteAnchors{c: c, read: read}, nil
+}
+
+type remoteAnchors struct {
+	c    *Client
+	read *anchors.Files
+}
+
+var _ anchors.Anchors = (*remoteAnchors)(nil)
+
+func (r *remoteAnchors) Pin() (devicekey.SPKIHash, bool, error) { return r.read.Pin() }
+func (r *remoteAnchors) Trust() (binding.Trust, error)          { return r.read.Trust() }
+func (r *remoteAnchors) History() (anchors.Book, error)         { return r.read.History() }
+
+func (r *remoteAnchors) SetPin(h devicekey.SPKIHash) error {
+	_, err := r.c.call(context.Background(), opPinControl, pinArgs{SPKI: h.String()}, nil)
+	return err
+}
+
+func (r *remoteAnchors) Follow(chain []binding.SignedSet) (binding.Trust, error) {
+	cur, err := r.read.Trust()
+	if err != nil {
+		return cur, err
+	}
+	// nothing the parent would have to look at: the chain ends where the
+	// list is (every snapshot brings the chain)
+	if same, err := binding.VerifyChain(cur, chain, ""); err == nil && cur.Pinned() && same.Hash == cur.Hash && same.Genesis == cur.Genesis {
+		return cur, nil
+	}
+	for len(chain) > 0 {
+		n, size := 0, 0
+		for n < len(chain) {
+			size += len(chain[n].Set) + len(chain[n].Signature) + 64
+			if n > 0 && size > pieceBytes {
+				break
+			}
+			n++
+		}
+		var res followResult
+		if _, err := r.c.call(context.Background(), opFollowSigners, followArgs{Links: chain[:n], More: n < len(chain)}, &res); err != nil {
+			return cur, err
+		}
+		if chain = chain[n:]; len(chain) == 0 {
+			return res.Trust, nil
+		}
+	}
+	return cur, nil
+}
+
+func (r *remoteAnchors) Record(ev []anchors.Evidence) error {
+	_, err := r.c.call(context.Background(), opRecord, recordArgs{Evidence: ev}, nil)
+	return err
 }

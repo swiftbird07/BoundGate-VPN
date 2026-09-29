@@ -26,7 +26,9 @@ sql() { x control sqlite3 -cmd '.timeout 5000' /var/lib/boundgate/control.db "$1
 
 fresh_key() {  # fresh_key SVC: replace the node's key (a revoked key can never come back)
   $COMPOSE stop "$1" >/dev/null
-  rm -f "state/$1/device.key" "state/$1/device.crt" "state/$1/admin_trust.json"
+  # in the node's own volumes or directories, whichever it has
+  docker run --rm --network none --volumes-from "$($COMPOSE ps -aq "$1")" --entrypoint rm "$(docker inspect --format '{{.Config.Image}}' "$($COMPOSE ps -aq "$1")")" \
+    -f /var/lib/boundgate/device.key /var/lib/boundgate/device.crt /var/lib/boundgate/admin_trust.json
   $COMPOSE start "$1" >/dev/null
   wait_for 15 sh -c "docker compose -f docker-compose.yml exec -T $1 boundgatectl -json status >/dev/null" || fail "$1 did not come back"
 }
@@ -51,7 +53,7 @@ for sid in $($S api GET /api/v1/admin/sessions | jq -r '.[].id'); do $S api DELE
 for p in $($S api GET /api/v1/admin/policies | jq -r '.[] | select(.name != "lab-allow-all") | .name'); do policy_rm "$p"; done
 for l in $($S api GET /api/v1/admin/lists | jq -r '.[] | select(.name == "lab-dynamic") | .id'); do $S api DELETE "/api/v1/admin/lists/$l" >/dev/null || true; done
 
-echo "== 1. bootstrap: admin signing key, network, enroll + confirm + sign hub1, hub2, node-r, node-a, node-t"
+echo "== 1. bootstrap: admin signing key, network, enroll + confirm + sign hub1, hub2, node-r, node-a, node-t, node-m, node-p"
 $S all
 x node-a boundgatectl -json identity | jq -e '.control_pin != "" and (.admin_keys | length) == 1' >/dev/null || fail "node-a has no control pin / admin keys"
 
@@ -73,32 +75,51 @@ for svc in hub1 node-r node-a; do
   x $svc sh -c 'stat -c "%u %a" /var/lib/boundgate/device.key' | grep -q '^0 600$' || fail "$svc: the key file is not root's alone"
 done
 
-echo "== 2c. privilege separation with the node kit's rights, on a real Linux file system: the worker cannot read the key, and comes back when killed"
-# the lab's state directories are the Mac's, shared into the VM, which keeps
-# no owners; this node runs on tmpfs, with cap_drop ALL and what the kit adds
-IMG=$(docker inspect --format '{{.Config.Image}}' "$($COMPOSE ps -q hub1)")
-PS=bg-e2e-privsep
-docker rm -f $PS >/dev/null 2>&1 || true
-docker run -d --name $PS --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_BIND_SERVICE --cap-add SETUID --cap-add SETGID --cap-add CHOWN --cap-add KILL \
-  --security-opt no-new-privileges:true --read-only --tmpfs /var/lib/boundgate --tmpfs /var/log/boundgate --tmpfs /run/boundgate --tmpfs /tmp \
-  --entrypoint sh "$IMG" -c 'printf "name: ps\nstate_dir: /var/lib/boundgate\ncontrol: {addr: \"127.0.0.1:9\", server_name: nodes.example}\nsocket: /run/boundgate/node.sock\nlog_dir: /var/log/boundgate\nprivsep: {user: \"65531\"}\n" > /tmp/node.yaml && exec boundgate-node -config /tmp/node.yaml' >/dev/null
-psx() { docker exec "$@"; }
-wait_for 15 sh -c "docker exec $PS boundgatectl -json status | jq -e '.privilege_separation | test(\"65531\")'" || { docker logs $PS | tail -20; fail "privsep node did not come up"; }
-psx $PS stat -c '%u %a' /var/lib/boundgate/device.key | grep -q '^0 600$' || fail "privsep: the key is not root's alone"
-psx $PS stat -c '%u %g %a' /var/lib/boundgate | grep -q '^65531 0 770$' || fail "privsep: the state directory was not handed to the worker"
-psx $PS stat -c '%u' /var/lib/boundgate/device.crt | grep -q '^65531$' || fail "privsep: the worker's own files are not its own"
-if psx -u 65531 $PS cat /var/lib/boundgate/device.key >/dev/null 2>&1; then fail "privsep: uid 65531 can read the device key"; fi
-OLDW=$(psx $PS sh -c 'ps -o pid,user,args | awk "/privsep-worker/ && \$2 == \"65531\" {print \$1}"')
-[ -n "$OLDW" ] || fail "privsep: no worker process"
-psx -u 65531 $PS kill -9 "$OLDW"     # the worker ending itself, as its own user could
-wait_for 15 sh -c "docker exec $PS sh -c 'ps -o pid,user,args' | awk '/privsep-worker/ && \$2 == \"65531\" && \$1 != \"$OLDW\" {f=1} END {exit !f}'" || fail "privsep: the parent did not start a killed worker again"
-wait_for 15 sh -c "docker exec $PS boundgatectl -json status >/dev/null" || fail "privsep: the socket does not answer after the worker came back"
-docker exec $PS boundgatectl -json status | jq -e '.sandbox | test("^seccomp \\([0-9]+ system calls\\), landlock v[0-9]+$")' >/dev/null || fail "privsep: the worker that came back is not confined"
-docker exec $PS boundgatectl status | grep -q '^sandbox: *seccomp' || fail "privsep: status does not show the sandbox"
-docker rm -f $PS >/dev/null
+echo "== 2c. node-p: privilege separation with the node kit's rights on a real file system. What the node trusts is root's, and a worker moves it only by the rules"
+# the other nodes' state directories are the Mac's, shared into the VM, which
+# keeps no owners; node-p's is a volume, and it runs with cap_drop ALL and
+# what the kit adds
+P=/var/lib/boundgate
+asworker() { $COMPOSE exec -T -u 65531:65531 node-p "$@"; }
+IMG=$(docker inspect --format '{{.Config.Image}}' "$($COMPOSE ps -q node-p)")
+wait_for 20 status_is node-p '.binding == "verified" and (.privilege_separation | test("65531")) and (.sandbox | test("^seccomp \\([0-9]+ system calls\\), landlock v[0-9]+$"))' \
+  || { $COMPOSE logs --tail 20 node-p; fail "node-p is not approved, separated and confined: $(x node-p boundgatectl -json status | jq -c '[.binding, .privilege_separation, .sandbox]')"; }
+x node-p boundgatectl status | grep -q '^sandbox: *seccomp' || fail "node-p: status does not show the sandbox"
+confined node-p || fail "node-p: a thread of the worker runs without the seccomp filter"
+x node-p stat -c '%u %g %a' $P | grep -q '^0 65531 1770$' || fail "node-p: the state directory is not root's, shared and sticky: $(x node-p stat -c '%u %g %a' $P)"
+x node-p stat -c '%u %a' $P/device.key | grep -q '^0 600$' || fail "node-p: the key is not root's alone"
+for f in control.pin admin_trust.json bindings_seen.json; do
+  x node-p stat -c '%u %a' $P/$f | grep -q '^0 644$' || fail "node-p: $f is not root's: $(x node-p stat -c '%u %a' $P/$f)"
+  asworker cat $P/$f >/dev/null || fail "node-p: the worker cannot read $f"
+  # what a worker that was taken over would try: write it, remove it, put another file in its place
+  if asworker sh -c "echo x >> $P/$f" 2>/dev/null; then fail "node-p: the worker wrote $f"; fi
+  if asworker rm -f $P/$f 2>/dev/null; then fail "node-p: the worker removed $f"; fi
+  if asworker sh -c "echo x > $P/mine && mv -f $P/mine $P/$f" 2>/dev/null; then fail "node-p: the worker replaced $f"; fi
+  if asworker mv $P/$f $P/$f.away 2>/dev/null; then fail "node-p: the worker moved $f away"; fi
+  x node-p stat -c '%u %a' $P/$f | grep -q '^0 644$' || fail "node-p: $f did not stay what it was"
+done
+x node-p stat -c '%u' $P/device.crt | grep -q '^65531$' || fail "node-p: the worker's own files are not its own"
+if asworker cat $P/device.key >/dev/null 2>&1; then fail "node-p: uid 65531 can read the device key"; fi
+if asworker rm -f $P/device.key 2>/dev/null; then fail "node-p: uid 65531 removed the device key"; fi
+if asworker chmod 777 $P 2>/dev/null; then fail "node-p: uid 65531 changed the state directory"; fi
+PIN=$(x node-p boundgatectl -json identity | jq -r .control_pin); KEYS=$(x node-p boundgatectl -json identity | jq -c .admin_keys)
+[ -n "$PIN" ] && [ "$PIN" != null ] || fail "node-p has no control pin"
+# the whole way: tunnel, policy, target, with the worker confined
+x node-p boundgatectl up >/dev/null
+wait_for 20 sh -c 'docker compose -f docker-compose.yml exec -T node-p curl -sf --max-time 3 http://10.60.0.10 | grep -q "^Name: target"' || fail "target unreachable from node-p"
+OLDW=$(x node-p sh -c 'ps -o pid,user,args | awk "/privsep-worker/ && \$2 == \"65531\" {print \$1}"')
+[ -n "$OLDW" ] || fail "node-p: no worker process"
+asworker kill -9 "$OLDW"     # the worker ending itself, as its own user could
+wait_for 15 sh -c "docker compose -f docker-compose.yml exec -T node-p sh -c 'ps -o pid,user,args' | awk '/privsep-worker/ && \$2 == \"65531\" && \$1 != \"$OLDW\" {f=1} END {exit !f}'" || fail "node-p: the parent did not start a killed worker again"
+wait_for 20 status_is node-p '.binding == "verified" and (.sandbox | test("^seccomp .*landlock"))' || fail "node-p: the worker that came back is not confined, or not approved"
+[ "$(x node-p boundgatectl -json identity | jq -r .control_pin)" = "$PIN" ] && [ "$(x node-p boundgatectl -json identity | jq -c .admin_keys)" = "$KEYS" ] || fail "node-p: the next worker trusts something else"
+x node-p boundgatectl down >/dev/null 2>&1 || true
 docker run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID --cap-add CHOWN --entrypoint sh "$IMG" -c \
   'printf "name: ps\nstate_dir: /tmp/s\ncontrol: {addr: \"127.0.0.1:9\", server_name: nodes.example}\nsocket: /tmp/node.sock\nprivsep: {user: \"65531\"}\n" > /tmp/node.yaml && boundgate-node -config /tmp/node.yaml' 2>&1 \
   | grep -q 'lacks the capabilities KILL' || fail "privsep: a parent that could not stop its worker started anyway"
+docker run --rm --network none --entrypoint sh "$IMG" -c \
+  'printf "name: ps\nstate_dir: /tmp/s\nsocket: /tmp/node.sock\nprivsep: {user: \"65531\"}\n" > /tmp/node.yaml && boundgate-node -config /tmp/node.yaml' 2>&1 \
+  | grep -q 'must be named in the configuration' || fail "privsep: a separated node would take its control plane from its local socket"
 
 echo "== 3. node-a (interactive): up, but every hub refuses it until the user logs in; node-r (workload) needs no login"
 x node-a boundgatectl up >/dev/null

@@ -236,7 +236,9 @@ cooldown:
 
 compose-up: build-linux
 	mkdir -p $(foreach s,control hub1 hub2 node-a node-r node-t node-m,deploy/compose/state/$(s) deploy/compose/logs/$(s))
-	GOARCH=$(GOARCH) $(COMPOSE) up -d --build
+	GOARCH=$(GOARCH) $(COMPOSE) up --no-start --build
+	deploy/compose/volumes.sh
+	GOARCH=$(GOARCH) $(COMPOSE) up -d
 
 compose-down:
 	$(COMPOSE) down

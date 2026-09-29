@@ -12,8 +12,19 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 )
+
+// filesIn are the anchors as a node in one process keeps them.
+func filesIn(t *testing.T, dir, genesis string) anchors.Anchors {
+	t.Helper()
+	a, err := anchors.Open(anchors.Options{Dir: dir, Genesis: genesis, Owner: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
 
 func adminKey(t *testing.T) ssh.Signer {
 	t.Helper()
@@ -59,7 +70,7 @@ func TestTrustStoreFollowsOnlySignedChanges(t *testing.T) {
 	v2 := extend(t, v1, a, a, b)
 	v3 := extend(t, v2, b, b) // A removed
 
-	ts, err := loadTrust(dir, "")
+	ts, err := loadTrust(filesIn(t, dir, ""))
 	if err != nil || ts.current().Pinned() {
 		t.Fatalf("fresh store: %+v %v", ts.current(), err)
 	}
@@ -74,7 +85,7 @@ func TestTrustStoreFollowsOnlySignedChanges(t *testing.T) {
 	}
 
 	// a restart keeps the version: the old list is not accepted again
-	ts2, err := loadTrust(dir, "")
+	ts2, err := loadTrust(filesIn(t, dir, ""))
 	if err != nil || ts2.current().Version != 3 || ts2.current().Hash != ts.current().Hash {
 		t.Fatalf("reload: %+v %v", ts2.current(), err)
 	}
@@ -93,7 +104,7 @@ func TestTrustStoreFollowsOnlySignedChanges(t *testing.T) {
 			t.Fatalf("%s: trust changed: %+v", name, ts2.current())
 		}
 		// and nothing of it reached the disk
-		if ts3, err := loadTrust(dir, ""); err != nil || ts3.current().Hash != ts.current().Hash {
+		if ts3, err := loadTrust(filesIn(t, dir, "")); err != nil || ts3.current().Hash != ts.current().Hash {
 			t.Fatalf("%s: disk changed: %v", name, err)
 		}
 	}
@@ -122,7 +133,7 @@ func TestTrustStoreNeverPinsTwice(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "admin_trust.json"), []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if ts, err := loadTrust(dir, ""); err == nil {
+			if ts, err := loadTrust(filesIn(t, dir, "")); err == nil {
 				t.Fatalf("%s: loaded %+v", name, ts.current())
 			}
 		}
@@ -132,7 +143,7 @@ func TestTrustStoreNeverPinsTwice(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "admin_keys"), []byte(binding.KeyString(a.PublicKey())+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := loadTrust(dir, ""); err == nil || !strings.Contains(err.Error(), "admin_keys") {
+		if _, err := loadTrust(filesIn(t, dir, "")); err == nil || !strings.Contains(err.Error(), "admin_keys") {
 			t.Fatalf("legacy pin: %v", err)
 		}
 	})
@@ -141,7 +152,7 @@ func TestTrustStoreNeverPinsTwice(t *testing.T) {
 			t.Skip("root ignores directory permissions")
 		}
 		dir := t.TempDir()
-		ts, _ := loadTrust(dir, "")
+		ts, _ := loadTrust(filesIn(t, dir, ""))
 		if err := os.Chmod(dir, 0o500); err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +163,7 @@ func TestTrustStoreNeverPinsTwice(t *testing.T) {
 	})
 	t.Run("provisioned genesis refuses another first list", func(t *testing.T) {
 		dir := t.TempDir()
-		ts, _ := loadTrust(dir, binding.HashSet([]byte(real[0].Set)))
+		ts, _ := loadTrust(filesIn(t, dir, binding.HashSet([]byte(real[0].Set))))
 		if _, _, err := ts.apply(fake); !errors.Is(err, binding.ErrSetFork) || ts.current().Pinned() {
 			t.Fatalf("invented first list with a provisioned genesis: %v", err)
 		}
@@ -162,7 +173,7 @@ func TestTrustStoreNeverPinsTwice(t *testing.T) {
 	})
 	t.Run("without provisioning the first list is pinned, the second refused", func(t *testing.T) {
 		dir := t.TempDir()
-		ts, _ := loadTrust(dir, "")
+		ts, _ := loadTrust(filesIn(t, dir, ""))
 		if _, _, err := ts.apply(real); err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +183,7 @@ func TestTrustStoreNeverPinsTwice(t *testing.T) {
 	})
 	t.Run("state file is private", func(t *testing.T) {
 		dir := t.TempDir()
-		ts, _ := loadTrust(dir, "")
+		ts, _ := loadTrust(filesIn(t, dir, ""))
 		if _, _, err := ts.apply(real); err != nil {
 			t.Fatal(err)
 		}

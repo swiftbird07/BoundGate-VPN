@@ -1,0 +1,19 @@
+name: node-p
+state_dir: /var/lib/boundgate
+control:
+  addr: control:443
+  server_name: nodes.control
+  # pin: <hex spki>              # optional; default: pinned on first use into state_dir/control.pin
+roles: [endpoint]                  # requested; an admin grants roles at approval
+auto_up: false
+profile: lab
+profiles_dir: /etc/boundgate/profiles
+socket: /run/boundgate/node.sock
+tun_name: bg0
+log_dir: /var/log/boundgate
+log_stdout: true
+# privilege separation as the node kit runs it (docs/PRIVSEP.md), on a file
+# system that keeps owners: the key, the control plane's pin, the admin key
+# list and the binding history are root's, the rest the worker's
+privsep:
+  user: "65531"

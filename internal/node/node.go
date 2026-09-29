@@ -31,6 +31,7 @@ import (
 	"github.com/quic-go/quic-go"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/acl"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicecert"
@@ -158,6 +159,10 @@ type Config struct {
 	// Net, when set, applies the network configuration instead of the host
 	// implementation (netcfg.New with its cleanup journal).
 	Net netcfg.Configurator
+	// Anchors, when set, keeps what the node trusts across restarts (the
+	// control plane's pin, the admin key list, the binding history) instead
+	// of files in StateDir: under privilege separation the parent's.
+	Anchors anchors.Anchors
 	// Separation describes the privilege separation this node runs under
 	// (internal/privsep), for its status; empty: none.
 	Separation string
@@ -485,6 +490,12 @@ func openKey(cfg Config) (key devicekey.DeviceKey, enclave bool, err error) {
 func (n *Node) init(enclave bool) (*Node, error) {
 	cfg, key, cert, spki := n.cfg, n.key, n.cert, n.spki
 	var err error
+	a := cfg.Anchors
+	if a == nil {
+		if a, err = anchors.Open(anchors.Options{Dir: cfg.StateDir, Pin: cfg.ControlPin, Genesis: cfg.SignersGenesis, Owner: -1}); err != nil {
+			return nil, fmt.Errorf("node: %w", err)
+		}
+	}
 	// control-plane pin: provisioned by config, else learned on first use
 	if cfg.ControlPin != "" {
 		pin, err := devicekey.ParseSPKIHash(cfg.ControlPin)
@@ -493,12 +504,12 @@ func (n *Node) init(enclave bool) (*Node, error) {
 		}
 		n.pins = transport.NewMemPin(pin)
 	} else {
-		n.pins = &filePin{path: filepath.Join(cfg.StateDir, "control.pin")}
+		n.pins = &filePin{a: a}
 	}
-	if n.trust, err = loadTrust(cfg.StateDir, strings.ToLower(strings.TrimSpace(cfg.SignersGenesis))); err != nil {
+	if n.trust, err = loadTrust(a); err != nil {
 		return nil, err
 	}
-	if n.seen, err = loadHistory(cfg.StateDir, n.trust); err != nil {
+	if n.seen, err = loadHistory(a, n.trust); err != nil {
 		return nil, err
 	}
 	// filePin never learns by itself (Enroll asks), so nothing to report here
@@ -618,7 +629,7 @@ func (n *Node) verifySnapshot(s *registry.Snapshot) error {
 	if err == nil {
 		// what was seen must be on disk before it is relied on, or a
 		// restart would forget what the node already refused to go back to
-		err = n.seen.save()
+		err = n.seen.save(s)
 	}
 	if err == nil && s.Self.SPKI != n.spki {
 		// another node's record, validly signed: taking it would give this
@@ -653,10 +664,12 @@ func (n *Node) verifySnapshot(s *registry.Snapshot) error {
 // person at the keyboard accepted. Whoever answers at the configured address
 // first would otherwise be this node's control plane for good.
 type filePin struct {
+	a anchors.Anchors
+
 	mu      sync.Mutex
-	path    string
 	seen    devicekey.SPKIHash
 	hasSeen bool
+	err     error // the last time the pin could not be read
 }
 
 // ErrPinUnconfirmed refuses a control plane whose key nobody has accepted yet.
@@ -670,18 +683,15 @@ func (e *PinUnconfirmedError) Error() string {
 	return "the control plane presents a key that is not pinned yet: " + e.Fingerprint
 }
 
+// Pinned is the pinned key. A pin that is there and cannot be read is no
+// pin for the handshake, which then refuses the control plane (Learn), and
+// no reason to pin again: Accept ends at the same error.
 func (f *filePin) Pinned() (devicekey.SPKIHash, bool) {
+	h, ok, err := f.a.Pin()
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	b, err := os.ReadFile(f.path)
-	if err != nil {
-		return devicekey.SPKIHash{}, false
-	}
-	h, err := devicekey.ParseSPKIHash(string(b))
-	if err != nil {
-		return devicekey.SPKIHash{}, false
-	}
-	return h, true
+	f.err = err
+	f.mu.Unlock()
+	return h, ok && err == nil
 }
 
 // Learn implements transport.PinStore: remember, do not trust.
@@ -699,12 +709,15 @@ func (f *filePin) Seen() (devicekey.SPKIHash, bool) {
 	return f.seen, f.hasSeen
 }
 
-// Accept pins h.
-func (f *filePin) Accept(h devicekey.SPKIHash) error {
+// unreadable is why the last look at the pin found none, if it is there.
+func (f *filePin) unreadable() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return os.WriteFile(f.path, []byte(h.String()+"\n"), 0o600)
+	return f.err
 }
+
+// Accept pins h, which the anchors take while nothing is pinned.
+func (f *filePin) Accept(h devicekey.SPKIHash) error { return f.a.SetPin(h) }
 
 // Run drives the control channel until ctx ends: enrollment status, then
 // snapshots and heartbeats while approved. It returns when ctx is done.
@@ -922,6 +935,9 @@ func (n *Node) confirmPin(ctx context.Context, acceptPin string) error {
 	}
 	if _, pinned := fp.Pinned(); pinned {
 		return nil
+	}
+	if err := fp.unreadable(); err != nil {
+		return fmt.Errorf("node: %w", err)
 	}
 	if acceptPin != "" && acceptPin != AcceptNewPin {
 		h, err := devicekey.ParseSPKIHash(acceptPin)

@@ -302,16 +302,18 @@ privsep:
   user: "65531"
 ```
 
-and `docker compose up -d`. The parent hands `state/hub` (`state`) and the
-logs to 65531 at the first start, except the device key and its own
-journal; `boundgatectl status` then shows `separation` and `sandbox`. The
+and `docker compose up -d`. At the first start the parent shares
+`state/hub` (`state`) with 65531 (root's, group 65531, mode 1770) and hands
+it the logs. The device key, the journal and what the node trusts (the
+control plane's pin, the admin key list, the binding history) stay root's
+files, which the worker can read where it needs to and never change; `boundgatectl status` then shows `separation` and `sandbox`. The
 sandbox's list of system calls was run in the lab on arm64: on the first
 amd64 node, look at `docker compose logs` for a worker that ends
 (`privsep: the worker ended`) and at the host's `dmesg | grep type=1326`
 for refused calls after a day; `sandbox: audit` under `privsep` logs
 instead of refusing, should something be missing (PRIVSEP.md). Back to
-one process: remove the block and `chown -R 0:0 state/hub logs/hub` (node
-kit: `state logs`) before the start; root in these containers does not read
+one process: remove the block, `chown -R 0:0 state/hub logs/hub` and
+`chmod 700 state/hub` (node kit: `state logs`) before the start; root in these containers does not read
 other users' files.
 
 On its first start the control plane creates its database, the long-lived

@@ -20,7 +20,12 @@ cd "$(dirname "$0")/../.."
 W=$PWD/dist/rehearsal
 P=bgrehearsal
 IMAGE=${BOUNDGATE_IMAGE:-boundgate:local}
-C="docker compose -p $P -f $W/docker-compose.yml --profile mux"
+compose() {  # the kit's compose file, and what the rehearsal had to add on this machine (below)
+  C="docker compose -p $P -f $W/docker-compose.yml"
+  [ ! -f "$W/rehearsal.override.yml" ] || C="$C -f $W/rehearsal.override.yml"
+  C="$C --profile mux"
+}
+compose
 export BOUNDGATE_IMAGE=$IMAGE
 fail() { echo "FAIL: $*" >&2; exit 1; }
 wait_for() { n=$1; shift; while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && return 0; n=$((n-1)); sleep 1; done; return 1; }
@@ -28,7 +33,7 @@ wait_for() { n=$1; shift; while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && retur
 if [ "${1:-}" = down ]; then
   docker rm -f $P-client $P-nginx $P-target >/dev/null 2>&1 || true
   docker network rm $P-lan >/dev/null 2>&1 || true
-  [ -f "$W/docker-compose.yml" ] && $C down --remove-orphans >/dev/null 2>&1 || true
+  [ -f "$W/docker-compose.yml" ] && $C down --remove-orphans --volumes >/dev/null 2>&1 || true
   echo "rehearsal stopped"; exit 0
 fi
 
@@ -46,6 +51,24 @@ admin() { docker run --rm -i --network host --add-host bg.test:127.0.0.1 -v "$W/
 mkdir -p "$W/state/control" "$W/state/certs" "$W/state/hub" "$W/logs/control" "$W/logs/hub"
 docker run --rm --network none -v "$W:/kit" -w /kit --entrypoint chown "$IMAGE" -R 65532:65532 state/control state/certs logs/control || fail "chown"
 docker run --rm --network none -v "$W:/kit" -w /kit --entrypoint chown "$IMAGE" -R 0:0 state/hub logs/hub || fail "chown"
+# The hub runs separated, which rests on who owns a file. On a Linux host the
+# kit's directories are what they are. On a Mac they are the Mac's, shared
+# into the VM, where every file belongs to whoever looks: there, and only
+# there, the hub's state and logs are volumes of the VM.
+if ! docker run --rm --network none -v "$W:/kit" --entrypoint sh "$IMAGE" -c 'chown 4242 /kit/logs/hub && [ "$(stat -c %u /kit/logs/hub)" = 4242 ] && chown 0 /kit/logs/hub'; then
+  echo "   (this machine's directories keep no owners: the hub's state and logs are volumes)"
+  cat > "$W/rehearsal.override.yml" <<'EOF'
+services:
+  hub:
+    volumes:
+      - hub-state:/var/lib/boundgate
+      - hub-logs:/var/log/boundgate
+volumes:
+  hub-state:
+  hub-logs:
+EOF
+  compose
+fi
 
 echo "== 0. configuration: one address, port 443 for everything (the VM's host network; clients come in over $GW)"
 sed -e 's/bg\.example\.com/bg.test/g' "$W/mux.yaml.example" > "$W/mux.yaml"
@@ -129,6 +152,12 @@ if $C logs hub 2>&1 | grep -q 'falling back to TCP'; then fail "the hub fell bac
 hub boundgatectl -json status | jq -e '.privilege_separation | test("65531")' >/dev/null || fail "the hub does not run separated (docs/PRIVSEP.md)"
 hub sh -c 'ps -o user,args' | grep -q '^65531 .*privsep-worker' || fail "no worker process as 65531 in the hub"
 hub boundgatectl -json status | jq -e '.sandbox | test("^seccomp \\([0-9]+ system calls\\), landlock v[0-9]+$")' >/dev/null || fail "the hub's worker is not confined: $(hub boundgatectl -json status | jq -r .sandbox)"
+# what the hub trusts is root's, in a directory the worker cannot take files from
+hub stat -c '%u %g %a' /var/lib/boundgate | grep -q '^0 65531 1770$' || fail "the hub's state directory is not root's, shared and sticky: $(hub stat -c '%u %g %a' /var/lib/boundgate)"
+for f in control.pin admin_trust.json bindings_seen.json; do
+  hub stat -c '%u %a' /var/lib/boundgate/$f | grep -q '^0 644$' || fail "$f is not root's: $(hub stat -c '%u %a' /var/lib/boundgate/$f)"
+  if $C exec -T -u 65531:65531 hub sh -c "rm -f /var/lib/boundgate/$f || echo x >> /var/lib/boundgate/$f" 2>/dev/null; then fail "the worker's user changed $f"; fi
+done
 HUBIP=$(hub boundgatectl -json status | jq -r .overlay_ip)
 
 echo "== 4. a client in its own network namespace: same address, same port, other server name"

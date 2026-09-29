@@ -13,11 +13,14 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
@@ -35,10 +38,16 @@ type Parent struct {
 	// for are for the device that became (utun names itself on a Mac).
 	TUNName   string
 	WorkerUID int
-	Log       *slog.Logger
+	// Anchors is what the node trusts across restarts. The parent is its
+	// only writer, and changes it by its own rules (internal/anchors).
+	Anchors anchors.Anchors
+	Log     *slog.Logger
 
 	mu  sync.Mutex
 	dev string
+	// a chain of admin key lists that is still arriving
+	chain      []binding.SignedSet
+	chainBytes int
 }
 
 // maxInFlight bounds the requests the parent works on at once: signatures
@@ -77,7 +86,7 @@ func (p *Parent) Serve(ctx context.Context, conn *net.UnixConn) error {
 		wg.Add(1)
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			result, fd, err := p.handle(ctx, req)
+			result, fd, err := p.answer(ctx, req)
 			resp := response{ID: req.ID}
 			if err != nil {
 				resp.Err = err.Error()
@@ -95,6 +104,23 @@ func (p *Parent) Serve(ctx context.Context, conn *net.UnixConn) error {
 			}
 		}()
 	}
+}
+
+// answer is handle, and an error instead of the end of the service should
+// handling what the worker sent ever panic: the parent reads bytes the
+// worker chose (requests, signed lists, bindings), and it is the process
+// that must stay.
+func (p *Parent) answer(ctx context.Context, req request) (result any, fd int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if fd >= 0 {
+				_ = unix.Close(fd)
+			}
+			p.Log.Error("privsep: a request of the worker made the parent panic", "op", req.Op, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			result, fd, err = nil, -1, fmt.Errorf("privsep: %s failed", req.Op)
+		}
+	}()
+	return p.handle(ctx, req)
 }
 
 // refuse logs and returns a request the rules do not allow.
@@ -121,7 +147,7 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 		if err != nil {
 			return nil, fd, err
 		}
-		return Hello{Config: p.Config, PublicKey: der, KeyKind: p.Key.Kind(), HardwareBound: p.Key.HardwareBound(), WorkerUID: p.WorkerUID}, fd, nil
+		return Hello{Config: p.Config, PublicKey: der, KeyKind: p.Key.Kind(), HardwareBound: p.Key.HardwareBound(), WorkerUID: p.WorkerUID, ParentUID: os.Geteuid()}, fd, nil
 
 	case opSign:
 		var a signArgs
@@ -273,6 +299,81 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 			return nil, fd, errors.New("privsep: this host cannot send replies the way they came")
 		}
 		return nil, fd, ar.ReplyViaArrival(ctx, a.Ifname, a.On)
+
+	case opPinControl:
+		var a pinArgs
+		if err := decode(&a); err != nil {
+			return nil, fd, err
+		}
+		if p.Anchors == nil {
+			return nil, fd, p.refuse(req.Op, "no anchors")
+		}
+		h, err := devicekey.ParseSPKIHash(a.SPKI)
+		if err != nil {
+			return nil, fd, p.refuse(req.Op, "not a key's hash")
+		}
+		if cur, ok, _ := p.Anchors.Pin(); ok && cur == h {
+			return nil, fd, nil
+		}
+		// the one moment that rests on trust: nothing is pinned, and what
+		// is pinned now stays (control.pin in the configuration leaves none)
+		if err := p.Anchors.SetPin(h); err != nil {
+			return nil, fd, p.refuse(req.Op, err.Error(), "fingerprint", h.Fingerprint())
+		}
+		p.Log.Warn("privsep: pinned the control plane's key, on first use", "fingerprint", h.Fingerprint())
+		return nil, fd, nil
+
+	case opFollowSigners:
+		var a followArgs
+		if err := decode(&a); err != nil {
+			return nil, fd, err
+		}
+		if p.Anchors == nil {
+			return nil, fd, p.refuse(req.Op, "no anchors")
+		}
+		p.mu.Lock()
+		for _, l := range a.Links {
+			p.chainBytes += len(l.Set) + len(l.Signature)
+		}
+		p.chain = append(p.chain, a.Links...)
+		if len(p.chain) > binding.MaxChain || p.chainBytes > maxChainBytes {
+			n := len(p.chain)
+			p.chain, p.chainBytes = nil, 0
+			p.mu.Unlock()
+			return nil, fd, p.refuse(req.Op, "the chain is too long", "links", n)
+		}
+		if a.More {
+			p.mu.Unlock()
+			return nil, fd, nil
+		}
+		chain := p.chain
+		p.chain, p.chainBytes = nil, 0
+		p.mu.Unlock()
+		before, err := p.Anchors.Trust()
+		if err != nil {
+			return nil, fd, err
+		}
+		after, err := p.Anchors.Follow(chain)
+		if err != nil {
+			return nil, fd, p.refuse(req.Op, err.Error(), "pinned_version", before.Version)
+		}
+		if after.Hash != before.Hash {
+			p.Log.Warn("privsep: the admin key list moved, by its signatures", "from", before.Version, "to", after.Version, "keys", len(after.Keys))
+		}
+		return followResult{Trust: after}, fd, nil
+
+	case opRecord:
+		var a recordArgs
+		if err := decode(&a); err != nil {
+			return nil, fd, err
+		}
+		if p.Anchors == nil {
+			return nil, fd, p.refuse(req.Op, "no anchors")
+		}
+		if err := p.Anchors.Record(a.Evidence); err != nil {
+			return nil, fd, p.refuse(req.Op, err.Error())
+		}
+		return nil, fd, nil
 	}
 	return nil, fd, p.refuse(req.Op, "unknown operation")
 }

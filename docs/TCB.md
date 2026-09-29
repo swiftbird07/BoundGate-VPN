@@ -22,7 +22,7 @@ reviewed. Everything outside the TCB may have bugs that cause wrong
 | `internal/node/ipc` verb set | The local attack surface of the privileged daemon |
 | `internal/binding` (+ `golang.org/x/crypto/ssh`) | Canonical binding bytes, SSHSIG framing, signature verification against the pinned admin keys; `VerifyChain` decides which admin key list a node, the control plane and the admin CLI accept (signed chain); `VerifySnapshot` decides which records a node believes |
 | Node snapshot intake | `controlclient.Run` → `Node.verifySnapshot` → `Holder.Store`: nothing reaches the holder unverified; own-binding failure clears the holder |
-| Pinned files in the node state directory | `admin_trust.json` (the admin key list: pinned once, then only moved along signed links, written before use) and `control.pin` (written once), root-only; replacing them re-roots the node's trust |
+| Pinned files in the node state directory | `admin_trust.json` (the admin key list: pinned once, then only moved along signed links, written before use) and `control.pin` (written once), root-only; replacing them re-roots the node's trust. Under privilege separation (PRIVSEP.md) they are the privileged parent's, which changes them by these rules itself: the process that reads the network cannot |
 
 * `internal/acl` (M3): builds the Cedar entities from the snapshot and is
   the only caller of the authorizer. A bug that attaches the wrong parents

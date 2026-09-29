@@ -115,6 +115,23 @@ key, new admin key), so the simplest reset is `rm -rf deploy/compose/state`
 and `make setup-dev`. A node that refuses the control plane with "key does
 not match the pinned key" after such a reset is doing its job.
 
+The nodes that run separated (PRIVSEP.md: hub1, node-a, node-r, and node-p,
+which has the node kit's rights) keep state and logs in volumes of the VM
+instead (`docker volume ls`, `boundgate_<service>-state`): privilege
+separation rests on who owns a file, and a directory of the Mac shared into
+the VM shows every file as belonging to whoever looks. A lab from before
+moves their state into the volumes once (`deploy/compose/volumes.sh`, from
+`make compose-up`). To look into one or to reset it:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml exec hub1 ls -la /var/lib/boundgate
+docker compose -f deploy/compose/docker-compose.yml rm -sf hub1 && docker volume rm boundgate_hub1-state
+```
+
+A full reset removes them too: `docker compose -f
+deploy/compose/docker-compose.yml down --volumes`, which also resets the
+software TPM of node-t.
+
 ## Policies in the lab
 
 `make setup-dev` creates the policy `lab-allow-all` (`permit(principal,

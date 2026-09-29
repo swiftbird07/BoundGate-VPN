@@ -1,53 +1,36 @@
 package node
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/registry"
 )
 
-// maxHistory bounds the nodes remembered; above it the oldest entries that
-// are not revocations are forgotten first.
-const maxHistory = 20000
-
 // history is this node's binding.Guard: per node the newest binding it
-// verified and the newest revocation, kept in the state directory so that
-// neither survives a restart as something the control plane could undo.
+// verified and the newest revocation, so that neither survives a restart as
+// something the control plane could undo. What is kept is the anchors'
+// (internal/anchors), which take nothing on this node's word: every entry
+// goes there with the signed binding or revocation that proves it.
 // The network's identity comes from the pinned admin key list.
 type history struct {
-	path  string
+	a     anchors.Anchors
 	trust *trustStore
 
-	mu    sync.Mutex
-	nodes map[string]historyEntry
-	dirty bool
+	mu      sync.Mutex
+	nodes   anchors.Book
+	issued  map[string]bool // nodes whose newest binding is not recorded yet
+	revoked map[string]bool // the same for revocations
 }
 
-type historyEntry struct {
-	Issued  int64 `json:"issued,omitempty"`  // newest binding seen
-	Revoked int64 `json:"revoked,omitempty"` // newest revocation verified
-}
-
-func loadHistory(stateDir string, trust *trustStore) (*history, error) {
-	h := &history{path: filepath.Join(stateDir, "bindings_seen.json"), trust: trust, nodes: map[string]historyEntry{}}
-	raw, err := os.ReadFile(h.path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return h, nil
-	case err != nil:
-		return nil, fmt.Errorf("node: binding history: %w", err)
+func loadHistory(a anchors.Anchors, trust *trustStore) (*history, error) {
+	book, err := a.History()
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(raw, &h.nodes); err != nil {
-		// refusing to start would let a damaged file lock the node out; an
-		// empty history only forgets what the node could refuse, and says so
-		return nil, fmt.Errorf("node: %s is damaged (%v); restore it, or remove it to start with an empty history (older bindings a control plane still holds would then be accepted again)", h.path, err)
-	}
-	return h, nil
+	return &history{a: a, trust: trust, nodes: book, issued: map[string]bool{}, revoked: map[string]bool{}}, nil
 }
 
 func (h *history) Deployment() string { return h.trust.current().Genesis }
@@ -55,72 +38,76 @@ func (h *history) Deployment() string { return h.trust.current().Genesis }
 func (h *history) Check(b binding.Binding) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	e := h.nodes[b.NodeID]
-	switch {
-	case e.Revoked != 0 && b.Issued <= e.Revoked:
-		return binding.ErrRevoked
-	case b.Issued < e.Issued:
-		return binding.ErrRolledBack
-	}
-	return nil
+	return h.nodes.Check(b)
 }
 
 func (h *history) Saw(b binding.Binding) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	e := h.nodes[b.NodeID]
-	if b.Issued > e.Issued {
-		e.Issued = b.Issued
-		h.set(b.NodeID, e)
+	if h.nodes.Saw(b.NodeID, b.Issued) {
+		h.issued[b.NodeID] = true
 	}
 }
 
 func (h *history) Revoke(r binding.Revocation) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	e := h.nodes[r.NodeID]
-	if r.Issued > e.Revoked {
-		e.Revoked = r.Issued
-		h.set(r.NodeID, e)
+	if h.nodes.Revoke(r.NodeID, r.Issued) {
+		h.revoked[r.NodeID] = true
 	}
 }
 
-// set stores e; h.mu is held.
-func (h *history) set(id string, e historyEntry) {
-	if _, ok := h.nodes[id]; !ok && len(h.nodes) >= maxHistory {
-		h.evict()
-	}
-	h.nodes[id] = e
-	h.dirty = true
-}
+// evidenceBytes bounds one Record: under privilege separation it is one
+// message to the parent.
+const evidenceBytes = 32 << 10
 
-// evict drops the entry with the oldest binding that is no revocation.
-func (h *history) evict() {
-	var oldest string
-	for id, e := range h.nodes {
-		if e.Revoked != 0 {
-			continue
-		}
-		if oldest == "" || e.Issued < h.nodes[oldest].Issued {
-			oldest = id
-		}
-	}
-	if oldest != "" {
-		delete(h.nodes, oldest)
-	}
-}
-
-// save writes the history if it changed. What is not on disk would be
-// forgotten by a restart, so a snapshot is only used after this succeeded.
-func (h *history) save() error {
+// save records what changed, with its proof from s, the snapshot that was
+// just verified. What is not recorded would be forgotten by a restart, so a
+// snapshot is only used after this succeeded.
+func (h *history) save(s *registry.Snapshot) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.dirty {
+	if len(h.issued) == 0 && len(h.revoked) == 0 {
 		return nil
 	}
-	if err := writeFileAtomic(h.path, h.nodes); err != nil {
-		return fmt.Errorf("store binding history: %w", err)
+	var ev []anchors.Evidence
+	bindingOf := func(n registry.Node) {
+		if h.issued[string(n.ID)] && n.Binding != "" {
+			if b, err := binding.Parse([]byte(n.Binding)); err == nil && b.Issued == h.nodes[b.NodeID].Issued {
+				ev = append(ev, anchors.Evidence{Binding: n.Binding, Signature: n.Signature})
+				delete(h.issued, string(n.ID))
+			}
+		}
 	}
-	h.dirty = false
+	bindingOf(s.Self)
+	for _, p := range s.Peers {
+		bindingOf(p)
+	}
+	for _, sr := range s.Revocations {
+		if r, err := binding.ParseRevocation([]byte(sr.Revocation)); err == nil && h.revoked[r.NodeID] && r.Issued == h.nodes[r.NodeID].Revoked {
+			ev = append(ev, anchors.Evidence{Revocation: sr.Revocation, Signature: sr.Signature})
+			delete(h.revoked, r.NodeID)
+		}
+	}
+	if len(h.issued) != 0 || len(h.revoked) != 0 {
+		// a change without its proof in the snapshot that brought it
+		n := len(h.issued) + len(h.revoked)
+		h.issued, h.revoked = map[string]bool{}, map[string]bool{}
+		return fmt.Errorf("store binding history: %d changes have no signed record in the snapshot", n)
+	}
+	for len(ev) > 0 {
+		n, size := 0, 0
+		for n < len(ev) && n < anchors.MaxEvidence {
+			size += len(ev[n].Binding) + len(ev[n].Revocation) + len(ev[n].Signature) + 64
+			if n > 0 && size > evidenceBytes {
+				break
+			}
+			n++
+		}
+		if err := h.a.Record(ev[:n]); err != nil {
+			return fmt.Errorf("store binding history: %w", err)
+		}
+		ev = ev[n:]
+	}
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/devicekey"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/logging"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/mux"
@@ -187,10 +188,11 @@ func run(ctx context.Context, cfgPath string) error {
 // the key and the host's network through the parent, and the socket the
 // parent made (internal/privsep).
 type separated struct {
-	key    devicekey.DeviceKey
-	net    netcfg.Configurator
-	socket *os.File
-	uid    int
+	key     devicekey.DeviceKey
+	net     netcfg.Configurator
+	anchors anchors.Anchors
+	socket  *os.File
+	uid     int
 	// sandbox is what confines the worker, in words; incomplete says what
 	// of it this machine does not have
 	sandbox    string
@@ -332,7 +334,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		FlowLog:           logs.Flow,
 	}
 	if sep != nil {
-		nc.Key, nc.Net = sep.key, sep.net
+		nc.Key, nc.Net, nc.Anchors = sep.key, sep.net, sep.anchors
 		nc.Separation = fmt.Sprintf("worker uid %d; key and host network in the privileged parent", sep.uid)
 		nc.Sandbox = sep.sandbox
 		if len(sep.incomplete) > 0 {

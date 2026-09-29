@@ -15,6 +15,8 @@ process that has neither the device key nor root.
   │ netcfg + journal: TUN, routes,    │◀──────▶│ tunnels, paths, relay            │
   │   bypass, forwarding, NAT         │ socket │ every packet: parsers, flows,    │
   │ the local socket's place          │  pair  │   ACL, DNS learning              │
+  │ what the node trusts: pin, admin  │        │                                  │
+  │   key list, binding history       │        │                                  │
   │ restarts the worker, cleans up    │        │ the local socket (boundgatectl)  │
   └───────────────────────────────────┘        └───── in a sandbox: seccomp, ─────┘
                                                       Landlock (below)
@@ -46,6 +48,9 @@ the node as it would run alone, with two replacements:
 | host routes to control plane, hubs, IdP | `ip route replace <host>` | `add_bypass`, `del_bypass`: unicast host addresses only |
 | forwarding, NAT, forward rules, reply via arrival | `sysctl`, `nft` | the same operations, only for that device, NAT only for a pool in a private or shared range (the rule for the overlay pool) |
 | a hub's listener on 443 | root | the one capability `CAP_NET_BIND_SERVICE` (ambient), when the parent has it |
+| to pin the control plane's key | writes `control.pin` | `pin_control`: only while no key is pinned |
+| to follow the admin key list | writes `admin_trust.json` | `follow_signers`: the parent verifies the chain itself and moves only along links signed by a key of the list it holds |
+| to remember bindings and revocations | writes `bindings_seen.json` | `record`: each entry with the signed binding or revocation that proves it; the parent verifies the signature and only ever moves forward |
 
 Every refusal is logged by the parent (`privsep: refused a request of the
 worker`). Everything else the node does needs no privileges and stays in
@@ -58,27 +63,66 @@ and its routes went with the worker) and starts it again, after 1 s, then
 doubling up to 30 s. When the parent ends, the kernel ends the worker
 (`PR_SET_PDEATHSIG`).
 
+## What the node trusts, and who may change it
+
+Three things decide whom a node takes for its control plane and its
+administrators after the next start: the control plane's pinned key, the
+admin key list, and the newest binding and revocation it saw of every node.
+A worker that could rewrite them would outlive itself: taken over once, it
+would leave behind a node that trusts someone else's control plane and
+someone else's signatures, also after the bug is fixed and the worker
+started again.
+
+They are the parent's. The worker reads them (none is a secret) and asks
+for changes, and the parent decides by rules that need no trust in the
+worker (`internal/anchors`, the same code a node in one process applies to
+itself):
+
+| | The rule | What a worker cannot do |
+|---|---|---|
+| `control.pin` | set once, while none is set | pin another control plane. The key changes when root removes the file and someone enrolls again |
+| `admin_trust.json` | the first list is pinned (or must have the hash `control.signers_genesis` names); then only along links signed by a key of the list before. The parent verifies the signatures itself | replace the list, skip a link, go back |
+| `bindings_seen.json` | an entry moves with the signed binding or revocation that proves it, verified against the list, and only forward | forget a revocation, make room for an older binding, invent a newer one |
+
+What rests on trust is the first use, as everywhere: a node that pins on
+first contact pins what it is shown. `control.pin` and
+`control.signers_genesis` in `node.yaml` take that moment away; the file is
+root's and the worker gets it read.
+
+A separated node has its control plane in its configuration
+(`control.addr`). The other way, `boundgatectl configure` and `reset` at the
+local socket, would let the worker choose, since the socket is the
+worker's: the parent does not start without.
+
+The parent reads what the worker sends for this (chains, bindings,
+signatures): Go's parsers for JSON and SSH signatures, which the fuzz tests
+cover. Should one of them panic, the request fails and the parent stays.
+
 ## Files
 
-The state directory belongs to the worker once separation is on: the parent
-hands it over on its first start (owner the worker, group root, mode 0770),
-with everything in it except its own files:
+The state directory stays root's. On its first start with separation the
+parent shares it: group the worker's, mode 1770. The sticky bit is what
+`/tmp` has: a file is removed or renamed by its owner only. So both write
+there, and neither takes the other's files away:
 
 | File | Owner | |
 |---|---|---|
 | `device.key`, `device.tpm` | root, 0600 | the device key (or the TPM key blob); the worker cannot read it |
 | `netstate.json` | root, 0600 | the parent's cleanup journal |
-| everything else (`device.crt`, `control.pin`, `admin_trust.json`, `bindings_seen.json`, `settings.json`, `update/`) | the worker | |
+| `control.pin`, `admin_trust.json`, `bindings_seen.json` | root, 0644 | what the node trusts; the worker reads them, as root's files only, and cannot write, remove or replace them |
+| everything else (`device.crt`, `enrollment.json`, `reset.key`, `update/`) | the worker | |
 
-The hand-over happens only while the directory still belongs to root, so the
-parent never follows anything the worker could have placed there. Its own
-files it reads only as plain files of root with one name, and writes through
-a fresh file that is renamed into place (`internal/safefile`): a link the
-worker puts there is replaced, never followed. The log directory is handed
-over the same way. To go back to one process, remove `privsep` from
-`node.yaml` and give the directories back to root (`chown -R 0:0`): root in
-the kits' containers has no `DAC_OVERRIDE` and does not read the worker's
-files; a root service outside a container does.
+What was in the directory goes to the worker once, while all of it is still
+root's, except the files above. The parent reads its files only as plain
+files of root with one name, and writes through a fresh file that is
+renamed into place (`internal/safefile`); the worker reads the parent's the
+same way, so a file of its own under such a name (left by a worker before
+it) is refused, not believed. The log directory is the worker's (owner the
+worker, group root, 0770). To go back to one process, remove `privsep` from
+`node.yaml` and give the directories back to root (`chown -R 0:0`, and
+`chmod 700` for the state): root in the kits' containers has no
+`DAC_OVERRIDE` and does not read the worker's files; a root service outside
+a container does.
 
 ## What a compromised worker still can do
 
@@ -87,16 +131,24 @@ files; a root service outside a container does.
 - route any network into the node's own device, add host routes that bypass
   it, turn on forwarding, masquerade the (private or shared) pool: what a full-tunnel
   profile or an exit node does legitimately anyway;
-- rewrite its own state: the pinned control-plane key and the admin key
-  list take effect at the next start. The parent does not check them yet;
-- delete the parent's files (a new key on the next start: a denial of
-  service, not a way in), or chmod its directory away from the parent;
+- believe what it likes while it runs: what it holds in memory is its own.
+  It ends with the worker, and the next one starts from the parent's files;
+- rewrite what is its own in the state directory: `enrollment.json` (what
+  the node last heard about its enrollment; the control plane says it again),
+  `device.crt` (made from the key; a wrong one fails every handshake),
+  `reset.key` (lets whoever knows it end this node's QUIC connections), the
+  logs on disk (flow records are at the control plane by then);
+- fill the state directory, or keep the node from working: a denial of
+  service it has in many ways;
 - reach the host's network as an ordinary user.
 
 It can no longer: read or copy the device key, change another interface's
 addresses or routes, change the host's firewall beyond the node's own
 rules, load kernel modules, read other users' files, or keep anything of
-root when the parent restarts it. With the sandbox (below) it can neither
+root when the parent restarts it. It cannot change whom the node trusts:
+not the control plane's key, not the admin keys, not what the node
+remembers of revocations, and it can neither remove nor replace the
+parent's files. With the sandbox (below) it can neither
 start a program nor make memory executable, reads and writes no file
 outside its state, its logs and `/etc`, signals no other process, and
 reaches the kernel through some 80 system calls instead of 400.
@@ -195,8 +247,10 @@ through the calls on the list: a bug in the network stack, in `epoll` or
 
 ## Not yet
 
-- The parent verifying pins and the admin key list before the worker may
-  change them.
+- A sandbox for the parent itself. It starts `ip` and `nft`, so a filter
+  for it is a filter for them; its input is the worker's requests.
+- A worker that is ended by its sandbox is logged by the parent, not yet
+  reported to the control plane.
 - macOS: the same split with the utun descriptor; Windows keeps one service
   process (Wintun's rings belong to the process that opened them) and is
   hardened instead.

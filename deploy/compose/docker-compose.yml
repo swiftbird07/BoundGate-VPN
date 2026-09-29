@@ -121,8 +121,8 @@ services:
         ipv4_address: 10.60.0.2
     volumes:
       - ./config:/etc/boundgate:ro
-      - ./state/hub1:/var/lib/boundgate
-      - ./logs/hub1:/var/log/boundgate
+      - hub1-state:/var/lib/boundgate       # separated (privsep): a volume, see `volumes` below
+      - hub1-logs:/var/log/boundgate
     ports:
       - "127.0.0.1:14431:443/udp" # tunnel listener for a node on the Mac host (M5, hub_addrs override)
     command: ["boundgate-node", "-config", "/etc/boundgate/hub1.yaml"]
@@ -149,8 +149,8 @@ services:
         ipv4_address: 172.30.0.20
     volumes:
       - ./config:/etc/boundgate:ro
-      - ./state/node-a:/var/lib/boundgate
-      - ./logs/node-a:/var/log/boundgate
+      - node-a-state:/var/lib/boundgate
+      - node-a-logs:/var/log/boundgate
     command: ["boundgate-node", "-config", "/etc/boundgate/node-a.yaml"]
 
   # M8.5: the node of the iOS and Android apps (internal/embed) with Linux
@@ -165,6 +165,26 @@ services:
       - ./state/node-m:/var/lib/boundgate
     command: ["boundgate-embedtest", "-control", "control:443", "-server-name", "nodes.control", "-name", "node-m"]
 
+  # Privilege separation as the node kit runs it (deploy/prod/node): no
+  # capability but the kit's and a read-only root.
+  node-p:
+    <<: *node
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_BIND_SERVICE, SETUID, SETGID, CHOWN, KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /run/boundgate:size=1m,mode=0755
+      - /tmp:size=16m,mode=1777
+    networks:
+      public:
+        ipv4_address: 172.30.0.60
+    volumes:
+      - ./config:/etc/boundgate:ro
+      - privsep-state:/var/lib/boundgate
+      - privsep-logs:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/node-p.yaml"]
+
   node-r:
     <<: *node
     networks:
@@ -174,8 +194,8 @@ services:
         ipv4_address: 192.168.178.30
     volumes:
       - ./config:/etc/boundgate:ro
-      - ./state/node-r:/var/lib/boundgate
-      - ./logs/node-r:/var/log/boundgate
+      - node-r-state:/var/lib/boundgate
+      - node-r-logs:/var/log/boundgate
     command: ["boundgate-node", "-config", "/etc/boundgate/node-r.yaml"]
 
   # M6: a node whose device key lives in a TPM. The "chip" is swtpm, a
@@ -242,6 +262,20 @@ services:
         ipv4_address: 192.168.178.10
     command: ["--port", "80", "--name", "target-lan"]
 
+# The nodes that run separated (privsep in their configuration: hub1, node-a,
+# node-r, node-p) keep state and logs in volumes of the VM. Privilege
+# separation rests on who owns a file, and the lab's directories are the
+# Mac's, shared into the VM, where every file belongs to whoever looks: root
+# sees root's files there, and so does the worker. A lab from before moves
+# its state once (volumes.sh, from `make compose-up`).
 volumes:
   swtpm-state:
   swtpm-run:
+  privsep-state:
+  privsep-logs:
+  hub1-state:
+  hub1-logs:
+  node-a-state:
+  node-a-logs:
+  node-r-state:
+  node-r-logs:

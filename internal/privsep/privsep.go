@@ -8,6 +8,13 @@
 // its rules allow. Code execution in the worker therefore reaches neither
 // the key nor more of the host's network than the node's own device.
 //
+// The parent also keeps what the node trusts from one start to the next
+// (internal/anchors): the control plane's pin, the admin key list, the
+// binding history. The worker reads them and asks for changes, which the
+// parent makes by rules that need no trust in the worker: a pin only while
+// there is none, a list only along signed links, history only with the
+// signature that proves it. What a worker was made to believe ends with it.
+//
 // The messages are JSON, one per SOCK_SEQPACKET datagram; the TUN device
 // travels as a file descriptor (SCM_RIGHTS). Linux only for now: a Mac has
 // no SOCK_SEQPACKET for local sockets.
@@ -17,6 +24,9 @@ import (
 	"crypto"
 	"encoding/json"
 	"net/netip"
+
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/binding"
 )
 
 // Ops the worker may ask for.
@@ -33,6 +43,9 @@ const (
 	opAllowForward     = "allow_forward"
 	opSetNAT           = "set_nat"
 	opReplyViaArrival  = "reply_via_arrival"
+	opPinControl       = "pin_control"
+	opFollowSigners    = "follow_signers"
+	opRecord           = "record"
 )
 
 // maxMessage bounds one datagram in either direction.
@@ -60,7 +73,36 @@ type Hello struct {
 	HardwareBound bool   `json:"hardware_bound"`
 	// WorkerUID is who the worker runs as, for its status.
 	WorkerUID int `json:"worker_uid"`
+	// ParentUID is whose files the anchors are: the worker reads them only
+	// as that user's.
+	ParentUID int `json:"parent_uid"`
 }
+
+type pinArgs struct {
+	SPKI string `json:"spki"` // hex
+}
+
+// followArgs carries a chain of admin key lists, in pieces: a chain is
+// longer than a message may be. The parent verifies it when the last piece
+// (More false) is there.
+type followArgs struct {
+	Links []binding.SignedSet `json:"links"`
+	More  bool                `json:"more,omitempty"`
+}
+
+type followResult struct {
+	Trust binding.Trust `json:"trust"`
+}
+
+type recordArgs struct {
+	Evidence []anchors.Evidence `json:"evidence"`
+}
+
+// What a chain in pieces may grow to before the parent drops it.
+const (
+	maxChainBytes = 16 << 20
+	pieceBytes    = 24 << 10
+)
 
 type signArgs struct {
 	Digest []byte      `json:"digest"`

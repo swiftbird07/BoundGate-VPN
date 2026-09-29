@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/anchors"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
@@ -34,9 +35,17 @@ import (
 const workerArg = "privsep-worker"
 
 // The parent's own files in the state directory: they stay root's when the
-// directory goes to the worker, and the parent reads them only as its own
-// (internal/safefile).
-var parentFiles = map[string]bool{"device.key": true, "device.tpm": true, "netstate.json": true}
+// rest of the directory goes to the worker, and the parent reads them only
+// as its own (internal/safefile). The key and the journal are for the
+// parent alone; the anchors (the control plane's pin, the admin key list,
+// the binding history) the worker reads and only the parent writes.
+var parentFiles = func() map[string]bool {
+	m := map[string]bool{"device.key": true, "device.tpm": true, "netstate.json": true}
+	for _, n := range anchors.Names {
+		m[n] = true
+	}
+	return m
+}()
 
 // runPrivileged is the parent: it opens the device key, sets up the host's
 // network and the local socket, and runs the node in a worker as
@@ -58,13 +67,23 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 	if _, err := sandbox.ParseMode(cfg.Privsep.Sandbox); err != nil {
 		return fmt.Errorf("privsep.%w", err)
 	}
-	if err := handOver(cfg.StateDir, uid, parentFiles, log); err != nil {
+	if cfg.Control.Addr == "" {
+		// without it the node asks at its local socket which control plane
+		// to take (boundgatectl configure, reset), and that socket is the
+		// worker's: the worker would choose whom the node trusts
+		return errors.New("privsep: the control plane must be named in the configuration (control.addr); a separated node does not take it from its local socket")
+	}
+	if err := shareState(cfg.StateDir, uid, gid, parentFiles, log); err != nil {
 		return err
 	}
 	if cfg.LogDir != "" {
 		if err := handOver(cfg.LogDir, uid, nil, log); err != nil {
 			return err
 		}
+	}
+	trusted, err := anchors.Open(anchors.Options{Dir: cfg.StateDir, Pin: cfg.Control.Pin, Genesis: cfg.Control.SignersGenesis, Owner: -1, Shared: true})
+	if err != nil {
+		return fmt.Errorf("privsep: %w", err)
 	}
 	key, err := node.OpenDeviceKey(node.Config{StateDir: cfg.StateDir, KeyKind: cfg.KeyKind, TPMDevice: cfg.TPMDevice, SEKeyHelper: cfg.SEKeyHelper, Log: log})
 	if err != nil {
@@ -94,7 +113,7 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 	backoff := time.Second
 	for {
 		started := time.Now()
-		p := &privsep.Parent{Key: key, Net: journal, Config: raw, TUNName: tunName, WorkerUID: uid, Log: log}
+		p := &privsep.Parent{Key: key, Net: journal, Config: raw, TUNName: tunName, WorkerUID: uid, Anchors: trusted, Log: log}
 		err := superviseWorker(ctx, p, uid, gid, socket)
 		// the worker's device went with it; the host routes and NAT rules it
 		// asked for did not
@@ -162,6 +181,13 @@ func superviseWorker(ctx context.Context, p *privsep.Parent, uid, gid int, socke
 	case err := <-waited:
 		cancel()
 		<-served
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGSYS {
+				// execve, ptrace, executable memory: the node does none of it
+				p.Log.Error("privsep: the worker was ended by its sandbox for a system call the node never makes. This is what an attack on the node looks like; the kernel's log names the call (dmesg, type=1326 sig=31)", "pid", cmd.Process.Pid)
+			}
+		}
 		return fmt.Errorf("worker: %v", err)
 	case err := <-served:
 		// the worker broke the protocol or closed its end: it goes
@@ -224,6 +250,75 @@ func workerUser(spec string) (uid, gid int, err error) {
 func isNumber(s string) bool {
 	_, err := strconv.Atoi(s)
 	return err == nil
+}
+
+// shareState makes the state directory one that parent and worker both
+// write to and neither takes from the other: it stays root's, its group
+// becomes the worker's with the right to write, and it is sticky, so that a
+// file is removed or renamed only by its owner (as in /tmp). The worker
+// keeps its own files there; the parent's (keep) it can read where they are
+// readable, and neither remove nor replace. What is in the directory,
+// except keep, goes to the worker once, while everything in it is still
+// root's.
+func shareState(dir string, uid, gid int, keep map[string]bool, log *slog.Logger) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || !fi.IsDir() {
+		return fmt.Errorf("privsep: %s is not a directory", dir)
+	}
+	const shared = os.ModeDir | os.ModeSticky | 0o770
+	switch {
+	case st.Uid != 0:
+		return fmt.Errorf("privsep: %s belongs to uid %d. The state directory is root's, also with privilege separation: give it back (chown -R 0:0 %s) and start again; what is the worker's in it goes to the worker then", dir, st.Uid, dir)
+	case int(st.Gid) == gid && fi.Mode() == shared:
+		return nil
+	case st.Gid != 0:
+		return fmt.Errorf("privsep: %s belongs to group %d, neither root's nor the worker's (%d); chown -R 0:0 %s and start again", dir, st.Gid, gid, dir)
+	}
+	n := 0
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == dir {
+			return err
+		}
+		if rel, _ := filepath.Rel(dir, path); keep[rel] {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			if s, ok := info.Sys().(*syscall.Stat_t); ok && s.Nlink > 1 {
+				// another name of it may be a file that must stay root's
+				log.Warn("privsep: a file with several names stays root's", "path", path)
+				return nil
+			}
+		}
+		n++
+		return os.Lchown(path, uid, gid) // WalkDir does not follow links, Lchown does not either
+	})
+	if err != nil {
+		return fmt.Errorf("privsep: hand the files in %s to the worker: %w", dir, err)
+	}
+	if err := os.Chown(dir, 0, gid); err != nil {
+		return fmt.Errorf("privsep: share %s with the worker: %w", dir, err)
+	}
+	if err := os.Chmod(dir, shared.Perm()|os.ModeSticky); err != nil {
+		return fmt.Errorf("privsep: share %s with the worker: %w", dir, err)
+	}
+	// a file system that keeps no owners (a directory shared from another
+	// machine, FAT) takes all of this and changes nothing
+	fi, err = os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 || int(st.Gid) != gid || fi.Mode() != shared {
+		return fmt.Errorf("privsep: the file system of %s does not keep owners and permissions; privilege separation rests on them and needs a state directory that does", dir)
+	}
+	log.Info("the state directory is shared with the worker", "dir", dir, "gid", gid, "entries", n)
+	return nil
 }
 
 // handOver gives dir to the worker, once: owner the worker, group root
@@ -393,13 +488,18 @@ func runWorker() int {
 		fmt.Fprintln(os.Stderr, "boundgate-node:", err)
 		return 1
 	}
+	trusted, err := c.Anchors(cfg.StateDir, h.ParentUID, anchors.Options{Pin: cfg.Control.Pin, Genesis: cfg.Control.SignersGenesis})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "boundgate-node:", err)
+		return 1
+	}
 	// from here on the worker talks to the network: it confines itself first
 	confined, err := confine(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "boundgate-node:", err, "(privsep.sandbox: off runs the worker without)")
 		return 1
 	}
-	sep := &separated{key: key, net: hostNet, socket: os.NewFile(4, "node.sock"), uid: os.Getuid(),
+	sep := &separated{key: key, net: hostNet, anchors: trusted, socket: os.NewFile(4, "node.sock"), uid: os.Getuid(),
 		sandbox: confined.String(), incomplete: confined.Missing}
 	if err := runWith(ctx, cfg, sep); err != nil {
 		fmt.Fprintln(os.Stderr, "boundgate-node:", err)
