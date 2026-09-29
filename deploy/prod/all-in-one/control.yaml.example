@@ -33,3 +33,11 @@ oidc:                              # Authentik: docs/OIDC.md
 admin:
   group: admins                    # OIDC group of administrators
   session_lifetime: 1h
+# A list may follow a URL that this control plane fetches (Lists in the admin
+# UI, docs/ACL.md). It reaches networks the admins' browsers do not, so the
+# address the source resolves to is checked: loopback, link-local and the
+# cloud metadata services are always refused, private ranges only with this
+# switch — for a Git server on the own network. It is in this file and not in
+# the API on purpose: an admin account alone cannot open the internal network.
+# list_sources:
+#   allow_private: true
