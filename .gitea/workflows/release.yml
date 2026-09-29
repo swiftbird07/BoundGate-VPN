@@ -51,6 +51,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: write     # the draft release (unless RELEASE_TOKEN is set)
       packages: write     # the image in this Gitea's registry (unless REGISTRY_TOKEN is set)
@@ -82,13 +83,11 @@ jobs:
           [ -n "$want" ] && [ "$have" = "$want" ] || { echo "Go is $have, go.mod's toolchain line says ${want:-nothing}: change both together"; exit 1; }
       - name: tests
         run: go vet ./... && GOOS=windows go vet ./... && go test ./...
-      # Known vulnerabilities that the code can reach, in the standard library
-      # and in the modules, for the Linux and the Windows builds: any finding
-      # stops the release. golang.org/x/vuln pinned (released 2026-09-08).
-      - name: govulncheck
-        run: |
-          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-          go run -exec 'env GOOS=windows' golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      # Known vulnerabilities are not looked for here any more: `make release`
+      # runs the same govulncheck (both builds) on the maintainer's machine
+      # before it pushes the tag, where the box's caches do it in a minute,
+      # and vulncheck.yml watches main every week. A cold scan here took over
+      # ten minutes, once over an hour, and only after the tag existed.
       - name: binaries
         run: |
           V=${{ gitea.ref_name }}

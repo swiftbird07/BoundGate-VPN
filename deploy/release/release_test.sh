@@ -27,6 +27,9 @@ git add -A; git commit -qm init
 git remote add origin "$T/origin.git"; git push -q -u origin main
 
 R="sh deploy/release/release.sh"
+# This tree has no Makefile and no Go code: the scan of the real release
+# (govulncheck in the box) has nothing to look at here, like the Mac build.
+export NO_VULN=1
 # ---- version numbers ----
 [ "$($R --next)" = v0.1.0 ] || fail "first version: $($R --next)"
 for t in v0.1.0 v0.1.9 v0.1.10 v0.2.0-rc1 nightly; do git tag "$t"; done

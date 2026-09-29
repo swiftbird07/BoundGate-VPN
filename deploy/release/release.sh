@@ -28,6 +28,7 @@
 #   NO_GITHUB=1   do not mirror to GitHub (updaters read GitHub by default: they
 #                 will not see this release); otherwise GITHUB_TOKEN(_FILE) and
 #                 GITHUB_REPO as in mirror-github.sh
+#   NO_VULN=1     release without the govulncheck run (both builds, in the box)
 #   NO_GO_VERIFY=1  skip the second signature check (with the updater's Go code, in the box)
 #   GITEA_URL, GITEA_REPO, WAIT_MINUTES (40)
 set -eu
@@ -102,6 +103,22 @@ api() { # api METHOD PATH [curl args]: JSON on stdout
 # a pushed tag starts CI and is seen by everyone: find out now what would stop this run later
 [ "$(api GET "" | jq -r '.permissions.push')" = true ] || die "the access token does not get write access to $GITEA_REPO at $GITEA_URL (curl's message above: 401 = wrong or expired token, 404 = the token's user does not see the repository)"
 [ -n "${NO_GITHUB:-}" ] || deploy/release/mirror-github.sh --check
+
+# Known vulnerabilities the code can reach, for the Linux and the Windows
+# build (`make vuln`). It runs here and no longer in CI: the box does it in a
+# minute with its caches, a cold runner needs more than ten and once hung for
+# over an hour, and a finding has to stop a release before the tag exists and
+# starts everything else. The box must have the Go this release is built
+# with, because the standard library's patch level decides half the answer.
+# NO_VULN=1 skips it knowingly.
+if [ -z "${NO_VULN:-}" ]; then
+  command -v box >/dev/null || die "box is missing: the release's vulnerability scan runs in it (NO_VULN=1 releases without it)"
+  have=$(box go env GOVERSION) || die "cannot ask the box for its Go"
+  [ "$have" = "$GO_WANT" ] || die "the box has $have, go.mod pins $GO_WANT: the scan must see the standard library this release ships"
+  say "govulncheck, for the Linux and the Windows build"
+  make vuln || die "govulncheck found something this code can reach: a release does not ship it (the report is above)"
+fi
+
 PLAIN=${V#v}
 ZIP=dist/BoundGate-$PLAIN-macos.zip; DMG=dist/BoundGate-$PLAIN.dmg
 if [ -n "${NO_MAC:-}" ]; then MAC=none

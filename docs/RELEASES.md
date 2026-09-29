@@ -14,8 +14,8 @@ Two halves, and the signing keys are all in one of them:
 
 | | where | what |
 |---|---|---|
-| 1 | here | checks (clean tree, HEAD is `origin/main`, the release key is one the builds know, the version is newer than every tag), tags, pushes the tag |
-| 2 | CI, `.gitea/workflows/release.yml` | tests, `govulncheck` (a known vulnerability the code can reach stops the release), Linux and Windows binaries, the image; parks them in a **draft** release with `build.json`, a record of what it built and with which Go. CI signs nothing and holds no signing key |
+| 1 | here | checks (clean tree, HEAD is `origin/main`, the release key is one the builds know, the version is newer than every tag, `govulncheck` clean for the Linux and the Windows build), tags, pushes the tag |
+| 2 | CI, `.gitea/workflows/release.yml` | tests, Linux and Windows binaries, the image; parks them in a **draft** release with `build.json`, a record of what it built and with which Go. CI signs nothing and holds no signing key |
 | 3 | here, while CI works | the Mac app: universal, signed with your Developer ID, notarized, stapled (`apps/macos/build-app.sh`, `notarize.sh`; the credentials stay in your keychain) |
 | 4 | here | downloads CI's files, compares them with `build.json`, the tagged commit and go.mod's toolchain, writes the manifest over everything, **signs it with the release key**, checks the signature the way clients will |
 
@@ -28,8 +28,12 @@ step 4 refuses a draft built with another Go, step 3 refuses a box with
 another Go, and `make apple-core` refuses a `~/.local/go-apple` with another
 one. A new Go is therefore one commit: the `toolchain` line, the
 `go-version` in both workflows, the box image, and the tarball in
-`~/.local/go-apple` and `apps/android/Dockerfile.core`. `make vuln` runs the
-same `govulncheck` as CI in the box, for the Linux and the Windows build.
+`~/.local/go-apple` and `apps/android/Dockerfile.core`. `make vuln` runs `govulncheck` in the box for the
+Linux and the Windows build, and step 1 runs it for you before it tags: a
+known vulnerability the code can reach stops the release while nothing has
+left this machine yet (`NO_VULN=1` releases without it). CI no longer scans
+— a cold runner needed more than ten minutes for it and once over an hour,
+and only after the tag existed; `vulncheck.yml` watches `main` weekly.
 | 5 | here | uploads Mac app, manifest and signature, publishes the draft, confirms that `releases/latest` answers the new version |
 | 6 | here, `deploy/release/mirror-github.sh` | puts the same files on **GitHub**, where updaters look by default: checks them once more against the signed manifest, waits for the tag (it comes with Gitea's push mirror, and must be the tag made here), draft, upload, publish, and then looks at `releases/latest` the way a visitor does |
 

@@ -215,10 +215,10 @@ vet:
 	box go vet ./...
 
 # Known vulnerabilities the code can reach (standard library and modules), for
-# the Linux and the Windows builds; CI runs the same once a week and before
-# every release (.gitea/workflows/vulncheck.yml, release.yml), not on every
-# image build. The box's Go is the toolchain that is checked: keep it at
-# go.mod's `toolchain` line.
+# the Linux and the Windows builds. `make release` runs this before it tags,
+# and CI looks once a week (.gitea/workflows/vulncheck.yml); no build scans.
+# The box's Go is the toolchain that is checked: keep it at go.mod's
+# `toolchain` line.
 GOVULNCHECK = golang.org/x/vuln/cmd/govulncheck@v1.8.0
 vuln:
 	box go run $(GOVULNCHECK) ./...
