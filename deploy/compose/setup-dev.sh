@@ -111,8 +111,13 @@ rm_policy() {
 
 # The lab starts permissive; the e2e adds forbid policies on top and
 # switches to group-based permits. Without any policy nothing is reachable.
+#
+# A user session is not a condition of the tunnel (docs/OIDC.md): a device
+# gets in on its key, and whether a signed-in person is needed is what a
+# policy says. This one says it — for the machines (`workload`) it does not,
+# for the laptops it does, which is what the old hard-wired rule did.
 default_policies() {
-  set_policy lab-allow-all 'permit(principal, action, resource);'
+  set_policy lab-allow-all 'permit(principal, action, resource) when { principal.has_session || principal.kind == "workload" };'
 }
 
 eval_acl() {  # eval SVC DST [PORT] [PROTO] [SNI]

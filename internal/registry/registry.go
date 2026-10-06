@@ -56,9 +56,12 @@ func ParseRoles(names []string) ([]Role, error) {
 func HasRole(roles []Role, r Role) bool { return slices.Contains(roles, r) }
 
 // Kind is the identity kind of a node: an interactive node is used by a
-// person and needs a user session (OIDC login) before hubs admit it; a
-// workload (server, router, hub) is admitted on its device identity alone.
-// Kind is granted by an admin and part of the signed binding.
+// person who can sign in, a workload (server, router, hub) is a machine that
+// cannot. It is granted by an admin and part of the signed binding, and it
+// is an attribute, not a gate: no tunnel is refused over it. Whether a
+// resource needs a signed-in person is the policies' answer, which see
+// `principal.kind` beside `principal.has_session`, the user and the groups
+// (docs/OIDC.md, docs/ACL.md).
 type Kind string
 
 const (
@@ -77,9 +80,6 @@ func ParseKind(s string) (Kind, error) {
 		return "", fmt.Errorf("registry: unknown kind %q (interactive or workload)", s)
 	}
 }
-
-// NeedsSession reports whether hubs require a user session for the node.
-func (n Node) NeedsSession() bool { return n.Kind != KindWorkload }
 
 // PrefixMode says how a subnet router forwards traffic into a prefix.
 type PrefixMode string

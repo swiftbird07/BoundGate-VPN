@@ -233,10 +233,10 @@
       {/if}
       <div class="grid cols-2">
         <label class="field">Name <input bind:value={g.name} /></label>
-        <label class="field">Kind <select bind:value={g.kind}><option value="interactive">interactive (a user logs in)</option><option value="workload">workload (no user session)</option></select></label>
+        <label class="field">Kind <select bind:value={g.kind}><option value="interactive">interactive (a person can sign in here)</option><option value="workload">workload (a machine, nobody signs in)</option></select></label>
       </div>
       {#if g.kind === 'interactive' && g.roles.includes('hub')}
-        <p class="callout small"><b>A hub with a user?</b> An interactive node needs a signed-in user before other nodes and its own tunnels let it through. A hub has none: confirm it as a <i>workload</i>.</p>
+        <p class="callout small"><b>A hub with a user?</b> Nobody signs in on a hub, so confirm it as a <i>workload</i>. The kind does not admit or refuse anything by itself &mdash; the policies do, and they can ask for a signed-in user with <code>principal.has_session</code>.</p>
       {/if}
       {#if confirm.node.hardware_claimed}
         <label class="check"><input type="checkbox" bind:checked={g.hardware} /> Hardware-bound: this machine keeps its key in hardware, a TPM or a Mac's Secure Enclave ({confirm.node.key_kind})</label>

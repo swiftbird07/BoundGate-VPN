@@ -121,13 +121,13 @@ docker run --rm --network none --entrypoint sh "$IMG" -c \
   'printf "name: ps\nstate_dir: /tmp/s\nsocket: /tmp/node.sock\nprivsep: {user: \"65531\"}\n" > /tmp/node.yaml && boundgate-node -config /tmp/node.yaml' 2>&1 \
   | grep -q 'must be named in the configuration' || fail "privsep: a separated node would take its control plane from its local socket"
 
-echo "== 3. node-a (interactive): up, but every hub refuses it until the user logs in; node-r (workload) needs no login"
+echo "== 3. node-a (interactive): the hubs admit it without a login, and the policy, not the hub, keeps the target closed until the user signs in"
 x node-a boundgatectl up >/dev/null
-wait_for 20 status_is node-a '.login_required == true and ([.hubs[] | select(.state == "login required")] | length == 2)' || fail "hubs did not refuse node-a without a session"
-if reach 10.60.0.10 target; then fail "target reachable without login"; fi
+wait_for 20 status_is node-a '(.login_required | not) and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "a hub refused node-a without a session"
+if reach 10.60.0.10 target; then fail "target reachable without a session, although the policy asks for one"; fi
 status_is node-a '.user == null and .kind == "interactive"' || fail "node-a has a user before login"
-status_is node-r '.kind == "workload" and .user == null and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "workload node-r needs a login?"
-echo "== 3b. login: boundgatectl login -> browser at the (fake) IdP -> callback -> session in the snapshot -> hubs admit node-a"
+status_is node-r '.kind == "workload" and .user == null and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "workload node-r is not connected"
+echo "== 3b. login: boundgatectl login -> browser at the (fake) IdP -> callback -> session in the snapshot -> the policy opens"
 $S login node-a >/dev/null
 wait_for 15 status_is node-a '.user.username == "martin" and (.user.groups | index("vpn-users") != null) and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "node-a not connected to both hubs after login"
 $S api GET /api/v1/admin/sessions | jq -e 'length == 1 and .[0].node_name == "node-a" and .[0].username == "martin"' >/dev/null || fail "session not listed"
@@ -220,17 +220,24 @@ status_is node-a '.hubs[] | select(.name == "hub2") | .primary == true' || fail 
 $COMPOSE start hub1 >/dev/null
 wait_for 30 status_is node-a '[.hubs[] | select(.state == "connected")] | length == 2' || fail "node-a did not reconnect to hub1"
 
-echo "== 5b. session revoked by an admin: hubs close node-a's tunnels within seconds; login again restores; logout drops"
+echo "== 5b. session revoked by an admin: the tunnels stay, what the session permitted closes within seconds; login again restores; logout drops"
+# the permit asks for a signed-in person again, as the lab's default does:
+# this step is about what happens to such a flow when the session goes
+policy lab-allow-all 'permit(principal, action, resource) when { principal.has_session || principal.kind == "workload" };'
+wait_for 15 reach 10.60.0.10 target || fail "target unreachable with a session and a permit that asks for one"
 SESSION=$($S api GET /api/v1/admin/sessions | jq -r '.[0].id')
 $S api DELETE "/api/v1/admin/sessions/$SESSION"
-wait_for 10 status_is node-a '.user == null and ([.hubs[] | select(.state == "connected")] | length == 0)' || fail "tunnels survived the session revocation"
-if reach 10.60.0.10 target; then fail "target reachable after session revocation"; fi
+wait_for 10 status_is node-a '.user == null' || fail "the session is still in node-a's snapshot"
+wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "target reachable after the session was revoked"
+status_is node-a '[.hubs[] | select(.state == "connected")] | length == 2' || fail "the tunnels were closed, although only the session ended"
 $S login node-a >/dev/null
 wait_for 20 reach 10.60.0.10 target || fail "target unreachable after re-login"
 x node-a boundgatectl logout >/dev/null
-wait_for 10 status_is node-a '.user == null and ([.hubs[] | select(.state == "connected")] | length == 0)' || fail "tunnels survived the logout"
+wait_for 10 status_is node-a '.user == null' || fail "the session survived the logout"
+wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "target reachable after the logout"
 $S login node-a >/dev/null
 wait_for 20 reach 10.60.0.10 target || fail "target unreachable after login"
+policy lab-allow-all 'permit(principal, action, resource);'
 
 echo "== 6. revoke node-a while up: tunnels close, up fails, key cannot re-enroll"
 OLD_ID=$(x node-a boundgatectl -json identity | jq -r .node_id)
@@ -409,7 +416,7 @@ wait_for 15 status_is node-a '.enrollment == "approved" and .binding == "verifie
 x node-a boundgatectl up >/dev/null
 wait_for 20 reach 10.60.0.10 target || fail "hubs refuse a node signed by the new admin key"
 # a control plane that writes its own list: forged link, signed by a key the nodes never trusted
-x control sh -c "rm -f /tmp/evil /tmp/evil.pub; ssh-keygen -q -t ed25519 -N '' -f /tmp/evil"
+x control sh -c "rm -f /tmp/evil /tmp/evil.pub /tmp/forged /tmp/forged.sig; ssh-keygen -q -t ed25519 -N '' -f /tmp/evil"
 HEAD=$(sql "SELECT hash FROM signer_sets WHERE version = $V1;")
 EVIL=$(x control awk '{print $1" "$2}' /tmp/evil.pub)
 FORGED=$(jq -cnj --arg prev "$HEAD" --arg k "$EVIL" --argjson v "$V2" '{type:"boundgate-signer-set",version:$v,prev:$prev,keys:[$k]}')
@@ -466,14 +473,19 @@ wait_for 20 x node-a ping -c 1 -W 2 "$T_IP" || fail "node-t unreachable"
 wait_for 20 status_is node-a '[.paths[]? | select(.peer == "node-t" and .via == "direct" and .side == "dialed")] | length == 1' || fail "node-a did not dial node-t directly"
 status_is node-t '[.paths[]? | select(.peer == "node-a" and .via == "direct" and .side == "accepted")] | length == 1' || fail "node-t does not show the accepted path"
 wait_for 40 sh -c "$S api GET '/api/v1/admin/tunnels?active=1' | jq -e '([.[] | select(.transport == \"relay\" and ([.hub_name, .peer_name] | sort) == [\"node-a\", \"node-r\"])] | length) == 1 and ([.[] | select(.hub_name == \"node-t\" and .peer_name == \"node-a\" and .transport == \"quic\")] | length) == 1'" || fail "paths are missing from the tunnel history (the accepting node reports them)"
-# a relay pairs approved nodes only: a node without its user session is refused like at a hub, and loses the paths it had
+# a path is a tunnel, and a user session is not a condition of one (R134):
+# the path survives the end of node-a's session, and what the session
+# permitted is what closes -- decided by the node that receives it
+policy lab-allow-all 'permit(principal, action, resource) when { principal.has_session || principal.kind == "workload" };'
+wait_for 15 reach 192.168.178.10 target-lan || fail "LAN unreachable over the path with a session and a permit that asks for one"
 SESSION=$($S api GET /api/v1/admin/sessions | jq -r '.[] | select(.node_name == "node-a") | .id' | head -1)
 $S api DELETE "/api/v1/admin/sessions/$SESSION"
-wait_for 15 status_is node-t '[.paths[]? | select(.peer == "node-a")] | length == 0' || fail "node-t kept the path of a node whose user session was revoked"
-wait_for 15 status_is node-r '[.paths[]? | select(.peer == "node-a")] | length == 0' || fail "node-r kept the path of a node whose user session was revoked"
+wait_for 15 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://192.168.178.10 >/dev/null 2>&1' || fail "the LAN stayed reachable over the path after the session was revoked"
+status_is node-r '[.paths[]? | select(.peer == "node-a")] | length == 1' || fail "node-r dropped the path, although only the session ended"
+status_is node-t '[.paths[]? | select(.peer == "node-a")] | length == 1' || fail "node-t dropped the path, although only the session ended"
 $S login node-a >/dev/null
 wait_for 20 reach 192.168.178.10 target-lan || fail "LAN unreachable after re-login"
-wait_for 60 sh -c "docker compose -f docker-compose.yml exec -T node-a ping -c 1 -W 1 $R_IP >/dev/null; [ -n \"\$(docker compose -f docker-compose.yml exec -T node-a boundgatectl -json status | jq -r '[.paths[]? | select(.peer == \"node-r\")][0].via // empty')\" ]" || fail "the path to node-r did not come back after the login"
+policy lab-allow-all 'permit(principal, action, resource);'
 # the relaying hub stops: traffic is back on the other hub at once, and the path forms again through it
 VIA=$(path_of node-a node-r via); RHUB=${VIA#relay }; [ "$RHUB" = hub1 ] && OTHER=hub2 || OTHER=hub1
 $COMPOSE stop "$RHUB" >/dev/null
@@ -507,7 +519,7 @@ x node-m boundgatectl logout >/dev/null 2>&1 || true
 x node-m boundgatectl down >/dev/null 2>&1 || true
 status_is node-m '.binding == "verified" and .kind == "interactive"' || fail "node-m is not approved"
 x node-m boundgatectl up >/dev/null
-wait_for 20 status_is node-m '.login_required == true' || fail "hubs did not ask node-m for a login"
+wait_for 20 status_is node-m '(.login_required | not) and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "a hub refused node-m without a session"
 $S login node-m >/dev/null
 wait_for 20 status_is node-m '.state == "up" and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "node-m not connected to both hubs"
 # what the platform was handed: address, MTU and the routes, on the device it opened

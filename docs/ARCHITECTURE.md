@@ -36,10 +36,12 @@ There is no separate agent or gateway. One binary, roles per node:
 Roles combine (a Hetzner box is `hub + subnet-router`, a Raspberry Pi at
 home is `subnet-router`, a laptop is `endpoint`). Roles and prefixes are
 **granted by an admin**; a node can only request them. Orthogonal to the
-roles is the **kind**: an `interactive` node is used by a person and needs
-a user session (OIDC login) before hubs admit it; a `workload` (server,
-router, hub) is admitted on its device key alone. Kind, roles, prefixes
-and overlay address are in the admin-signed binding.
+roles is the **kind**: an `interactive` node is used by a person who can sign
+in (OIDC), a `workload` (server, router, hub) is a machine that cannot. Both
+are admitted on their device key alone — the kind is an attribute the
+policies read, not a gate (OIDC.md) — and whether a resource needs a
+signed-in person is what a policy says. Kind, roles, prefixes and overlay
+address are in the admin-signed binding.
 
 ```
               control plane (443)          decides: approvals, roles, sessions, ACL, snapshots

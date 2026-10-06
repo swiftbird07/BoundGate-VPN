@@ -66,28 +66,29 @@ the APK carries only the Kotlin standard library besides the app itself.
 ## Always-on with "Block connections without VPN"
 
 In this mode Android lets no app except BoundGate send anything outside the
-tunnel, not even to the addresses the VPN excludes: the browser cannot reach
-the IdP. Without a user session the hub refuses the tunnel (403), so the
-sign-in would never get through.
+tunnel, not even to the addresses the VPN excludes: the browser's way to the
+IdP runs through the tunnel like everything else.
 
-The hub option `login_passthrough` solves it (off by default; SECURITY
-R109):
+That used to be a problem, because a hub refused a tunnel without a user
+session and the sign-in could never get through; the hub option
+`login_passthrough` existed for this one case. Since 2026-10-01 a session is
+not a condition of the tunnel (OIDC.md), so the tunnel is there before the
+sign-in and the option is gone. What the device may reach before it has a
+user is a policy like any other:
+
+```
+permit(principal in BoundGate::Tag::"phone", action,
+       resource == BoundGate::Host::"136.243.123.200");   // the IdP
+```
 
 ```yaml
 # hub
-dns: [10.20.0.1]                        # resolvers for the apps (see "DNS" below)
-login_passthrough: [136.243.123.200/32] # only for Android's lockdown mode: the IdP
+dns: [10.20.0.1]   # resolvers for the apps (see "DNS" below)
 ```
 
-With it, the hub admits a device without a session. Its tunnel carries only
-flows to these destinations until the user has signed in. The app sees that
-and still shows "Sign-in needed". In lockdown the app excludes nothing from
-the tunnel (`isLockdownEnabled`), so the IdP and DNS go through the tunnel to
-the passthrough. Without lockdown the app excludes them, and the option is
-not needed.
-
 DNS needs the hub's `dns` option in lockdown: nothing else is reachable
-before the sign-in.
+before the sign-in. A hub lets DNS to the resolvers it offers through by
+itself, so no policy is needed for that.
 
 ## DNS
 

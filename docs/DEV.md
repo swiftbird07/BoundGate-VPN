@@ -58,7 +58,7 @@ itself (while it is alive) to look around without registering a passkey.
 ```bash
 make compose-up         # builds Linux binaries in the box, builds images, starts everything
 make setup-dev          # dev admin key, overlay pool, enroll + confirm + sign hub1, hub2, node-r, node-a, node-t
-make e2e                # M1.5 + M1.6 + M2: up, login required, login, reachability, HA failover, session
+make e2e                # M1.5 + M1.6 + M2: up without a login, the policy asks for the session, reachability, HA failover
                         # revocation, logout, node revocation, re-enrollment, confirm/sign, token reuse,
                         # grant change, DB tampering, control-plane key change
 cd deploy/compose
@@ -99,7 +99,7 @@ Lab topology:
 | hub2 | workload: hub, subnet-router (10.60.0.0/24 snat) | 172.30.0.11 | 10.60.0.3 | | 10.21.0.2 |
 | node-r | workload: endpoint, subnet-router (192.168.178.0/24 snat) | 172.30.0.30 | | 192.168.178.30 | 10.21.0.3 |
 | node-t | workload: endpoint with a TPM key (`swtpm` sidecar, TPM.md), `hardware_bound` | 172.30.0.40 | | | 10.21.0.6 |
-| node-a | interactive: endpoint, profile `lab` (needs a login) | 172.30.0.20 | | | 10.21.0.4 |
+| node-a | interactive: endpoint, profile `lab` (the lab policy asks it for a session) | 172.30.0.20 | | | 10.21.0.4 |
 | target | whoami | | 10.60.0.10 | | |
 | target-lan | whoami | | | 192.168.178.10 | |
 

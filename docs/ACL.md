@@ -231,7 +231,23 @@ the name arrives; in a `permit`, the flow is pending until the ClientHello
 The membership chain `node ∈ user ∈ group` is what makes user-centric
 policies short: `principal in BoundGate::Group::"admins"` is true for a node
 whose current session belongs to a user in that group, and false the moment
-the session ends (the hub then also closes the tunnel, see `OIDC.md`).
+the session ends — the open flows are then decided again and the ones that
+needed the session close (`OIDC.md`).
+
+**Whether a user is needed at all is decided here and nowhere else.** A
+tunnel does not depend on a sign-in: an approved device is admitted on its
+key. So a permit that is meant for a person has to say so, with
+`when { principal.has_session }` or by naming a user or group; a permit that
+names only the node permits the device, with or without anybody at it. For
+nodes a person uses this is usually the line to add:
+
+```
+permit(principal, action, resource in BoundGate::Network::"10.20.0.0/16")
+  when { principal.has_session };
+```
+
+`principal.kind` (`interactive`/`workload`) says whether somebody *can* sign
+in on that node, not whether they must.
 
 Tags are an administrator's labels for nodes (Nodes, "Edit grant"): a few
 are offered (`server`, `workstation`, `laptop`, `phone`, `iot`,

@@ -34,20 +34,13 @@ func (h *hubService) Accept(_ context.Context, peer transport.AuthenticatedPeer)
 	if !ok {
 		return transport.TunnelConfig{}, http.StatusForbidden, nil
 	}
-	// An interactive node needs a user session (OIDC login) that the
-	// control plane bound to this node id; workloads are admitted on their
-	// device identity alone. 403 tells the spoke "login required". With a
-	// login passthrough the tunnel opens anyway and carries only the way to
-	// the sign-in (decide) until the session arrives.
-	if p.NeedsSession() {
-		if _, ok := snap.SessionFor(p.ID, time.Now()); !ok {
-			if len(n.cfg.LoginPassthrough) == 0 {
-				n.log.Info("tunnel refused: no user session", "peer", p.Name, "node", p.ID)
-				return transport.TunnelConfig{}, http.StatusForbidden, nil
-			}
-			n.log.Info("tunnel admitted for signing in only: no user session yet", "peer", p.Name, "node", p.ID)
-		}
-	}
+	// A user session is not a condition of the tunnel. An approved device
+	// holding its key is admitted, and what it may then reach is the
+	// policies' answer: they see `principal.has_session`, the user and their
+	// groups, so a resource that needs a signed-in person says so, and one
+	// that needs only the device does not (docs/OIDC.md, R109). The tunnel
+	// itself carries nothing a policy did not permit.
+	//
 	// Per-flow ACL decisions happen in Serve (flow table + Cedar).
 	//
 	// CONNECT-IP only lets a peer send from, and receive for, its assigned
@@ -100,11 +93,9 @@ func (h *hubService) RelayDial(peer transport.AuthenticatedPeer, target netip.Ad
 	if !ok {
 		return netip.Addr{}, http.StatusForbidden
 	}
-	if p.NeedsSession() {
-		if _, ok := snap.SessionFor(p.ID, time.Now()); !ok {
-			return netip.Addr{}, http.StatusForbidden
-		}
-	}
+	// No session check here either: a relay carries a tunnel whose two ends
+	// decide for themselves, and the receiving node's policies see the user
+	// behind the peer that reaches it.
 	for _, q := range snap.Peers {
 		if q.OverlayIP == target && q.ID != p.ID {
 			return p.OverlayIP, http.StatusOK

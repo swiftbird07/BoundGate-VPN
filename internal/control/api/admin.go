@@ -231,7 +231,7 @@ type GrantBody struct {
 	// admin confirmed so a stale page cannot approve a different request.
 	Fingerprint string            `json:"fingerprint"`
 	Name        string            `json:"name"`
-	Kind        string            `json:"kind"` // interactive (needs a user login) | workload
+	Kind        string            `json:"kind"` // interactive (a person can sign in) | workload
 	Roles       []string          `json:"roles"`
 	Prefixes    []registry.Prefix `json:"prefixes"`
 	OverlayIP   string            `json:"overlay_ip"`

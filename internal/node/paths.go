@@ -210,14 +210,9 @@ func (pm *pathManager) open(ctx context.Context, cd *candidate) {
 	if !ok {
 		return
 	}
-	if peer.NeedsSession() {
-		// what a hub asks of an interactive node before it admits it holds
-		// on a path too, whichever side dialed
-		if _, ok := snap.SessionFor(peer.ID, time.Now()); !ok {
-			cd.next.Store(time.Now().Add(10 * time.Second).UnixNano())
-			return
-		}
-	}
+	// No session is asked of the peer here, as no hub asks one: a direct path
+	// carries the same flows the hub path would, and the receiving side
+	// decides every one of them by its policies.
 	pm.mu.Lock()
 	_, have := pm.dialed[cd.id]
 	pm.mu.Unlock()
@@ -433,34 +428,6 @@ func (pm *pathManager) closePeer(id transport.DeviceID) {
 	}
 }
 
-// enforceSessions closes the paths with interactive peers whose user session
-// ended, dialed or accepted, as a hub does with its tunnels.
-func (pm *pathManager) enforceSessions(snap *registry.Snapshot) {
-	if snap == nil {
-		return
-	}
-	now := time.Now()
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	for id, p := range pm.dialed {
-		if q, ok := snap.Peer(id); ok && q.NeedsSession() {
-			if _, ok := snap.SessionFor(id, now); !ok {
-				pm.s.n.log.Info("closing path: the peer has no user session", "peer", q.Name)
-				_ = p.t.Close()
-			}
-		}
-	}
-	for _, ps := range pm.servers {
-		for _, id := range ps.srv.ActiveDevices() {
-			if p, ok := snap.Peer(id); ok && p.NeedsSession() {
-				if _, ok := snap.SessionFor(id, now); !ok {
-					ps.srv.CloseDevice(id, transport.ErrCodeSessionExpired, "user session ended")
-				}
-			}
-		}
-	}
-}
-
 func (pm *pathManager) status() []PathStatus {
 	var out []PathStatus
 	pm.mu.Lock()
@@ -587,12 +554,8 @@ func (h *peerService) Accept(_ context.Context, peer transport.AuthenticatedPeer
 	if !ok {
 		return transport.TunnelConfig{}, http.StatusForbidden, nil
 	}
-	if p.NeedsSession() {
-		if _, ok := snap.SessionFor(p.ID, time.Now()); !ok {
-			n.log.Info("peer tunnel refused: no user session", "peer", p.Name)
-			return transport.TunnelConfig{}, http.StatusForbidden, nil
-		}
-	}
+	// The tunnel asks for the device key, the policies ask for the rest: a
+	// peer without a signed-in user reaches what its policies grant a device.
 	assigned := []netip.Prefix{netip.PrefixFrom(p.OverlayIP, 32)}
 	for _, pf := range p.Prefixes {
 		assigned = append(assigned, pf.Prefix.Masked())

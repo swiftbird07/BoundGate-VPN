@@ -57,9 +57,6 @@ func (s *session) decide(e *flow.Entry) flow.Result {
 	if s.offeredDNS(e) {
 		return flow.Result{Allow: true, Policies: []string{"hub_dns"}, Reasons: []string{"DNS to a resolver this hub offers"}}
 	}
-	if r, ok := s.loginPassthrough(e); ok {
-		return r
-	}
 	names := s.dns.Names(s.learner(e.Origin.Principal), e.Target.Addr(), time.Now())
 	question := e.DNSName
 	if question != "" && !s.knownResolver(e.Target.Addr()) {
@@ -145,34 +142,6 @@ func (s *session) offeredDNS(e *flow.Entry) bool {
 		}
 	}
 	return false
-}
-
-// loginPassthrough decides the flows of an interactive peer that has no user
-// session yet, on a hub with login_passthrough: to the listed destinations
-// only, whatever the policies say (there is no user they could name). ok is
-// false for everyone else, whom the policies decide.
-func (s *session) loginPassthrough(e *flow.Entry) (flow.Result, bool) {
-	pass := s.n.cfg.LoginPassthrough
-	if len(pass) == 0 {
-		return flow.Result{}, false
-	}
-	snap := s.n.holder.Load()
-	if snap == nil {
-		return flow.Result{}, true
-	}
-	p, ok := snap.Peer(e.Origin.Principal)
-	if !ok || !p.NeedsSession() {
-		return flow.Result{}, false
-	}
-	if _, ok := snap.SessionFor(p.ID, time.Now()); ok {
-		return flow.Result{}, false
-	}
-	for _, pf := range pass {
-		if pf.Contains(e.Target.Addr()) {
-			return flow.Result{Allow: true, Policies: []string{"login_passthrough"}, Reasons: []string{"before sign-in: " + pf.String()}}, true
-		}
-	}
-	return flow.Result{Reasons: []string{"no user session: only the login passthrough is open"}}, true
 }
 
 // flowSweeper expires idle flows. When the snapshot goes stale (the control

@@ -106,12 +106,6 @@ type Config struct {
 	// from outside leave the way they came; the tunnel's routes apply to
 	// what this host starts itself (netcfg.ArrivalRouter).
 	ReplyViaArrival bool
-	// LoginPassthrough (hub): with it, an interactive node without a user
-	// session is admitted anyway, and reaches these destinations only (the
-	// IdP, DNS) until the session arrives. Only for Android's lockdown mode
-	// (Always-on VPN with "Block connections without VPN"), where the
-	// browser cannot reach the IdP outside the tunnel. Empty: 403 as usual.
-	LoginPassthrough []netip.Prefix
 	// DNSLearnFrom: the resolvers whose answers this node believes when it
 	// matches a dynamic access list (dnsmap, docs/ACL.md). Empty: DNS.
 	DNSLearnFrom []netip.Addr
@@ -1335,9 +1329,9 @@ type session struct {
 
 	tmu     sync.Mutex
 	tunnels map[string]*tunnelStats // hub: accepted tunnels, for reports
-	// hub with login_passthrough: peers whose tunnels carry only the way to
-	// the sign-in, because their session is missing or ended
-	signInOnly map[transport.DeviceID]bool
+	// hub: the peers that had a user session when the sessions were last
+	// looked at, so that one ending is noticed (enforceSessions)
+	signedIn map[transport.DeviceID]bool
 
 	mu     sync.Mutex
 	bypass map[netip.Addr]bool
@@ -1613,52 +1607,37 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 	n.publishStatus()
 }
 
-// enforceSessions closes tunnels of interactive peers without a valid user
-// session (revoked, logged out, expired). Runs on every snapshot with
-// session changes and periodically, so expiry is enforced even without a
-// snapshot bump.
+// enforceSessions decides the open flows again when a peer's user session
+// ended (revoked, logged out, expired). The tunnel stays: a session is not
+// what admits a device, it is what some policies ask for — so what a session
+// permitted is closed, and what the device alone was granted keeps running.
+// Runs on every snapshot with session changes and periodically, so expiry by
+// time is enforced even without a snapshot bump.
 func (s *session) enforceSessions(snap *registry.Snapshot) {
-	if s.paths != nil {
-		s.paths.enforceSessions(snap)
-	}
 	if s.srv == nil || snap == nil {
 		return
 	}
 	now := time.Now()
-	pass := len(s.n.cfg.LoginPassthrough) > 0
-	only := map[transport.DeviceID]bool{}
+	signedIn := map[transport.DeviceID]bool{}
 	for _, id := range s.srv.ActiveDevices() {
-		p, ok := snap.Peer(id)
-		if !ok || !p.NeedsSession() {
-			continue
+		if _, ok := snap.SessionFor(id, now); ok {
+			signedIn[id] = true
 		}
-		if _, ok := snap.SessionFor(id, now); !ok {
-			if pass {
-				// the tunnel stays for the sign-in; its other flows end below
-				only[id] = true
-				continue
-			}
-			if c := s.srv.CloseDevice(id, transport.ErrCodeSessionExpired, "user session ended"); c > 0 {
-				s.n.log.Info("peer tunnels closed: no user session", "peer", p.Name, "node", id, "closed", c)
-			}
-		}
-	}
-	if !pass {
-		return
 	}
 	s.tmu.Lock()
-	lost := false
-	for id := range only {
-		lost = lost || !s.signInOnly[id]
+	changed := len(signedIn) != len(s.signedIn)
+	for id := range s.signedIn {
+		changed = changed || !signedIn[id]
 	}
-	s.signInOnly = only
+	s.signedIn = signedIn
 	s.tmu.Unlock()
-	// a session ended by time: flows it allowed are decided again (the
-	// snapshot did not change, so applyDiff did not)
-	if lost {
-		if c := s.flows.Reevaluate(s.decide); c > 0 {
-			s.n.log.Info("flows closed: user session ended, login passthrough only", "closed", c)
-		}
+	if !changed {
+		return
+	}
+	// the snapshot does not change when a session runs out by time, so
+	// applyDiff does not come by: decide the open flows again here
+	if c := s.flows.Reevaluate(s.decide); c > 0 {
+		s.n.log.Info("flows closed: a user session ended", "closed", c)
 	}
 }
 

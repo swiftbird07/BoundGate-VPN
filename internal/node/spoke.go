@@ -98,13 +98,16 @@ func (m *spokeManager) sync(hubs []registry.Node) {
 
 // retryNow makes every link that is waiting after a failure dial again
 // immediately. session: the own user session appeared (a sign-in, a new
-// snapshot); only then do links a hub refused for lack of one try again,
-// otherwise (a network change) they keep waiting for it.
+// snapshot). A hub that refused this device is not asked again on a mere
+// network change — nothing about the answer would differ, and a full
+// handshake on every change is what drained a phone overnight. A sign-in or
+// a new snapshot does poke them: it is what a hub older than this node waits
+// for, and what changes a refusal into an answer.
 func (m *spokeManager) retryNow(session bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.links {
-		if l.tunnel == nil && (session || l.state != "login required") {
+		if l.tunnel == nil && (session || l.state != "refused" && l.state != "login required") {
 			select {
 			case l.retry <- session:
 			default:
@@ -136,30 +139,19 @@ func (m *spokeManager) networkChanged() {
 	}
 }
 
-// loginRequired reports whether any hub refused the node for lack of a
-// user session.
+// loginRequired reports whether any hub refused the node for lack of a user
+// session. This node's hubs never do — a session is a policy matter, not a
+// condition of the tunnel (hub.Accept) — but a hub older than this node
+// does, and the state says so until it is updated.
 func (m *spokeManager) loginRequired() bool {
-	only := m.signInOnly()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.links {
-		if l.state == "login required" || only && l.state == "connected" {
+		if l.state == "login required" {
 			return true
 		}
 	}
 	return false
-}
-
-// signInOnly: this node needs a user session and has none. A hub with a
-// login passthrough admits it anyway, for the way to the sign-in only; such
-// a link counts as "login required", not as connected.
-func (m *spokeManager) signInOnly() bool {
-	snap := m.s.n.holder.Load()
-	if snap == nil || !snap.Self.NeedsSession() {
-		return false
-	}
-	_, ok := snap.SessionFor(snap.Self.ID, time.Now())
-	return !ok
 }
 
 // stop closes every link.
@@ -193,10 +185,11 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 			var de *transport.DialError
 			login := errors.As(err, &de) && de.Status == http.StatusForbidden
 			if login {
-				// Asking again changes nothing until the user signs in, and
-				// the sign-in pokes (retryNow): a full handshake every few
-				// seconds all night was what drained a phone overnight.
-				state, msg = "login required", "hub refused the tunnel: user login required (boundgatectl login)"
+				// Asking again changes nothing until the control plane says
+				// something else, and a new snapshot or a sign-in pokes
+				// (retryNow): a full handshake every few seconds all night
+				// was what drained a phone overnight.
+				state, msg = "refused", "the hub does not accept this device (a hub older than this node also refuses it without a user sign-in: boundgatectl login)"
 				if fast > 0 {
 					fast--
 					wait = 2 * time.Second
@@ -650,7 +643,6 @@ func (m *spokeManager) routes() []string {
 
 // hubs returns the link states in snapshot order.
 func (m *spokeManager) hubs() []HubStatus {
-	only := m.signInOnly()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]HubStatus, 0, len(m.order))
@@ -660,9 +652,6 @@ func (m *spokeManager) hubs() []HubStatus {
 			continue
 		}
 		hs := HubStatus{Name: l.hub.Name, Addr: l.hub.PublicAddr, State: l.state, Error: l.err, Since: l.since, Primary: l == m.primary}
-		if only && l.state == "connected" {
-			hs.State, hs.Error = "login required", "the hub lets this device through for signing in only"
-		}
 		if l.tunnel != nil {
 			hs.Transport = l.tunnel.Transport()
 			hs.TunnelStats = l.tunnel.Stats()

@@ -1,10 +1,38 @@
 # User login (OIDC)
 
 Device identity (the key) says *which machine*; the user session says
-*who is sitting at it*. Interactive nodes need both before a hub admits
-them; workloads (servers, routers, hubs) need only the key. The kind is
-granted by an admin and part of the signed binding, so the control plane
-cannot silently turn a laptop into a "workload" that needs no login.
+*who is sitting at it*. Both are facts about a connection, and **neither is
+a condition of the tunnel by itself**: a hub admits an approved device on
+its key, and whether a resource wants a signed-in person is what a policy
+says, never a rule wired into the hub.
+
+A policy asks for it in the words it asks for everything else:
+
+```
+// this needs a person, whoever they are
+permit(principal, action, resource in BoundGate::Network::"10.20.0.0/16")
+  when { principal.has_session };
+
+// this needs a particular group, which implies a session
+permit(principal in BoundGate::Group::"ops", action,
+       resource in BoundGate::Tag::"production");
+
+// this needs only the device, and says so by asking for nothing else
+permit(principal in BoundGate::Tag::"backup", action,
+       resource == BoundGate::Host::"10.20.4.9");
+```
+
+`kind` (`interactive`/`workload`) stays what it always was — granted by an
+admin, part of the signed binding — but it is an attribute for the policies,
+not a gate: it says whether a person *can* sign in on that node, not whether
+they must. A laptop is `interactive` even where its policies ask for no user,
+and nothing has to be relabelled a "workload" to get there.
+
+Until 2026-10-01 a hub refused every interactive node without a session, and
+no policy could say otherwise (R109). That rule is gone; the policies decide.
+What it means for an existing deployment is in SECURITY.md R134: a permit
+that names only the device now permits an unattended enrolled device too, so
+the permits that meant "a person" must say `has_session` or name a group.
 
 ## Flow
 
@@ -83,12 +111,16 @@ or `LOGIN REQUIRED` when a hub refused the node.
 
 ## Enforcement
 
-The hub checks the session in `Accept` (before the tunnel exists) and
-whenever a snapshot arrives or the 10 s timer fires (`enforceSessions`):
-an interactive peer without a valid session gets its tunnels closed with
-`ErrCodeSessionExpired`. The spoke shows `login required` and retries with
-a bounded backoff; when its own session appears in its snapshot, it redials
-immediately.
+A session is enforced where it is used: in the flow decision. The hub hands
+every flow to the policies with the session's user and groups, so a session
+that was never there means the permits that ask for one do not match.
+
+When a session **ends** — revoked, logged out, expired — the tunnel stays and
+the open flows are decided again (`enforceSessions`, on every snapshot with
+session changes and on the 10 s timer, because expiry by time bumps no
+snapshot). What the session permitted closes within seconds; what the device
+alone was granted keeps running. That is the difference from before
+2026-10-01, when the whole tunnel went.
 
 Subnet routers do not enforce sessions: they see packets from the hub
 tunnel, not per-peer identities. Enforcement is the hub's job (and, from

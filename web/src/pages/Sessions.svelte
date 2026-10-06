@@ -18,7 +18,7 @@
 </script>
 
 <div class="page-head">
-  <div><h1>User sessions</h1><div class="sub">One session per interactive node, granted by the identity provider, enforced by hubs.</div></div>
+  <div><h1>User sessions</h1><div class="sub">One session per node, granted by the identity provider. What it opens is up to the policies.</div></div>
   <label class="check"><input type="checkbox" bind:checked={all} /> include ended sessions</label>
 </div>
 <div class="card flush table-wrap">

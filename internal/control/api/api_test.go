@@ -652,7 +652,7 @@ func TestUserLoginFlow(t *testing.T) {
 		t.Fatalf("%+v", hv)
 	}
 	_, snap := e.snapshot(laptop, 0, "1s")
-	if snap.Self.Kind != registry.KindInteractive || !snap.Self.NeedsSession() || len(snap.Sessions) != 0 {
+	if snap.Self.Kind != registry.KindInteractive || len(snap.Sessions) != 0 {
 		t.Fatalf("%+v", snap.Self)
 	}
 
