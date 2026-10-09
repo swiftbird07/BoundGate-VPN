@@ -147,14 +147,59 @@ debug key and can be installed with `adb install`. The first run builds the
 image (about 2 GB of SDK and NDK, emulated on Apple silicon).
 
 `make android VERSION=v0.1.6 ANDROID_BUILD=release` builds
-`dist/BoundGate-v0.1.6-unsigned.apk`, which the user signs with their own key:
+`dist/BoundGate-v0.1.6-unsigned.apk`. The version code is derived from the tag
+(`vX.Y.Z` → X·10000 + Y·100 + Z), so each release installs over the one
+before it.
+
+## Signing
+
+`make release` does both: it builds the unsigned APK in these images and signs
+it here, as it does the Mac app (RELEASES.md step 3). CI never sees the key.
+`deploy/release/sign-apk.sh` is that step, and `--check` is what the release
+asks before it pushes a tag.
+
+**The certificate is the app's identity, for good.** Android installs an
+update only when it carries the certificate of what is already installed, or a
+successor the old key signed over to. There is no issuer who could replace a
+lost key: lose it without a prepared successor and no phone that has the app
+can ever be updated again — only uninstalling and installing anew helps.
+Because of that the certificate is pinned in the repository
+(`deploy/release/apk_cert_sha256`, written on the first release and compared on
+every one after it), so a key you did not mean to use stops the release instead
+of reaching a phone.
+
+A keystore to sign with, once:
 
 ```bash
-apksigner sign --ks boundgate-release.jks --out BoundGate-v0.1.6.apk dist/BoundGate-v0.1.6-unsigned.apk
+keytool -genkeypair -keystore private/boundgate-apk.jks -storetype PKCS12 -alias boundgate -keyalg EC -groupname secp256r1 -validity 10950 -dname "CN=BoundGate"
 ```
 
-The version code is derived from the tag (`vX.Y.Z` → X·10000 + Y·100 + Z),
-so each release installs over the one before it.
+```bash
+security add-generic-password -s boundgate-apk-keystore -a "$USER" -w
+```
+
+`private/` is git-ignored and masked in the box. The password comes from the
+macOS keychain and reaches `apksigner` in one environment variable, so it is in
+no command line. `APK_KS`, `APK_KS_PASS`, `APK_KEY_ALIAS` and `APKSIGNER`
+override all of it; the script's header lists them.
+
+**A key in hardware** works too — a YubiKey's PIV applet through
+`APK_KS=NONE APK_KS_TYPE=PKCS11` with the provider options. Note what it costs:
+APK Signature Scheme v3 supports **one** signer, not a set, so "several keys,
+any one of them" — the way the release manifest and the admin key list work —
+is not available here. The equivalent is a *successor* prepared while both keys
+are in hand:
+
+```bash
+apksigner rotate --out private/apk_lineage.bin \
+  --old-signer --ks private/a.jks --ks-key-alias boundgate \
+  --new-signer --ks private/b.jks --ks-key-alias boundgate
+```
+
+Keep the lineage; if the first key is gone, sign with the second and
+`APK_LINEAGE=private/apk_lineage.bin`. Android then follows the chain and
+accepts the update. Without that, hardware turns a stolen-key risk into a
+total-loss risk.
 
 **Dependencies:**
 * Gradle checks every file it loads against `verification-metadata.xml`.
@@ -173,8 +218,12 @@ so each release installs over the one before it.
 * **Key attestation as evidence for the admin** (plan M9b, SECURITY R103):
   the attestation chain of the key, shown before signing. It needs a field in
   the enroll request and in the admin UI.
-* **In-app update** via the signed manifest (RELEASES.md) and the APK in the
-  release.
+* **In-app update**: the APK is in the release and the signed manifest names
+  it, but nothing on the phone acts on that yet. `internal/embed`, the engine
+  the apps run, has no updater at all, and `update.Service.Install` can only
+  install a macOS bundle. It needs the checking and downloading part in Go and
+  `PackageInstaller` with `REQUEST_INSTALL_PACKAGES` in the app, where the
+  user confirms.
 * A foreground notification needs the "system exempted" service type. If
   Android refuses it, the service runs without it: the system keeps a bound
   VPN service alive either way.

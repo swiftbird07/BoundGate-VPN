@@ -25,6 +25,10 @@
 #                 (default private/release_signing_key; passphrase or a FIDO2
 #                 "sk" key are fine: ssh-keygen asks)
 #   NO_MAC=1      a release without the Mac app
+#   NO_APK=1      a release without the Android app (it is built in images
+#                 here, like the Mac app, and signed here too)
+#   APK_KS, APK_KS_PASS, APK_LINEAGE, ...   the Android signing key, as
+#                 deploy/release/sign-apk.sh describes it
 #   NO_GITHUB=1   do not mirror to GitHub (updaters read GitHub by default: they
 #                 will not see this release); otherwise GITHUB_TOKEN(_FILE) and
 #                 GITHUB_REPO as in mirror-github.sh
@@ -140,6 +144,21 @@ else
   fi
 fi
 
+APK=dist/BoundGate-$V-unsigned.apk
+if [ -n "${NO_APK:-}" ]; then ANDROID=none
+elif [ -f "$APK" ] && [ "$(cat dist/.release-apk 2>/dev/null)" = "$V $HEAD" ]; then ANDROID=built
+else
+  ANDROID=build
+  # Gradle, the SDK and the NDK live in images, like the Go of the core: the
+  # Mac runs neither (apps/android/build.sh)
+  docker info >/dev/null 2>&1 || die "docker does not answer: the Android app is built in images (colima status; NO_APK=1 releases without it)"
+fi
+# The signature is made here and never on a runner: Android pins the
+# certificate of what it installed, so this key is the app's identity for
+# good. Ask before the tag exists whether signing can work at all.
+[ $ANDROID = none ] || deploy/release/sign-apk.sh --check \
+  || die "the Android app cannot be signed on this machine (NO_APK=1 releases without it)"
+
 # ---- 1. tag ----
 if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
   [ "$(git rev-parse "$V^{commit}")" = "$HEAD" ] || die "tag $V exists and is not the commit checked out; check it out to resume, or pick another version"
@@ -171,6 +190,18 @@ else
   apps/macos/notarize.sh
   [ -f "$ZIP" ] && [ -f "$DMG" ] || die "the Mac build did not leave $ZIP and $DMG"
   echo "$V $HEAD" > dist/.release-built
+fi
+
+# ---- 2b. Android app, while CI works ----
+if [ $ANDROID = none ]; then
+  say "NO_APK: this release gets no Android app"
+elif [ $ANDROID = built ]; then
+  say "Android app of $V is built already"
+else
+  say "building the Android app (unsigned; the signature follows below)"
+  VERSION=$V ANDROID_BUILD=release apps/android/build.sh
+  [ -f "$APK" ] || die "the Android build did not leave $APK"
+  echo "$V $HEAD" > dist/.release-apk
 fi
 
 mirror() {
@@ -222,6 +253,12 @@ done
 IMAGE=$(jq -r '.image.ref // empty' "$B"); DIGEST=$(jq -r '.image.digest // empty' "$B")
 [ -n "$IMAGE" ] && [ -n "$DIGEST" ] || die "CI's build record names no image"
 [ -n "${NO_MAC:-}" ] || cp "$ZIP" "$DMG" "$OUT/"
+
+# The APK, signed here (deploy/release/sign-apk.sh). Only the signed one gets a
+# name in the manifest; the unsigned build stays in dist/.
+if [ $ANDROID != none ]; then
+  deploy/release/sign-apk.sh "$APK" "$OUT/BoundGate-$PLAIN.apk" || die "the Android app was not signed: not releasing half of it"
+fi
 
 # ---- 4. manifest, signed here ----
 COMMIT=$HEAD deploy/release/manifest.sh "$V" "$OUT" "$IMAGE" "$DIGEST" > "$OUT/manifest.json"

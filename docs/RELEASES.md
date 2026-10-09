@@ -16,7 +16,7 @@ Two halves, and the signing keys are all in one of them:
 |---|---|---|
 | 1 | here | checks (clean tree, HEAD is `origin/main`, the release key is one the builds know, the version is newer than every tag, `govulncheck` clean for the Linux and the Windows build), tags, pushes the tag |
 | 2 | CI, `.gitea/workflows/release.yml` | tests, Linux and Windows binaries, the image; parks them in a **draft** release with `build.json`, a record of what it built and with which Go. CI signs nothing and holds no signing key |
-| 3 | here, while CI works | the Mac app: universal, signed with your Developer ID, notarized, stapled (`apps/macos/build-app.sh`, `notarize.sh`; the credentials stay in your keychain) |
+| 3 | here, while CI works | the Mac app: universal, signed with your Developer ID, notarized, stapled (`apps/macos/build-app.sh`, `notarize.sh`; the credentials stay in your keychain), and the Android app: built in its images (`apps/android/build.sh`, 5–6 min with warm caches), signed here with your key (`deploy/release/sign-apk.sh`) |
 | 4 | here | downloads CI's files, compares them with `build.json`, the tagged commit and go.mod's toolchain, writes the manifest over everything, **signs it with the release key**, checks the signature the way clients will |
 
 **One Go for everything.** The standard library is linked into every binary,
@@ -47,6 +47,7 @@ is that step alone. The result is a release, on Gitea and on GitHub, with
 | `boundgate-<v>-linux-{amd64,arm64}.tar.gz` | control plane, node, CLI, mux as plain binaries |
 | `BoundGate-<version>.dmg` | the macOS app for people: Developer ID signed, notarized, stapled |
 | `BoundGate-<version>-macos.zip` | the same app, what the built-in updater downloads |
+| `BoundGate-<version>.apk` | the Android app, signed with the app's own key (`kind: apk`). Install it with `adb install` or from the file; the app does not update itself yet (docs/ANDROID.md) |
 | `manifest.json`, `manifest.json.sig` | the signed description of all of the above |
 
 and the container image, pushed by CI to `ghcr.io/swiftbird07/boundgate:<v>`
@@ -79,7 +80,7 @@ is the other kind of source (`update: {source: gitea, url: …}`,
 ```json
 {"type":"boundgate-release","version":"v1.2.3","commit":"…","created":"…",
  "image":{"ref":"ghcr.io/swiftbird07/boundgate","digest":"sha256:…"},
- "assets":[{"name":"…","kind":"app|binaries|dmg","os":"…","arch":"…","size":1,"sha256":"…"}]}
+ "assets":[{"name":"…","kind":"app|binaries|dmg|apk","os":"…","arch":"…","size":1,"sha256":"…"}]}
 ```
 
 `manifest.json.sig` is an OpenSSH signature (SSHSIG, namespace

@@ -11,6 +11,8 @@
 #   boundgate-<version>-windows-<arch>.zip    kind binaries (service, CLI, tray, install scripts)
 #   BoundGate-<version>-macos.zip             kind app (what the Mac updater installs)
 #   BoundGate-<version>.dmg                   kind dmg (for people)
+#   BoundGate-<version>.apk                   kind apk (Android, signed; the
+#                                             unsigned one CI builds is refused)
 # Needs jq and sha256sum or openssl.
 set -eu
 VERSION=${1:?usage: manifest.sh vX.Y.Z DIR [IMAGE_REF IMAGE_DIGEST]}
@@ -31,6 +33,8 @@ for f in "$DIR"/*; do
     boundgate-*-windows-arm64.zip)  kind=binaries; os=windows; arch=arm64 ;;
     BoundGate-*-macos.zip)          kind=app;      os=darwin; arch=universal ;;
     BoundGate-*.dmg)                kind=dmg;      os=darwin; arch=universal ;;
+    BoundGate-*-unsigned.apk)       echo "manifest: $n is unsigned; a release names only the signed APK" >&2; exit 2 ;;
+    BoundGate-*.apk)                kind=apk;      os=android; arch=universal ;;
     *) echo "manifest: do not know what $n is" >&2; exit 2 ;;
   esac
   assets=$(printf '%s' "$assets" | jq -c --arg n "$n" --arg k "$kind" --arg os "$os" --arg a "$arch" --argjson s "$(size "$f")" --arg h "$(sha "$f")" \

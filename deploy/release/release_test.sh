@@ -15,10 +15,14 @@ git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.email test@example.net; git config user.name test
 mkdir -p deploy/release deploy/prod internal/update private dist
-cp "$SRC/deploy/release/release.sh" "$SRC/deploy/release/manifest.sh" "$SRC/deploy/release/mirror-github.sh" deploy/release/
+cp "$SRC/deploy/release/release.sh" "$SRC/deploy/release/manifest.sh" "$SRC/deploy/release/mirror-github.sh" \
+   "$SRC/deploy/release/sign-apk.sh" deploy/release/
 ssh-keygen -q -t ed25519 -N '' -C test-release-key -f private/release_signing_key
 { echo "# test keys"; cat private/release_signing_key.pub; } > internal/update/release_keys
 cp internal/update/release_keys deploy/prod/release_keys
+mkdir -p apps/android
+printf '#!/bin/sh\nset -eu\nmkdir -p dist\necho "apk $VERSION $ANDROID_BUILD" > "dist/BoundGate-$VERSION-unsigned.apk"\n' > apps/android/build.sh
+chmod +x apps/android/build.sh
 printf 'private/\ndist/\n' > .gitignore
 GO_WANT=$(sed -n 's/^toolchain //p' "$SRC/go.mod"); [ -n "$GO_WANT" ] || fail "go.mod has no toolchain line"
 printf 'module example.test/r\n\ngo 1.26.0\n\ntoolchain %s\n' "$GO_WANT" > go.mod
@@ -83,6 +87,46 @@ case "$method $url" in
 esac
 EOF
 chmod +x "$T/bin/curl"
+
+# The Android app: the build runs in images and the signature needs the SDK,
+# so docker and apksigner are stood in for. sign-apk.sh itself is the real
+# one, including its certificate pin.
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/docker"; chmod +x "$T/bin/docker"
+cat > "$T/bin/apksigner" <<'EOF'
+#!/bin/sh
+# understands "sign --ks K --ks-key-alias A --min-sdk-version N [--ks-pass S]
+# --out OUT IN" and "verify ... APK"; FAKE_CERT is the certificate it reports
+cmd=$1; shift
+case $cmd in
+sign)
+  out=; ks=; pass=; in=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --out) out=$2; shift ;; --ks) ks=$2; shift ;; --ks-pass) pass=$2; shift ;;
+      --ks-key-alias|--min-sdk-version|--ks-type|--ks-provider-class|--ks-provider-arg|--lineage) shift ;;
+      *) in=$1 ;;
+    esac
+    shift
+  done
+  [ -n "$ks" ] || { echo "fake apksigner: no --ks" >&2; exit 1; }
+  [ -n "$out" ] && [ -f "${in:-}" ] || { echo "fake apksigner: no --out or input" >&2; exit 1; }
+  case "$pass" in
+    env:*) eval "p=\$${pass#env:}"; [ -n "${p:-}" ] || { echo "fake apksigner: ${pass#env:} is empty" >&2; exit 1; } ;;
+    pass:?*|file:?*|stdin) ;;
+    *) echo "fake apksigner: no password source" >&2; exit 1 ;;
+  esac
+  cat "$in" > "$out"; echo "signed by $FAKE_CERT" >> "$out" ;;
+verify) echo "Signer #1 certificate SHA-256 digest: $FAKE_CERT" ;;
+*) echo "fake apksigner: unexpected $cmd" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$T/bin/apksigner"
+: > "$T/apk.jks"
+CERT_A=1111111122222222333333334444444455555555666666667777777788888888
+CERT_B=99999999aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff00000000
+# the pin outside the repository: a release that writes it must not leave the
+# working tree dirty for the next case (in a real repository it is committed)
+export APKSIGNER="$T/bin/apksigner" APK_KS="$T/apk.jks" APK_KS_PASS=pass:test FAKE_CERT=$CERT_A APK_CERT_FILE="$T/apk_cert"
 # the Go check needs the real tree and the box; ssh-keygen's check stays
 export NO_GO_VERIFY=1
 export FAKE=$G PATH="$T/bin:$PATH" GITEA_URL=http://gitea.test GITEA_REPO=o/r GITEA_TOKEN=test-token POLL=0 WAIT_MINUTES=0
@@ -104,28 +148,31 @@ ci_draft() {
   echo "{\"tag_name\":\"$V\"}" > "$G/latest.json"
 }
 mac_built() { echo app > dist/BoundGate-0.1.11-macos.zip; echo dmg > dist/BoundGate-0.1.11.dmg; echo "$V $HEAD" > dist/.release-built; }
+apk_built() { echo apk > "dist/BoundGate-$V-unsigned.apk"; echo "$V $HEAD" > dist/.release-apk; }
 
 # ---- 1. the whole way, version chosen by the script ----
-ci_draft one; mac_built
+ci_draft one; mac_built; apk_built
 $R > "$T/out" 2>&1 || { cat "$T/out"; fail "release failed"; }
 grep -q "released $V" "$T/out" || fail "did not pick $V: $(cat "$T/out")"
 [ "$(git ls-remote --tags origin refs/tags/$V | wc -l | tr -d ' ')" = 1 ] || fail "tag not pushed"
-for f in manifest.json manifest.json.sig BoundGate-0.1.11-macos.zip BoundGate-0.1.11.dmg; do [ -f "$G/uploaded/$f" ] || fail "$f not uploaded"; done
+for f in manifest.json manifest.json.sig BoundGate-0.1.11-macos.zip BoundGate-0.1.11.dmg BoundGate-0.1.11.apk; do [ -f "$G/uploaded/$f" ] || fail "$f not uploaded"; done
+[ ! -e "$G/uploaded/BoundGate-$V-unsigned.apk" ] || fail "the unsigned APK was uploaded"
+grep -qx "$CERT_A" "$T/apk_cert" || fail "the first release did not pin the signing certificate: $(cat "$T/apk_cert" 2>&1)"
 [ ! -e "$G/uploaded/boundgate-$V-linux-amd64.tar.gz" ] && [ ! -e "$G/uploaded/boundgate-$V-windows-amd64.zip" ] || fail "CI's files were uploaded a second time"
 M=$G/uploaded/manifest.json
 sed 's/^/boundgate-release /' private/release_signing_key.pub > "$T/allowed"
 ssh-keygen -Y verify -f "$T/allowed" -I boundgate-release -n boundgate-release -s "$M.sig" < "$M" >/dev/null 2>&1 || fail "uploaded manifest does not verify"
-jq -e --arg v $V --arg c "$HEAD" '.type == "boundgate-release" and .version == $v and .commit == $c and .image.digest == "sha256:'"$(printf %064d 7)"'" and (.assets | length) == 5 and ([.assets[] | select(.os == "windows" and .kind == "binaries")] | length) == 1' "$M" >/dev/null || fail "manifest: $(cat "$M")"
+jq -e --arg v $V --arg c "$HEAD" '.type == "boundgate-release" and .version == $v and .commit == $c and .image.digest == "sha256:'"$(printf %064d 7)"'" and (.assets | length) == 6 and ([.assets[] | select(.os == "windows" and .kind == "binaries")] | length) == 1 and ([.assets[] | select(.kind == "apk" and .os == "android" and .name == "BoundGate-0.1.11.apk")] | length) == 1' "$M" >/dev/null || fail "manifest: $(cat "$M")"
 for n in $(jq -r '.assets[].name' "$M"); do
-  f=$G/assets/$n; [ -f "$f" ] || f=dist/$n
+  f=$G/assets/$n; [ -f "$f" ] || f=dist/$n; [ -f "$f" ] || f=dist/release/$V/$n
   [ "$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | .sha256' "$M")" = "$(sha "$f")" ] || fail "hash of $n"
 done
 jq -e '.draft == false' "$G/patched" >/dev/null || fail "draft not published"
 grep -qx 3 "$G/deleted" || fail "CI's build.json was not removed from the published release"
 # order: nothing is published before the signature is up
 [ "$(grep -n 'PATCH http://gitea.test' "$G/calls" | cut -d: -f1)" -gt "$(grep -n 'gitea.test.*name=manifest.json.sig' "$G/calls" | cut -d: -f1)" ] || fail "published before the signature was uploaded"
-# the mirror: the same seven files, the manifest and signature byte for byte, published last, as the latest release
-[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 7 ] || fail "GitHub got: $(ls "$G/gh-uploaded")"
+# the mirror: the same eight files, the manifest and signature byte for byte, published last, as the latest release
+[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 8 ] || fail "GitHub got: $(ls "$G/gh-uploaded")"
 for f in manifest.json manifest.json.sig; do cmp -s "$G/uploaded/$f" "$G/gh-uploaded/$f" || fail "GitHub's $f differs from Gitea's"; done
 for n in $(jq -r '.assets[].name' "$M"); do [ "$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | .sha256' "$M")" = "$(sha "$G/gh-uploaded/$n")" ] || fail "GitHub's $n is not the file the manifest names"; done
 jq -e --arg v $V '.tag_name == $v and .draft == true' "$G/gh-created" >/dev/null && jq -e '.draft == false and .make_latest == "true"' "$G/gh-patched" >/dev/null || fail "GitHub release: $(cat "$G/gh-created" "$G/gh-patched")"
@@ -133,20 +180,20 @@ jq -e --arg v $V '.tag_name == $v and .draft == true' "$G/gh-created" >/dev/null
 grep -q "mirrored $V" "$T/out" || fail "no mirror: $(cat "$T/out")"
 
 # ---- 2. resume: same version again, tag exists; leftovers of the first attempt are replaced ----
-ci_draft one; mac_built
+ci_draft one; mac_built; apk_built
 jq '.[0].assets += [{id:9, name:"manifest.json", browser_download_url:"http://gitea.test/dl/manifest.json"}]' "$G/releases.json" > "$T/r" && mv "$T/r" "$G/releases.json"
 $R $V > "$T/out" 2>&1 || { cat "$T/out"; fail "resume failed"; }
 grep -q "resuming" "$T/out" && grep -qx 9 "$G/deleted" || fail "resume did not replace the old manifest"
 
 # ---- 2b. the mirror alone: a tag on GitHub that is not ours gets no release; a second run has only the mirror left ----
-ci_draft one; mac_built
+ci_draft one; mac_built; apk_built
 if FAKE_GH_TAG=0000 $R $V > "$T/out" 2>&1; then fail "attached a release to a foreign tag"; fi
 grep -q "somebody else made" "$T/out" && [ -e "$G/patched" ] && [ ! -e "$G/gh-created" ] || fail "foreign tag: $(cat "$T/out")"
 : > "$G/calls"
 $R $V > "$T/out" 2>&1 || { cat "$T/out"; fail "mirror-only run failed"; }
 grep -q "is published on http://gitea.test already" "$T/out" && grep -q "mirrored $V" "$T/out" || fail "mirror-only run: $(cat "$T/out")"
 ! grep -q 'POST http://gitea.test\|PATCH http://gitea.test' "$G/calls" || fail "the mirror-only run changed the published release"
-[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 7 ] || fail "mirror-only run uploaded: $(ls "$G/gh-uploaded")"
+[ "$(ls "$G/gh-uploaded" | wc -l | tr -d ' ')" = 8 ] || fail "mirror-only run uploaded: $(ls "$G/gh-uploaded")"
 # and once it is there, nothing is uploaded again
 rm -rf "$G/gh-uploaded"; mkdir "$G/gh-uploaded"; jq -n --arg v $V '[{id:70, tag_name:$v, draft:false}]' > "$G/gh-releases.json"
 sh deploy/release/mirror-github.sh $V > "$T/out" 2>&1 && grep -q "on GitHub already" "$T/out" && [ -z "$(ls "$G/gh-uploaded")" ] || fail "mirrored twice: $(cat "$T/out")"
@@ -156,18 +203,18 @@ if sh deploy/release/mirror-github.sh $V > "$T/out" 2>&1; then fail "mirrored a 
 [ -z "$(ls "$G/gh-uploaded")" ] || fail "something went to GitHub although the check failed"
 
 # ---- 3. a file that is not what CI recorded is not signed ----
-ci_draft one; mac_built; echo tampered > "$G/assets/boundgate-$V-linux-arm64.tar.gz"
+ci_draft one; mac_built; apk_built; echo tampered > "$G/assets/boundgate-$V-linux-arm64.tar.gz"
 if $R $V > "$T/out" 2>&1; then fail "signed a file that differs from CI's record"; fi
 grep -q "does not have the hash CI recorded" "$T/out" || fail "wrong reason: $(cat "$T/out")"
 [ ! -e "$G/uploaded/manifest.json" ] && [ ! -e "$G/patched" ] || fail "something went out although the check failed"
 
 # ---- 4. CI built another commit than the one tagged here ----
-ci_draft one; mac_built; jq '.commit = "0000"' "$G/assets/build.json" > "$T/b" && mv "$T/b" "$G/assets/build.json"
+ci_draft one; mac_built; apk_built; jq '.commit = "0000"' "$G/assets/build.json" > "$T/b" && mv "$T/b" "$G/assets/build.json"
 if $R $V > "$T/out" 2>&1; then fail "accepted a build of another commit"; fi
 
 # ---- 4b. CI built with another Go than go.mod's toolchain line, or did not say ----
 for go in go1.26.0 ""; do
-  ci_draft one; mac_built; jq --arg go "$go" 'if $go == "" then del(.go) else .go = $go end' "$G/assets/build.json" > "$T/b" && mv "$T/b" "$G/assets/build.json"
+  ci_draft one; mac_built; apk_built; jq --arg go "$go" 'if $go == "" then del(.go) else .go = $go end' "$G/assets/build.json" > "$T/b" && mv "$T/b" "$G/assets/build.json"
   if $R $V > "$T/out" 2>&1; then fail "accepted a build made with Go '${go:-unrecorded}'"; fi
   grep -q "go.mod pins $GO_WANT" "$T/out" && [ ! -e "$G/patched" ] || fail "Go '${go:-unrecorded}': $(cat "$T/out")"
 done
@@ -192,14 +239,51 @@ if FAKE_GH_PUSH=false $R > "$T/out" 2>&1; then fail "went on with a GitHub token
 grep -q "does not get write access" "$T/out" || fail "read-only token: $(cat "$T/out")"
 [ -z "$(git tag -l v0.1.12)" ] || fail "a refused run left a tag behind"
 # the token goes to the configured host only
-ci_draft one; mac_built
+ci_draft one; mac_built; apk_built
 jq '.[0].assets[0].browser_download_url = "http://elsewhere.test/dl/x"' "$G/releases.json" > "$T/r" && mv "$T/r" "$G/releases.json"
 if $R $V > "$T/out" 2>&1; then fail "followed a download URL on another host"; fi
 ! grep -q elsewhere "$G/calls" || fail "the token was sent to another host"
 
 # NO_GITHUB: no token needed, nothing sent there
-ci_draft one; mac_built
+ci_draft one; mac_built; apk_built
 GITHUB_TOKEN= GITHUB_TOKEN_FILE=$T/none NO_GITHUB=1 $R $V > "$T/out" 2>&1 || { cat "$T/out"; fail "NO_GITHUB release failed"; }
 ! grep -q github "$G/calls" || fail "NO_GITHUB still talked to GitHub"
+
+# ---- 6. the Android app ----
+# a certificate that is not the pinned one: Android would refuse the update, so
+# the release stops and nothing goes out
+ci_draft one; mac_built; apk_built
+if FAKE_CERT=$CERT_B $R $V > "$T/out" 2>&1; then fail "released an APK signed by an unpinned certificate"; fi
+grep -q "pins $CERT_A" "$T/out" || fail "wrong reason: $(cat "$T/out")"
+[ ! -e "$G/uploaded/manifest.json" ] && [ ! -e "$G/patched" ] || fail "something went out although the certificate was wrong"
+[ ! -e "dist/release/$V/BoundGate-0.1.11.apk" ] || fail "the wrongly signed APK was left behind"
+
+# no APK built yet: release.sh builds one (in images; docker is stood in for here)
+ci_draft one; mac_built; rm -f dist/.release-apk "dist/BoundGate-$V-unsigned.apk"
+$R $V > "$T/out" 2>&1 || { cat "$T/out"; fail "release with an Android build failed"; }
+grep -q "building the Android app" "$T/out" || fail "did not build the APK: $(cat "$T/out")"
+grep -q "apk $V release" "dist/BoundGate-$V-unsigned.apk" || fail "the build was not asked for a release APK"
+jq -e '[.assets[] | select(.kind == "apk")] | length == 1' "$G/uploaded/manifest.json" >/dev/null || fail "the built APK is not in the manifest"
+
+# NO_APK: a release without it, and nothing Android in the manifest
+ci_draft one; mac_built; apk_built
+NO_APK=1 $R $V > "$T/out" 2>&1 || { cat "$T/out"; fail "NO_APK release failed"; }
+grep -q "NO_APK: this release gets no Android app" "$T/out" || fail "NO_APK: $(cat "$T/out")"
+jq -e '(.assets | length) == 5 and ([.assets[] | select(.kind == "apk")] | length) == 0' "$G/uploaded/manifest.json" >/dev/null || fail "NO_APK still named an APK"
+
+# manifest.sh refuses an unsigned APK outright: whatever puts one in the
+# directory, it does not get a name in a signed manifest
+mkdir -p "$T/m"; echo apk > "$T/m/BoundGate-0.1.11-unsigned.apk"
+if sh deploy/release/manifest.sh $V "$T/m" > "$T/out" 2>&1; then fail "the manifest named an unsigned APK"; fi
+grep -q "is unsigned" "$T/out" || fail "wrong reason: $(cat "$T/out")"
+mv "$T/m/BoundGate-0.1.11-unsigned.apk" "$T/m/BoundGate-0.1.11.apk"
+sh deploy/release/manifest.sh $V "$T/m" | jq -e '.assets[0] | .kind == "apk" and .os == "android" and .arch == "universal"' >/dev/null \
+  || fail "manifest.sh does not know the signed APK"
+
+# the signing key is checked before the tag is pushed
+rm -f dist/.release-apk "dist/BoundGate-v0.1.12-unsigned.apk"
+if NO_MAC=1 APK_KS=$T/none.jks $R v0.1.12 > "$T/out" 2>&1; then fail "went on without a keystore"; fi
+grep -q "cannot read the keystore" "$T/out" || fail "wrong reason: $(cat "$T/out")"
+[ -z "$(git tag -l v0.1.12)" ] || fail "a run refused over the APK key left a tag behind"
 
 echo "release.sh test: ok"
