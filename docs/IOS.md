@@ -7,7 +7,7 @@ Enclave.
 
 Status 2026-09-21:
 
-* The core builds (`make apple-core`, 2026-09-22, go1.26.7 in
+* The core builds (`make apple-core`, 2026-09-22, go1.26.9 in
   `~/.local/go-apple`).
 * App and extension link against it for devices and Apple silicon
   simulators.
@@ -162,17 +162,17 @@ as the box, checked against its published SHA-256 and not on `PATH`.
 Installing the toolchain (done once, 2026-09-22):
 
 ```bash
-curl -fLO https://go.dev/dl/go1.26.7.darwin-arm64.tar.gz
+curl -fLO https://go.dev/dl/go1.26.9.darwin-arm64.tar.gz
 ```
 
 ```bash
-/usr/bin/openssl dgst -sha256 -r go1.26.7.darwin-arm64.tar.gz
+/usr/bin/openssl dgst -sha256 -r go1.26.9.darwin-arm64.tar.gz
 ```
 
 Compare the hash with the one on go.dev/dl, then:
 
 ```bash
-mkdir -p ~/.local/go-apple.tmp && tar -C ~/.local/go-apple.tmp -xzf go1.26.7.darwin-arm64.tar.gz && mv ~/.local/go-apple.tmp/go ~/.local/go-apple
+mkdir -p ~/.local/go-apple.tmp && tar -C ~/.local/go-apple.tmp -xzf go1.26.9.darwin-arm64.tar.gz && mv ~/.local/go-apple.tmp/go ~/.local/go-apple
 ```
 
 A new Go version in the box means the same version here.

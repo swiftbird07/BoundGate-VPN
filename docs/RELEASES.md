@@ -21,7 +21,7 @@ Two halves, and the signing keys are all in one of them:
 
 **One Go for everything.** The standard library is linked into every binary,
 so its patch level decides which of its vulnerabilities a release carries.
-`go.mod` pins it (`toolchain go1.26.7`; the `go` line is only the minimum the
+`go.mod` pins it (`toolchain go1.26.9`; the `go` line is only the minimum the
 code needs). CI installs exactly that version with `GOTOOLCHAIN=local` and
 stops if `go env GOVERSION` differs, and writes it into `build.json` (`"go"`);
 step 4 refuses a draft built with another Go, step 3 refuses a box with
