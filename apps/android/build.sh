@@ -75,7 +75,11 @@ run --platform linux/amd64 -e HOME=/cache/home -e ANDROID_USER_HOME=/cache/andro
 mkdir -p dist
 if [ "$BUILD" = release ]; then
 	cp apps/android/app/build/outputs/apk/release/app-release-unsigned.apk "dist/BoundGate-$VERSION-unsigned.apk"
-	echo "android: dist/BoundGate-$VERSION-unsigned.apk (sign it: docs/ANDROID.md)"
+	if [ -n "${BG_SIGN_LATER:-}" ]; then
+		echo "android: dist/BoundGate-$VERSION-unsigned.apk (the release signs it in the next step)"
+	else
+		echo "android: dist/BoundGate-$VERSION-unsigned.apk (sign it: docs/ANDROID.md)"
+	fi
 else
 	cp apps/android/app/build/outputs/apk/debug/app-debug.apk "dist/BoundGate-$VERSION-debug.apk"
 	echo "android: dist/BoundGate-$VERSION-debug.apk"

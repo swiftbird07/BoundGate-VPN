@@ -71,7 +71,11 @@ KS=${APK_KS:-private/boundgate-apk.jks}
 ALIAS=${APK_KEY_ALIAS:-boundgate}
 MIN_SDK=${APK_MIN_SDK:-33}
 CERT_FILE=${APK_CERT_FILE:-deploy/release/apk_cert_sha256}
-set -- sign --ks "$KS" --ks-key-alias "$ALIAS" --min-sdk-version "$MIN_SDK"
+# No v4 signature: apksigner would write OUT.apk.idsig beside the APK, and
+# that file belongs to "adb install --incremental" and Play's streaming
+# install, not to a release that is distributed by manifest. The manifest
+# names every file in the directory and refuses what it cannot classify.
+set -- sign --ks "$KS" --ks-key-alias "$ALIAS" --min-sdk-version "$MIN_SDK" --v4-signing-enabled false
 [ -z "${APK_KS_TYPE:-}" ] || set -- "$@" --ks-type "$APK_KS_TYPE"
 [ -z "${APK_KS_PROVIDER_CLASS:-}" ] || set -- "$@" --ks-provider-class "$APK_KS_PROVIDER_CLASS"
 [ -z "${APK_KS_PROVIDER_ARG:-}" ] || set -- "$@" --ks-provider-arg "$APK_KS_PROVIDER_ARG"
@@ -102,7 +106,7 @@ fi
 
 # apksigner writes nothing on failure, but a leftover from an earlier attempt
 # would be signed by whatever ran then: never leave one behind.
-rm -f "$OUT"
+rm -f "$OUT" "$OUT.idsig"
 echo "== signing $(basename "$IN") with $KS"
 "$APKSIGNER" "$@" --out "$OUT" "$IN" || die "apksigner refused to sign"
 unset BG_APK_PASS
@@ -110,7 +114,7 @@ unset BG_APK_PASS
 # ---- what a phone will check ----
 # From here on a refusal takes the file with it: an APK signed by the wrong key
 # must not be left where a later step could pick it up.
-reject() { rm -f "$OUT"; die "$@"; }
+reject() { rm -f "$OUT" "$OUT.idsig"; die "$@"; }
 certs=$("$APKSIGNER" verify --min-sdk-version "$MIN_SDK" --print-certs "$OUT") \
   || reject "the signature of $OUT does not verify for minSdk $MIN_SDK"
 got=$(printf '%s\n' "$certs" | sed -n 's/^Signer #1 certificate SHA-256 digest: *//p' | head -1)

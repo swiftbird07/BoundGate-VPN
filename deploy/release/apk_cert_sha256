@@ -1,0 +1,3 @@
+# SHA-256 of the certificate that signs the Android app (deploy/release/sign-apk.sh).
+# Android installs an update only from this certificate or a successor it signed over to.
+feec9da328fd1ec9f23fd8661a3edff1d3c6a0ab49cbbf9197324a212d261e00

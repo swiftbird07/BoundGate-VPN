@@ -103,7 +103,7 @@ sign)
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) out=$2; shift ;; --ks) ks=$2; shift ;; --ks-pass) pass=$2; shift ;;
-      --ks-key-alias|--min-sdk-version|--ks-type|--ks-provider-class|--ks-provider-arg|--lineage) shift ;;
+      --ks-key-alias|--min-sdk-version|--ks-type|--ks-provider-class|--ks-provider-arg|--lineage|--v4-signing-enabled) shift ;;
       *) in=$1 ;;
     esac
     shift

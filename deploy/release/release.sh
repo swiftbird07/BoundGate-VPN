@@ -199,7 +199,7 @@ elif [ $ANDROID = built ]; then
   say "Android app of $V is built already"
 else
   say "building the Android app (unsigned; the signature follows below)"
-  VERSION=$V ANDROID_BUILD=release apps/android/build.sh
+  VERSION=$V ANDROID_BUILD=release BG_SIGN_LATER=1 apps/android/build.sh
   [ -f "$APK" ] || die "the Android build did not leave $APK"
   echo "$V $HEAD" > dist/.release-apk
 fi
