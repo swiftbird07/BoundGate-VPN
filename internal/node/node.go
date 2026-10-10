@@ -1035,30 +1035,35 @@ func (n *Node) Logout(ctx context.Context) error {
 	return nil
 }
 
-// Profiles lists the available profile names.
+// Profiles lists the available profile names: the built-in ones (full,
+// lan-only, wan-only), then those of the profiles directory.
 func (n *Node) Profiles() ([]string, error) {
 	ps, err := profile.LoadDir(n.cfg.ProfilesDir)
 	if err != nil {
 		return nil, err
 	}
-	names := []string{"full"}
-	for _, p := range ps {
-		if p.Name != "full" {
+	var names []string
+	seen := map[string]bool{}
+	for _, p := range append(profile.Builtin(), ps...) {
+		if !seen[p.Name] {
+			seen[p.Name] = true
 			names = append(names, p.Name)
 		}
 	}
 	return names, nil
 }
 
+// loadProfile finds a profile by name. A file in the profiles directory may
+// redefine lan-only or wan-only for this machine; full is always everything.
 func (n *Node) loadProfile(name string) (*profile.Profile, error) {
-	if name == "" || name == "full" {
+	if name == "" || name == profile.NameFull {
 		return profile.Full(), nil
 	}
 	ps, err := profile.LoadDir(n.cfg.ProfilesDir)
 	if err != nil {
 		return nil, fmt.Errorf("profiles: %w", err)
 	}
-	for _, p := range ps {
+	for _, p := range append(ps, profile.Builtin()...) {
 		if p.Name == name {
 			return p, nil
 		}

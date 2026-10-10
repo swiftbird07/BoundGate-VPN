@@ -31,17 +31,64 @@ type Profile struct {
 	Routing struct {
 		Mode     Mode     `yaml:"mode"`
 		Networks []string `yaml:"networks"`
+		// Exclude is taken out of whatever the mode chose, also out of a
+		// larger advertised network that contains it: 0.0.0.0/0 without
+		// 10.0.0.0/8 becomes the routes around 10.0.0.0/8.
+		Exclude []string `yaml:"exclude"`
 	} `yaml:"routing"`
 
 	networks []netip.Prefix
+	exclude  []netip.Prefix
 }
+
+// Names of the built-in profiles. Every node has them, without a file.
+const (
+	NameFull    = "full"
+	NameLANOnly = "lan-only"
+	NameWANOnly = "wan-only"
+)
+
+// Private are the networks "LAN only" routes and "WAN only" leaves out:
+// the private IPv4 ranges, the shared range (CGNAT, where an overlay pool may
+// also live) and IPv6 unique local addresses. Together the two profiles are
+// "full", and they never share a route.
+var Private = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"}
 
 // Full is the built-in profile used when none is configured: everything
 // the hubs advertise.
 func Full() *Profile {
-	p := &Profile{Name: "full"}
+	p := &Profile{Name: NameFull}
 	p.Routing.Mode = ModeFull
 	return p
+}
+
+// LANOnly routes the private networks the hubs advertise and leaves the
+// internet to this machine's own connection.
+func LANOnly() *Profile {
+	p := &Profile{Name: NameLANOnly}
+	p.Routing.Mode = ModeInclude
+	p.Routing.Networks = Private
+	must(p.validate())
+	return p
+}
+
+// WANOnly routes everything the hubs advertise except the private networks:
+// the internet through an exit node, the LANs behind the hubs not at all.
+func WANOnly() *Profile {
+	p := &Profile{Name: NameWANOnly}
+	p.Routing.Mode = ModeFull
+	p.Routing.Exclude = Private
+	must(p.validate())
+	return p
+}
+
+// Builtin returns the built-in profiles, full first.
+func Builtin() []*Profile { return []*Profile{Full(), LANOnly(), WANOnly()} }
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
 }
 
 // Load reads and validates one profile file.
@@ -93,6 +140,9 @@ func LoadDir(dir string) ([]*Profile, error) {
 }
 
 func (p *Profile) validate() error {
+	if p.Routing.Mode == "" && len(p.Routing.Networks) == 0 && len(p.Routing.Exclude) > 0 {
+		p.Routing.Mode = ModeFull // "everything but": nothing listed to include
+	}
 	switch p.Routing.Mode {
 	case "":
 		p.Routing.Mode = ModeInclude
@@ -113,6 +163,14 @@ func (p *Profile) validate() error {
 		}
 		p.networks = append(p.networks, pfx.Masked())
 	}
+	p.exclude = p.exclude[:0]
+	for _, n := range p.Routing.Exclude {
+		pfx, err := netip.ParsePrefix(n)
+		if err != nil {
+			return fmt.Errorf("routing.exclude: %w", err)
+		}
+		p.exclude = append(p.exclude, pfx.Masked())
+	}
 	return nil
 }
 
@@ -120,10 +178,15 @@ func (p *Profile) validate() error {
 func (p *Profile) Networks() []netip.Prefix { return p.networks }
 
 // Effective computes the routes to install: the intersection of what the
-// profile wants and what the hubs advertised. For each pair, the more
-// specific prefix wins when one contains the other; partially overlapping
-// prefixes are ignored. Never returns something outside advertised.
+// profile wants and what the hubs advertised, without what it excludes. For
+// each pair, the more specific prefix wins when one contains the other;
+// partially overlapping prefixes are ignored. Never returns something
+// outside advertised.
 func (p *Profile) Effective(advertised []netip.Prefix) []netip.Prefix {
+	return dedupe(subtract(p.chosen(advertised), p.exclude))
+}
+
+func (p *Profile) chosen(advertised []netip.Prefix) []netip.Prefix {
 	if p.Routing.Mode == ModeFull {
 		return dedupe(advertised)
 	}
@@ -139,6 +202,52 @@ func (p *Profile) Effective(advertised []netip.Prefix) []netip.Prefix {
 		}
 	}
 	return dedupe(out)
+}
+
+// subtract takes every excluded network out of in. A prefix inside an
+// excluded one goes; a prefix that contains one is replaced by the prefixes
+// that cover it except that network (halving until the halves no longer
+// overlap it).
+func subtract(in, exclude []netip.Prefix) []netip.Prefix {
+	out := in
+	for _, e := range exclude {
+		var next []netip.Prefix
+		for _, p := range out {
+			next = append(next, without(p.Masked(), e)...)
+		}
+		out = next
+	}
+	return out
+}
+
+func without(p, e netip.Prefix) []netip.Prefix {
+	switch {
+	case p.Addr().Is4() != e.Addr().Is4():
+		return []netip.Prefix{p}
+	case e.Bits() <= p.Bits() && e.Contains(p.Addr()):
+		return nil // e covers p
+	case !(p.Bits() < e.Bits() && p.Contains(e.Addr())):
+		return []netip.Prefix{p} // disjoint
+	}
+	lo, hi := halves(p)
+	return append(without(lo, e), without(hi, e)...)
+}
+
+// halves splits p into its two prefixes one bit longer.
+func halves(p netip.Prefix) (netip.Prefix, netip.Prefix) {
+	bits := p.Bits()
+	a := p.Addr().As16()
+	off := 0
+	if p.Addr().Is4() {
+		off = 96 // the IPv4 bits sit at the end of the 16 bytes
+	}
+	i := off + bits
+	a[i/8] |= 0x80 >> (i % 8)
+	hi := netip.AddrFrom16(a)
+	if p.Addr().Is4() {
+		hi = hi.Unmap()
+	}
+	return netip.PrefixFrom(p.Addr(), bits+1), netip.PrefixFrom(hi, bits+1)
 }
 
 func dedupe(in []netip.Prefix) []netip.Prefix {

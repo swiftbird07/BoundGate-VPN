@@ -76,3 +76,74 @@ func TestFullModeAndValidation(t *testing.T) {
 		t.Fatal("LoadDir ignored invalid profile")
 	}
 }
+
+// The two built-ins split "full" between them: what LAN only routes, WAN
+// only does not, and together they route every address full routes.
+func TestLANAndWANOnlyPartitionFull(t *testing.T) {
+	adv := pfx("0.0.0.0/0", "10.20.0.0/16", "192.168.178.0/24", "100.64.0.0/10", "::/0", "fd00:20::/48")
+	lan, wan := LANOnly().Effective(adv), WANOnly().Effective(adv)
+	for _, l := range lan { // nested routes (10/8 and 10.20/16) are fine: both go into the tunnel
+		inside := false
+		for _, x := range Private {
+			if x := netip.MustParsePrefix(x); x.Bits() <= l.Bits() && x.Contains(l.Addr()) {
+				inside = true
+			}
+		}
+		if !inside {
+			t.Fatalf("lan-only routes %v, outside the private networks", l)
+		}
+	}
+	for _, w := range wan {
+		for _, l := range lan {
+			if w.Overlaps(l) {
+				t.Fatalf("%v (wan) overlaps %v (lan)", w, l)
+			}
+		}
+		for _, x := range Private {
+			if w.Overlaps(netip.MustParsePrefix(x)) {
+				t.Fatalf("wan-only routes %v, inside %s", w, x)
+			}
+		}
+	}
+	// every address of the advertised default routes is in exactly one of them
+	for _, a := range []string{"1.1.1.1", "8.8.8.8", "9.255.255.255", "11.0.0.0", "172.15.255.255", "172.32.0.0", "192.167.1.1", "192.169.0.0", "223.255.255.255", "100.63.255.255", "100.128.0.0", "10.1.2.3", "172.20.0.1", "192.168.178.40", "100.64.0.1", "2001:db8::1", "fd00:20::5"} {
+		ip := netip.MustParseAddr(a)
+		in := func(ps []netip.Prefix) bool {
+			for _, p := range ps {
+				if p.Contains(ip) {
+					return true
+				}
+			}
+			return false
+		}
+		if in(lan) == in(wan) {
+			t.Fatalf("%s: lan-only %v, wan-only %v; want exactly one", a, in(lan), in(wan))
+		}
+	}
+	// nothing at all from WAN only when the hubs offer no internet
+	if got := WANOnly().Effective(pfx("10.20.0.0/16", "192.168.178.0/24")); len(got) != 0 {
+		t.Fatalf("wan-only without an exit node: %v", got)
+	}
+}
+
+func TestExcludeSplitsAroundAndFromAFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "no-home.yaml"), []byte("routing:\n  exclude: [192.168.178.0/24]\n"), 0o644)
+	p, err := Load(filepath.Join(dir, "no-home.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Routing.Mode != ModeFull {
+		t.Fatalf("exclude alone should mean everything but: %v", p.Routing.Mode)
+	}
+	got := p.Effective(pfx("192.168.0.0/16", "10.20.0.0/16"))
+	// 192.168.0.0/16 around 192.168.178.0/24: .0–.127, .128–.159, .160–.175,
+	// .176–.177, .179, .180–.183, .184–.191, .192–.255
+	want := pfx("10.20.0.0/16", "192.168.0.0/17", "192.168.128.0/19", "192.168.160.0/20", "192.168.176.0/23", "192.168.179.0/24", "192.168.180.0/22", "192.168.184.0/21", "192.168.192.0/18")
+	if !reflect.DeepEqual(got, dedupe(want)) {
+		t.Fatalf("got %v", got)
+	}
+	if p := pfx("10.0.0.0/8")[0]; len(without(p, netip.MustParsePrefix("10.0.0.0/8"))) != 0 || len(without(p, netip.MustParsePrefix("fc00::/7"))) != 1 {
+		t.Fatal("without: equal prefixes or another family")
+	}
+}
