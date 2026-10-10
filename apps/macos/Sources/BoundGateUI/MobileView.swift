@@ -181,6 +181,7 @@ struct MobileConnectionCard: View {
                     }
                     InfoRow(label: "Through", value: (hub?.name ?? "–") + (hub?.transport == "tcp" ? " · over TCP" : ""))
                     if let u = s.user { InfoRow(label: "Signed in as", value: u.displayName) }
+                    else { InfoRow(label: "User", value: model.loginInProgress ? "continue in the browser…" : "not signed in") }
                     InfoRow(label: "Networks", value: (s.routes ?? []).isEmpty ? "none" : (s.routes ?? []).joined(separator: ", "))
                     DetailsView(status: s, hub: hub, rate: model.rate)
                     if let m = model.memoryMiB {
@@ -208,6 +209,12 @@ struct MobileConnectionCard: View {
             case .ready:
                 Button("Connect") { model.connect() }.buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
             case .loginRequired:
+                Button(model.loginInProgress ? "Waiting for the browser…" : "Sign in") { model.signIn() }
+                    .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress || model.busy != nil)
+                Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true))
+            case .connected where s.user == nil:
+                // nothing asks for a session any more (the policies decide what
+                // needs a person): signing in stays at hand
                 Button(model.loginInProgress ? "Waiting for the browser…" : "Sign in") { model.signIn() }
                     .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress || model.busy != nil)
                 Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true))

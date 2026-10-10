@@ -144,8 +144,25 @@ func Describe(s *node.Status, err error) View {
 	}
 	if p == Connected && s.User == nil {
 		v.CanLogin = true
+		if v.Detail == "" {
+			v.Detail = "Not signed in"
+		}
 	}
 	return v
+}
+
+// ProfileLabel names the built-in profiles by what they do (internal/node/profile);
+// a profile from a file keeps its name.
+func ProfileLabel(name string) string {
+	switch name {
+	case "full":
+		return "Full"
+	case "lan-only":
+		return "LAN only"
+	case "wan-only":
+		return "WAN only"
+	}
+	return name
 }
 
 // Tooltip is the text on hover; Windows cuts it at 127 characters.
@@ -197,7 +214,7 @@ func Details(s *node.Status, r Rate) []string {
 	}
 	add("Node", s.NodeName)
 	add("Address", s.OverlayIP)
-	add("Profile", s.Profile)
+	add("Profile", ProfileLabel(s.Profile))
 	for _, h := range s.Hubs {
 		line := h.State
 		if h.State == "connected" {

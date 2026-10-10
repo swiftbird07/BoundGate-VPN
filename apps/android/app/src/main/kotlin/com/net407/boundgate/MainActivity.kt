@@ -414,9 +414,9 @@ class MainActivity : Activity() {
                     since(s)?.let { addView(ui.text(it, 12.5f, ui.t.text3)) }
                 }
                 views += ui.info("Through", hub.optString("name") + if (hub.optString("transport") == "tcp") " · over TCP" else "")
-                s.optJSONObject("user")?.let { u ->
-                    views += ui.info("Signed in as", u.optString("username").ifEmpty { u.optString("email").ifEmpty { u.optString("subject") } })
-                }
+                val u = s.optJSONObject("user")
+                if (u != null) views += ui.info("Signed in as", u.optString("username").ifEmpty { u.optString("email").ifEmpty { u.optString("subject") } })
+                else views += ui.info("User", if (loginInProgress) "continue in the browser…" else "not signed in")
                 val routes = strings(s, "routes")
                 views += ui.info("Networks", if (routes.isEmpty()) "none" else routes.joinToString(", "))
                 views += ui.info("Traffic", "↓ ${bytes(hub.optLong("bytes_in"))}  ↑ ${bytes(hub.optLong("bytes_out"))}")
@@ -441,6 +441,12 @@ class MainActivity : Activity() {
             Phase.READY -> out += ui.button("Connect", "primary", busy == null) { connect() }
             Phase.LOGIN_REQUIRED -> {
                 out += ui.button(if (loginInProgress) "Waiting for the browser…" else "Sign in", "primary", !loginInProgress && busy == null) { signIn() }
+                out += ui.button("Disconnect") { disconnect() }
+            }
+            // nothing asks for a session any more (the policies decide what
+            // needs a person): signing in stays at hand
+            Phase.CONNECTED -> {
+                if (s.optJSONObject("user") == null) out += ui.button(if (loginInProgress) "Waiting for the browser…" else "Sign in", "primary", !loginInProgress && busy == null) { signIn() }
                 out += ui.button("Disconnect") { disconnect() }
             }
             else -> out += ui.button("Disconnect") { disconnect() }

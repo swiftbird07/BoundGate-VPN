@@ -271,6 +271,7 @@ struct ConnectionCard: View {
                     }
                     InfoRow(label: "Through", value: (hub?.name ?? "–") + (hub?.transport == "tcp" ? " · over TCP" : ""))
                     if let u = s.user { InfoRow(label: "Signed in as", value: u.displayName) }
+                    else { InfoRow(label: "User", value: model.loginInProgress ? "continue in your browser…" : "not signed in") }
                     InfoRow(label: "Networks", value: networks(s))
                     DetailsView(status: s, hub: hub, rate: model.rate)
                 case .loginRequired:
@@ -283,16 +284,17 @@ struct ConnectionCard: View {
                     ForEach(s.hubs ?? []) { h in InfoRow(label: h.name, value: h.error?.isEmpty == false ? h.error! : h.state) }
                 default:
                     Text("Not connected").font(.display(15)).foregroundStyle(t.text)
-                    if !model.profiles.isEmpty {
+                    if model.profiles.count > 1 {
                         HStack {
                             Text("Route").font(.body(12)).foregroundStyle(t.text2)
                             Spacer()
                             Button {
-                                PopupMenu.show([.action("Everything offered", checked: model.profile.isEmpty) { model.profile = "" }]
-                                    + model.profiles.map { p in .action(p, checked: model.profile == p) { model.profile = p } })
+                                // "" is the node's default, which is full
+                                let current = model.profile.isEmpty ? "full" : model.profile
+                                PopupMenu.show(model.profiles.map { p in .action(profileLabel(p), checked: current == p) { model.profile = p == "full" ? "" : p } })
                             } label: {
                                 HStack(spacing: 6) {
-                                    Text(model.profile.isEmpty ? "Everything offered" : model.profile)
+                                    Text(profileLabel(model.profile.isEmpty ? "full" : model.profile))
                                     Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
                                 }
                             }.buttonStyle(BGButtonStyle())
@@ -313,9 +315,28 @@ struct ConnectionCard: View {
                         .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress)
                     Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true)).disabled(model.busy != nil)
                 }
+            case .connected where s.user == nil:
+                // A session is no longer a condition of the tunnel, so nothing
+                // asks for one; what needs a person is the policies' to say.
+                // Signing in stays the user's choice, always at hand.
+                HStack(spacing: 8) {
+                    Button(model.loginInProgress ? "Waiting for the browser…" : "Sign in") { model.signIn() }
+                        .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress)
+                    Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true)).disabled(model.busy != nil)
+                }
             default:
                 Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true)).disabled(model.busy != nil)
             }
+        }
+    }
+
+    /// The built-in profiles by what they do; a profile from a file by its name.
+    private func profileLabel(_ name: String) -> String {
+        switch name {
+        case "full": return "Full"
+        case "lan-only": return "LAN only"
+        case "wan-only": return "WAN only"
+        default: return name
         }
     }
 

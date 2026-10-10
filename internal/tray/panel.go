@@ -490,7 +490,15 @@ func (l *layout) connection(v View) {
 	switch v.Phase {
 	case Ready:
 		l.y += l.button(pad, cw, "Connect", ActConnect, true, true)
-	case LoginRequired:
+	case LoginRequired, Connected:
+		if !v.CanLogin {
+			// connected and signed in
+			l.y += l.button(pad, cw, "Disconnect", ActDisconnect, false, true)
+			break
+		}
+		// LoginRequired is an older hub refusing; connected without a user
+		// is the usual case now (the policies decide what needs a person),
+		// and signing in stays at hand
 		half := (cw - 8) / 2
 		signIn := "Sign in"
 		if in.Busy == "Signing in" {
@@ -512,8 +520,11 @@ func (l *layout) profiles(x, w float64) float64 {
 	l.y += lh + 8
 	cx, rowH := x, 0.0
 	current := l.in.Status.Profile
+	if current == "" {
+		current = "full" // the node's default
+	}
 	for _, p := range l.in.Profiles {
-		pw, ph := l.m.Measure(p, FontStrong, 0)
+		pw, ph := l.m.Measure(ProfileLabel(p), FontStrong, 0)
 		bw, bh := pw+20, ph+10
 		if cx+bw > x+w && cx > x {
 			cx = x
@@ -525,7 +536,7 @@ func (l *layout) profiles(x, w float64) float64 {
 		}
 		r := Rect{cx, l.y, bw, bh}
 		l.add(Item{Kind: KindBox, R: r, Fill: fill, HoverFill: fill, Stroke: stroke, Radius: bh / 2, Action: ActProfile + p, Pointer: p != current})
-		l.add(Item{Kind: KindText, R: r, Text: p, Font: FontStrong, Color: text, Align: Center, VerticalAlign: true})
+		l.add(Item{Kind: KindText, R: r, Text: ProfileLabel(p), Font: FontStrong, Color: text, Align: Center, VerticalAlign: true})
 		cx += bw + 6
 		rowH = math.Max(rowH, bh)
 	}
