@@ -88,6 +88,12 @@ class MainActivity : Activity() {
             intent = Intent(intent).setAction(null)
             main.post { if (status?.optJSONObject("user") == null) signIn() }
         }
+        if (intent?.action == ACTION_CONNECT) {
+            // from the Quick Settings tile, when Android first has to ask for
+            // the VPN permission: the same step as the Connect button
+            intent = Intent(intent).setAction(null)
+            main.post { connect() }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -491,5 +497,7 @@ class MainActivity : Activity() {
         private const val VPN_CONSENT = 1
         /** the sign-in notification opens the app with this: it starts the sign-in */
         const val ACTION_SIGN_IN = "com.net407.boundgate.SIGN_IN"
+        /** the Quick Settings tile opens the app with this when connecting needs the app (VpnTileService) */
+        const val ACTION_CONNECT = "com.net407.boundgate.CONNECT_FROM_TILE"
     }
 }

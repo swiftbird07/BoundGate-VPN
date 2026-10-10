@@ -13,7 +13,7 @@ Status 2026-09-22: `make android` builds the APK (arm64 and x86-64, 16 KB aligne
 | Where | What |
 |---|---|
 | `cmd/libboundgate/jni_android.c` | JNI glue in the core's own library: the functions of `boundgate.h` as the native methods of `com.net407.boundgate.Core`, and the platform callbacks as calls on the app's `Core.Platform`. The app loads one library, `libboundgate.so`. |
-| `apps/android/app/src/main/kotlin/…` | `Core` (native methods), `Node` (the engine, requests, platform side), `DeviceKey` (Keystore), `TunnelService` (the `VpnService`), `MainActivity` and `Ui` (the screen). |
+| `apps/android/app/src/main/kotlin/…` | `Core` (native methods), `Node` (the engine, requests, platform side), `DeviceKey` (Keystore), `TunnelService` (the `VpnService`), `VpnTileService` (the Quick Settings tile), `MainActivity` and `Ui` (the screen). |
 | `apps/android/Dockerfile` | SDK image (linux/amd64): JDK 21, SDK platform 36, build tools 36.1.0, NDK r29, Gradle 9.7.1, all pinned. Gradle builds the APK here. |
 | `apps/android/Dockerfile.core` | Core image (native): Debian's clang and lld, Go 1.26.9, and from the SDK image the NDK's sysroot and compiler-rt. Builds `libboundgate.so`. |
 | `apps/android/build.sh` | `make android`: vendors the Go modules in the box, builds the core for arm64 and x86-64 (emulator) in the core image, then the APK in the SDK image. |
@@ -50,6 +50,16 @@ the APK carries only the Kotlin standard library besides the app itself.
 * **Disconnect:** `POST /v1/down`. The core closes the interface and calls
   `release`, and the service stops. If another VPN takes over or the user
   revokes it in the settings (`onRevoke`), the result is the same.
+* **Quick Settings tile** (`VpnTileService`, add it by editing the panel):
+  one tap connects or disconnects, as the app's button does. It reads the
+  same status as the app: "Connected", "Connecting", "Sign-in needed" (all
+  shown as on), "Off", or "Open the app" while the device is not set up or
+  not approved. Connecting from the tile needs the VPN permission already
+  given; the first time, and again after another VPN app took it over, the
+  tile opens the app, which asks for it and connects. The same happens if
+  Android refuses to start the service from the tile. The core's
+  `statusChanged` asks the system to read the tile again whenever what it
+  shows changes.
 * **Always-on VPN:** the service declares `SUPPORTS_ALWAYS_ON`. The system
   starts it with the action `android.net.VpnService`, and after the process
   was killed it starts it again (`START_STICKY`). Both mean "connect".

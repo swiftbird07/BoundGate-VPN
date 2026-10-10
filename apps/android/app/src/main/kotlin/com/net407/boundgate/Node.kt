@@ -107,6 +107,7 @@ class Node(private val context: Context) : Core.Platform {
      */
     override fun statusChanged(statusJson: String) {
         val s = try { JSONObject(statusJson) } catch (e: Exception) { return }
+        VpnTileService.TileState.of(s).let { if (it != tileState) { tileState = it; VpnTileService.refresh(context) } }
         val hubs = s.optJSONArray("hubs")
         var connected = false
         for (i in 0 until (hubs?.length() ?: 0)) if (hubs!!.getJSONObject(i).optString("state") == "connected") connected = true
@@ -130,6 +131,7 @@ class Node(private val context: Context) : Core.Platform {
         signInHintAt = hintAt
     }
     @Volatile private var signInShown = false
+    @Volatile private var tileState: VpnTileService.TileState? = null
     @Volatile private var signInHintAt: String? = null
 
     /** Tapping it opens the app and starts the sign-in (MainActivity.ACTION_SIGN_IN). */
