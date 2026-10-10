@@ -230,14 +230,33 @@ $S api DELETE "/api/v1/admin/sessions/$SESSION"
 wait_for 10 status_is node-a '.user == null' || fail "the session is still in node-a's snapshot"
 wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "target reachable after the session was revoked"
 status_is node-a '[.hubs[] | select(.state == "connected")] | length == 2' || fail "the tunnels were closed, although only the session ended"
+# the hub refused it for want of a person: node-a hears so with its next
+# heartbeat (every 30 s), and the apps offer to sign in
+wait_for 45 status_is node-a '.sign_in.dst == "10.60.0.10" and .sign_in.port == 80' || fail "node-a was not told that a sign-in would let it through"
 $S login node-a >/dev/null
 wait_for 20 reach 10.60.0.10 target || fail "target unreachable after re-login"
+status_is node-a '.sign_in == null' || fail "the sign-in hint outlived the sign-in"
 x node-a boundgatectl logout >/dev/null
 wait_for 10 status_is node-a '.user == null' || fail "the session survived the logout"
 wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "target reachable after the logout"
 $S login node-a >/dev/null
 wait_for 20 reach 10.60.0.10 target || fail "target unreachable after login"
 policy lab-allow-all 'permit(principal, action, resource);'
+
+echo "== 5c. built-in profiles: wan-only leaves the LANs behind the hubs out, lan-only keeps them, full is everything"
+x node-a boundgatectl -json profiles | jq -e '.[0:3] == ["full","lan-only","wan-only"]' >/dev/null || fail "the built-in profiles are not offered"
+x node-a boundgatectl down >/dev/null
+x node-a boundgatectl up -profile wan-only >/dev/null || fail "up with wan-only failed"
+wait_for 15 status_is node-a '.profile == "wan-only" and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "node-a did not come up with wan-only"
+status_is node-a '[.routes[]? | select(startswith("10.60.") or startswith("192.168.178."))] | length == 0' || fail "wan-only routes a LAN behind a hub"
+wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "hub1's LAN reachable on wan-only"
+x node-a boundgatectl down >/dev/null
+x node-a boundgatectl up -profile lan-only >/dev/null || fail "up with lan-only failed"
+wait_for 15 status_is node-a '.profile == "lan-only" and ([.routes[]? | select(. == "10.60.0.0/24")] | length == 1)' || fail "lan-only does not route hub1's LAN"
+wait_for 20 reach 10.60.0.10 target || fail "hub1's LAN unreachable on lan-only"
+x node-a boundgatectl down >/dev/null
+x node-a boundgatectl up >/dev/null
+wait_for 20 reach 10.60.0.10 target || fail "target unreachable back on full"
 
 echo "== 6. revoke node-a while up: tunnels close, up fails, key cannot re-enroll"
 OLD_ID=$(x node-a boundgatectl -json identity | jq -r .node_id)

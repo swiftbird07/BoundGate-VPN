@@ -72,6 +72,7 @@ type app struct {
 	last      tray.Reading
 	lastPhase tray.Phase
 	phaseSeen bool
+	lastHint  time.Time // Status.SignIn.At last asked about
 
 	// draw serializes refresh: the poll and the end of an action both redraw
 	draw      sync.Mutex
@@ -161,12 +162,25 @@ func (a *app) refresh() {
 	phase := tray.PhaseOf(st, err)
 	askSignIn := a.phaseSeen && phase == tray.LoginRequired && a.lastPhase != tray.LoginRequired && busy == ""
 	a.lastPhase, a.phaseSeen = phase, true
+	// a node refused a connection that a signed-in user would be let
+	// through (Status.SignIn, only while nobody is signed in): once per refusal
+	var hint string
+	if st != nil && st.SignIn != nil && !st.SignIn.At.Equal(a.lastHint) && busy == "" {
+		a.lastHint = st.SignIn.At
+		hint = tray.SignInHintText(st.SignIn)
+	}
 	a.mu.Unlock()
 	if askSignIn {
 		// the session ended (24 h by default) while nobody looked at the
 		// tray: a message box is what a tray app has for a notification
 		go func() {
 			if message("BoundGate", "Your BoundGate session has ended. Sign in again now?", windows.MB_YESNO|windows.MB_ICONINFORMATION) == idYes {
+				a.login()
+			}
+		}()
+	} else if hint != "" {
+		go func() {
+			if message("BoundGate", hint+"\n\nSign in now?", windows.MB_YESNO|windows.MB_ICONINFORMATION) == idYes {
 				a.login()
 			}
 		}()

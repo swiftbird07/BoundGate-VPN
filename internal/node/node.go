@@ -214,9 +214,15 @@ type Status struct {
 	// User is the active user session bound to this node (interactive nodes).
 	User *UserStatus `json:"user,omitempty"`
 	// LoginRequired is set when a hub refused the node for lack of a session.
-	LoginRequired bool        `json:"login_required,omitempty"`
-	Prefixes      []string    `json:"prefixes,omitempty"`
-	Hubs          []HubStatus `json:"hubs,omitempty"`
+	LoginRequired bool `json:"login_required,omitempty"`
+	// SignIn: a node refused a connection of this device that a user
+	// session would have permitted (the control plane says so in a
+	// heartbeat's answer). Shown while nobody is signed in, for ten
+	// minutes. It permits nothing; the policies decide again after the
+	// sign-in.
+	SignIn   *api.SignInHint `json:"sign_in,omitempty"`
+	Prefixes []string        `json:"prefixes,omitempty"`
+	Hubs     []HubStatus     `json:"hubs,omitempty"`
 	// Paths are tunnels with other spokes, direct or through a hub's relay.
 	Paths  []PathStatus `json:"paths,omitempty"`
 	Routes []string     `json:"routes,omitempty"`
@@ -326,7 +332,12 @@ type Node struct {
 	// notified is what OnStatus was last told (statusKey); notify serializes the calls.
 	notified statusKey
 	notify   sync.Mutex
+	// signIn is the last hint of the control plane (Status.SignIn).
+	signIn *api.SignInHint
 }
+
+// signInShown is how long Status.SignIn stays after the hint arrived.
+const signInShown = 10 * time.Minute
 
 // statusKey is the part of the status an app reacts to (Config.OnStatus).
 type statusKey struct {
@@ -334,10 +345,14 @@ type statusKey struct {
 	Enrollment    string
 	LoginRequired bool
 	HubConnected  bool
+	SignIn        time.Time // a new hint is news for the app (a notification)
 }
 
 func keyOf(s *Status) statusKey {
 	k := statusKey{State: s.State, Enrollment: s.Enrollment, LoginRequired: s.LoginRequired}
+	if s.SignIn != nil {
+		k.SignIn = s.SignIn.At
+	}
 	for _, h := range s.Hubs {
 		if h.State == "connected" {
 			k.HubConnected = true
@@ -822,10 +837,19 @@ func (n *Node) heartbeats(ctx context.Context) {
 		}
 		n.mu.Unlock()
 		hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		if err := n.control.Heartbeat(hctx, snap.Version, tunnels); err != nil {
-			n.log.Warn("heartbeat failed", "err", err)
-		}
+		reply, err := n.control.Heartbeat(hctx, snap.Version, tunnels)
 		cancel()
+		if err != nil {
+			n.log.Warn("heartbeat failed", "err", err)
+			continue
+		}
+		if h := reply.SignIn; h != nil {
+			n.log.Info("a node refused a connection that a sign-in would permit", "dst", h.Dst, "port", h.Port, "name", h.Name, "via", h.Via)
+			n.mu.Lock()
+			n.signIn = h
+			n.mu.Unlock()
+			n.publishStatus()
+		}
 	}
 }
 
@@ -860,6 +884,10 @@ func (n *Node) publishStatus() {
 func (n *Node) publishLocked() {
 	n.status.ControlTransport = n.control.Transport()
 	n.status.PacketPanics = n.guard.panics.Load()
+	n.status.SignIn = nil
+	if h := n.signIn; h != nil && n.status.User == nil && time.Since(h.At) < signInShown {
+		n.status.SignIn = h
+	}
 	s := n.sess
 	if s == nil {
 		n.status.Interface, n.status.MTU = "", 0

@@ -94,6 +94,9 @@ type Request struct {
 	// policy as resource.resolved_names.
 	Resolved []string
 	Now      time.Time
+	// assumeSession decides as if the principal had a user session (one
+	// with no user attributes): for SignInWouldPermit, never for a flow.
+	assumeSession bool
 }
 
 // Decision is the outcome.
@@ -112,6 +115,14 @@ type Decision struct {
 	// looks at `sni`: the flow table lets the TCP handshake through and
 	// decides again on the ClientHello (or aborts the connection).
 	PermitBySNI bool
+	// SignInWouldPermit: denied, the principal has no user session, and
+	// the same request is permitted for a principal that has one (with
+	// has_session true and no user attributes: a policy that names a user
+	// or a group is not satisfied by it). The node uses it only to tell the
+	// device that signing in may help; it permits nothing.
+	SignInWouldPermit bool
+
+	known bool // the principal is a node of the snapshot
 }
 
 // Engine is a compiled policy set plus the entities of one snapshot.
@@ -518,6 +529,13 @@ func (e *Engine) Evaluate(r Request) Decision {
 	if !d.Allow && r.SNI == "" && r.Proto == 6 && (e.permitsBySNI || e.permitsDynamic && e.sniFallback(r.Dst)) {
 		d.PermitBySNI = true
 	}
+	if !d.Allow && d.Session == nil && d.known {
+		// would a session have changed the answer? A second evaluation of
+		// a denied flow, once per flow (the flow table decides once)
+		h := r
+		h.assumeSession = true
+		d.SignInWouldPermit = e.evaluate(h).Allow
+	}
 	return d
 }
 
@@ -579,10 +597,13 @@ func (e *Engine) evaluate(r Request) Decision {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	d.known = true
 	var se *registry.Session
 	if s, ok := e.snap.SessionFor(pn.ID, now); ok {
 		se = &s
 		d.Session = se
+	} else if r.assumeSession {
+		se = &registry.Session{NodeID: pn.ID} // signed in, nothing known about the user
 	}
 	top := types.EntityMap{}
 	top[nodeUID(pn.ID)] = e.nodeEntity(pn, se)

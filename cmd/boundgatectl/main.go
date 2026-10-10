@@ -23,8 +23,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -425,6 +427,16 @@ func printStatus(s node.Status, asJSON bool) error {
 	}
 	if s.LoginRequired {
 		fmt.Printf("LOGIN REQUIRED: a hub refused this node; run `boundgatectl login`\n")
+	}
+	if h := s.SignIn; h != nil {
+		to := h.Dst
+		if h.Port != 0 {
+			to = net.JoinHostPort(h.Dst, strconv.Itoa(h.Port))
+		}
+		if h.Name != "" {
+			to += " (" + h.Name + ")"
+		}
+		fmt.Printf("SIGN IN:      %s refused %s %s; a signed-in user would be let through: `boundgatectl login`\n", h.Via, to, h.At.Local().Format("15:04:05"))
 	}
 	fmt.Printf("enrollment:   %s", s.Enrollment)
 	if s.EnrollmentError != "" {

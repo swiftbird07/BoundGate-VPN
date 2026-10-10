@@ -268,6 +268,10 @@ func (h *Handlers) nodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.d.DB.Heartbeat(r.Context(), string(peer.DeviceID()), body.Version, body.ActiveTunnels)
+	if hint, ok := h.signIn.take(string(peer.DeviceID()), time.Now()); ok {
+		writeJSON(w, http.StatusOK, HeartbeatReply{SignIn: &hint})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -66,7 +66,7 @@ func (s *session) decide(e *flow.Entry) flow.Result {
 		question = ""
 	}
 	d := eng.Evaluate(acl.Request{Principal: e.Origin.Principal, Dst: e.Target.Addr(), Port: e.Target.Port(), Proto: e.Proto, SNI: e.SNI, DNSName: question, Resolved: names})
-	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI, Names: names}
+	return flow.Result{Allow: d.Allow, Policies: d.Policies, Reasons: d.Reasons, Errors: d.Errors, Session: d.Session, Owner: d.Owner, PermitBySNI: d.PermitBySNI, Names: names, SignIn: d.SignInWouldPermit}
 }
 
 // learnDNS remembers the addresses of a DNS answer for the peer that asked,
@@ -280,6 +280,11 @@ func (s *session) onFlowEvent(ev flow.Event) {
 	switch ev.Type {
 	case flow.EventDeny:
 		attrs["reset"] = ev.Reset
+		if e.Result.SignIn {
+			// the control plane tells the principal that signing in may
+			// help (its next heartbeat)
+			attrs["sign_in"] = true
+		}
 		n.denied.Add(1)
 	case flow.EventClose:
 		attrs["packets_in"] = e.PacketsIn

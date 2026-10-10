@@ -111,24 +111,42 @@ class Node(private val context: Context) : Core.Platform {
         var connected = false
         for (i in 0 until (hubs?.length() ?: 0)) if (hubs!!.getJSONObject(i).optString("state") == "connected") connected = true
         val needsSignIn = s.optBoolean("login_required") && !connected
+        // a node refused a connection that a signed-in user would be let
+        // through (sign_in, only while nobody is signed in): once per refusal
+        val hint = s.optJSONObject("sign_in")
+        val hintAt = hint?.optString("at")?.takeIf { it.isNotEmpty() }
         val nm = context.getSystemService(NotificationManager::class.java)
-        if (needsSignIn && !signInShown) {
-            nm.createNotificationChannel(NotificationChannel(ATTENTION, "Sign-in", NotificationManager.IMPORTANCE_HIGH))
-            val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-            val n = Notification.Builder(context, ATTENTION)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Sign-in needed")
-                .setContentText("Your BoundGate session has ended. Tap to sign in again.")
-                .setContentIntent(open)
-                .setAutoCancel(true)
-                .build()
-            try { nm.notify(SIGN_IN_ID, n) } catch (e: SecurityException) { Log.w(TAG, "no notification: ${e.message}") }
-        } else if (!needsSignIn && signInShown) {
+        if (hint != null && hintAt != null && hintAt != signInHintAt) {
+            val port = hint.optInt("port")
+            val addr = if (port != 0) "${hint.optString("dst")}:$port" else hint.optString("dst")
+            notifySignIn(nm, "Sign in to reach ${hint.optString("name").ifEmpty { addr }}",
+                "The network lets this through only for a signed-in user. Tap to sign in.")
+        } else if (needsSignIn && !signInShown) {
+            notifySignIn(nm, "Sign-in needed", "Your BoundGate session has ended. Tap to sign in again.")
+        } else if (!needsSignIn && (signInShown || signInHintAt != null && hintAt == null)) {
             nm.cancel(SIGN_IN_ID)
         }
         signInShown = needsSignIn
+        signInHintAt = hintAt
     }
     @Volatile private var signInShown = false
+    @Volatile private var signInHintAt: String? = null
+
+    /** Tapping it opens the app and starts the sign-in (MainActivity.ACTION_SIGN_IN). */
+    private fun notifySignIn(nm: NotificationManager, title: String, text: String) {
+        nm.createNotificationChannel(NotificationChannel(ATTENTION, "Sign-in", NotificationManager.IMPORTANCE_HIGH))
+        val intent = Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_SIGN_IN)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val open = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = Notification.Builder(context, ATTENTION)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        try { nm.notify(SIGN_IN_ID, n) } catch (e: SecurityException) { Log.w(TAG, "no notification: ${e.message}") }
+    }
 
     override fun log(level: Int, line: String) {
         val priority = when {

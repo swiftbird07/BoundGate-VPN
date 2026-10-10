@@ -61,6 +61,10 @@ type Result struct {
 	// Names are the names this peer resolved to the destination and that
 	// the decision could use (dnsmap); for the flow log.
 	Names []string
+	// SignIn: denied, and a user session would have permitted it
+	// (acl.Decision.SignInWouldPermit); for the flow log, which tells the
+	// device through the control plane.
+	SignIn bool
 }
 
 // Decider is asked once per new peer-originated flow, and again when an

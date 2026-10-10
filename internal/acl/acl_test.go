@@ -229,3 +229,34 @@ func TestTags(t *testing.T) {
 		t.Fatalf("forbid by tag attribute: %+v", d)
 	}
 }
+
+// A denied flow of a principal without a session says whether a session
+// would have changed the answer; the flow itself stays denied.
+func TestSignInWouldPermit(t *testing.T) {
+	e := New(lab(
+		registry.Policy{ID: "p-person", Name: "a person reaches the LAN", Cedar: `permit(principal, action, resource in BoundGate::Network::"192.168.178.0/24") when { principal.has_session };`},
+		registry.Policy{ID: "p-staff", Name: "staff reach the target", Cedar: `permit(principal in BoundGate::Group::"staff", action, resource in BoundGate::Network::"10.60.0.0/24");`},
+		registry.Policy{ID: "p-printer", Name: "never the printer", Cedar: `forbid(principal, action, resource) when { resource.ip == ip("192.168.178.99") };`},
+	))
+	cases := []struct {
+		name          string
+		r             Request
+		allow, signIn bool
+	}{
+		{"no session, a person is needed", req("node-r", "192.168.178.10", 80, 6), false, true},
+		{"expired session counts as none", req("node-b", "192.168.178.10", 80, 6), false, true},
+		{"signed in: permitted, nothing to suggest", req("node-a", "192.168.178.10", 80, 6), true, false},
+		{"a group is needed: an anonymous session does not say who", req("node-r", "10.60.0.10", 80, 6), false, false},
+		{"forbidden for everyone: signing in does not help", req("node-r", "192.168.178.99", 9100, 6), false, false},
+		{"unknown principal", req("stranger", "192.168.178.10", 80, 6), false, false},
+	}
+	for _, c := range cases {
+		d := e.Evaluate(c.r)
+		if d.Allow != c.allow || d.SignInWouldPermit != c.signIn {
+			t.Errorf("%s: allow=%v signIn=%v, want %v %v", c.name, d.Allow, d.SignInWouldPermit, c.allow, c.signIn)
+		}
+		if d.Session != nil && d.Session.ID == "" {
+			t.Errorf("%s: the assumed session leaked into the decision", c.name)
+		}
+	}
+}

@@ -55,6 +55,24 @@ public struct PathStatus: Codable, Equatable, Sendable, Identifiable {
     public var id: String { peer + via }
 }
 
+/// A node refused a connection of this device that a signed-in user would be
+/// let through; from the control plane, shown while nobody is signed in.
+public struct SignInHint: Codable, Equatable, Sendable {
+    public var dst: String
+    public var port: Int?
+    public var proto: String?
+    public var name: String?
+    public var via: String?
+    public var at: Date?
+
+    /// "nas.home (192.168.178.10:443)", or the address alone
+    public var target: String {
+        let addr = (port ?? 0) != 0 ? (dst.contains(":") ? "[\(dst)]:\(port!)" : "\(dst):\(port!)") : dst
+        if let n = name, !n.isEmpty { return "\(n) (\(addr))" }
+        return addr
+    }
+}
+
 public struct NodeStatus: Codable, Equatable, Sendable {
     public var state: String
     public var profile: String?
@@ -63,6 +81,7 @@ public struct NodeStatus: Codable, Equatable, Sendable {
     public var roles: [String]?
     public var user: UserStatus?
     public var loginRequired: Bool?
+    public var signIn: SignInHint?
     public var hubs: [HubStatus]?
     public var paths: [PathStatus]?
     public var routes: [String]?

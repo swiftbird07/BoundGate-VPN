@@ -156,7 +156,7 @@ source address (per /64 for IPv6).
 | POST | `/api/v1/node/enroll` | any device cert | 202 `EnrollStatus` (new, pending) or 200 (known key, current status); 429 rate limited (5/min per address, per /64 for IPv6) or 500 requests already pending; 503 while no admin key is registered |
 | GET | `/api/v1/node/enroll/status` | any device cert | 200 `EnrollStatus` or 404 `{status:"unknown"}` |
 | GET | `/api/v1/node/snapshot` | approved (signed) only, 403 otherwise | `?since=N&wait=30s`: 200 `registry.Snapshot` when version > N, else 304 after `wait` |
-| POST | `/api/v1/node/heartbeat` | approved only | `{version, active_tunnels}` → 204 |
+| POST | `/api/v1/node/heartbeat` | approved only | `{version, active_tunnels}` → 204, or 200 `{sign_in: {dst, port, proto, name, via, at}}` once, when a node refused a connection of this device that a user session would have permitted (OIDC.md, "Signing in, and being told to") |
 | POST | `/api/v1/node/login/start` | approved only | `{flow_id, url, expires_at}`; 503 without an IdP, 502 if the IdP is unreachable. At most three open flows per node: a fourth fails the oldest |
 | GET | `/api/v1/node/login/{flow}` | the node that started it | `?wait=30s`: `{status: pending\|done\|failed, session?, error?}`; `pending` until the person confirmed the device in the browser; 429 when two requests of the node are already waiting |
 | POST | `/api/v1/node/logout` | approved only | 204 |

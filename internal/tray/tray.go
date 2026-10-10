@@ -7,9 +7,12 @@ package tray
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 )
 
@@ -144,11 +147,30 @@ func Describe(s *node.Status, err error) View {
 	}
 	if p == Connected && s.User == nil {
 		v.CanLogin = true
-		if v.Detail == "" {
+		if s.SignIn != nil {
+			v.Detail = SignInHintText(s.SignIn)
+		} else if v.Detail == "" {
 			v.Detail = "Not signed in"
 		}
 	}
 	return v
+}
+
+// SignInHintText says what a node refused and why a sign-in helps
+// (node.Status.SignIn).
+func SignInHintText(h *api.SignInHint) string {
+	to := h.Dst
+	if h.Port != 0 {
+		to = net.JoinHostPort(h.Dst, strconv.Itoa(h.Port))
+	}
+	if h.Name != "" {
+		to = h.Name + " (" + to + ")"
+	}
+	via := h.Via
+	if via == "" {
+		via = "The network"
+	}
+	return via + " lets " + to + " through only for a signed-in user."
 }
 
 // ProfileLabel names the built-in profiles by what they do (internal/node/profile);

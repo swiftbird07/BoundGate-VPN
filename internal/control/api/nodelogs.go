@@ -123,6 +123,9 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 					sess = "" // not linked: the session is not the principal's
 				}
 			}
+			if p, hint, ok := hintFrom(ev, self.Name); ok {
+				h.signIn.note(p, hint)
+			}
 			rows = append(rows, db.LogEvent{TS: ev.TS, Stream: ShipStreamFlow, Actor: "node", DeviceID: self.ID, SessionID: sess, Message: clip(ev.Message, 64), Attrs: ev.Attrs})
 			accepted++
 		case ShipStreamTunnel:

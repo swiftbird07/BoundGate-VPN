@@ -68,6 +68,8 @@ type Handlers struct {
 
 	pollMu     sync.Mutex
 	loginPolls map[string]int // waiting login status requests per node
+
+	signIn signInHints // per device: a sign-in would have permitted a connection
 }
 
 // New wires the handlers; it panics on an invalid passkey configuration

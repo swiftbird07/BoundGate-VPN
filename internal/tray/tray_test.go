@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
@@ -135,4 +136,20 @@ func TestIcon(t *testing.T) {
 func b0(img image.Image) bool {
 	_, _, _, a := img.At(0, img.Bounds().Dy()-1).RGBA()
 	return a != 0
+}
+
+// Connected without a user: Sign in is offered, and a refusal a sign-in
+// would lift says what it was for.
+func TestConnectedWithoutAUserOffersSignIn(t *testing.T) {
+	s := &node.Status{State: node.StateUp, Enrollment: "approved", OverlayIP: "10.21.0.7", Hubs: []node.HubStatus{{Name: "hub1", State: "connected"}}}
+	if v := Describe(s, nil); !v.CanLogin || v.CanLogout || v.Detail != "Not signed in" {
+		t.Fatalf("no user: %+v", v)
+	}
+	s.SignIn = &api.SignInHint{Dst: "192.168.178.10", Port: 443, Name: "nas.home", Via: "hub-pvpn"}
+	if v := Describe(s, nil); !v.CanLogin || v.Detail != "hub-pvpn lets nas.home (192.168.178.10:443) through only for a signed-in user." {
+		t.Fatalf("hint: %+v", v)
+	}
+	if ProfileLabel("wan-only") != "WAN only" || ProfileLabel("site") != "site" {
+		t.Fatal("profile labels")
+	}
 }

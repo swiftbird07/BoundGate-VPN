@@ -96,3 +96,51 @@ func TestLogShippingIsRateLimited(t *testing.T) {
 		t.Fatalf("another node was limited too: %d %s", code, b)
 	}
 }
+
+// A hub's deny record that says a sign-in would have permitted the flow
+// reaches the principal, once, in the answer to its heartbeat; nothing
+// reaches another node, and nothing comes of a record without the flag or
+// for a principal the registry does not know.
+func TestASignInHintReachesItsDeviceOnce(t *testing.T) {
+	e := newEnv(t)
+	e.registerSigner()
+	laptop, phone, hub := e.device("laptop"), e.device("phone"), e.device("hub1")
+	lid := e.enroll(laptop, `{"name":"laptop","roles":["endpoint"]}`).NodeID
+	pid := e.enroll(phone, `{"name":"phone","roles":["endpoint"]}`).NodeID
+	hid := e.enroll(hub, `{"name":"hub1","roles":["hub"]}`).NodeID
+	e.approve(lid, `{"roles":["endpoint"]}`)
+	e.approve(pid, `{"roles":["endpoint"]}`)
+	e.approve(hid, `{"kind":"workload","roles":["hub"],"public_addr":"hub1:443"}`)
+
+	beat := func(d dev) (int, api.HeartbeatReply) {
+		code, b := e.nodeCall(d, "POST", "/api/v1/node/heartbeat", `{"version":1,"active_tunnels":0}`)
+		var r api.HeartbeatReply
+		if len(b) > 0 {
+			_ = json.Unmarshal(b, &r)
+		}
+		return code, r
+	}
+	if code, _ := beat(laptop); code != http.StatusNoContent {
+		t.Fatalf("heartbeat with nothing to say: %d", code)
+	}
+	batch := `{"events":[
+		{"stream":"flow","message":"deny","attrs":{"flow":"f1","principal":"` + lid + `","dst":"192.168.178.10","dport":443,"proto":"tcp","sni":"nas.home","sign_in":true}},
+		{"stream":"flow","message":"deny","attrs":{"flow":"f2","principal":"` + pid + `","dst":"192.168.178.11","dport":22,"proto":"tcp"}},
+		{"stream":"flow","message":"deny","attrs":{"flow":"f3","principal":"no-such-node","dst":"10.0.0.1","dport":80,"proto":"tcp","sign_in":true}}]}`
+	if code, b := e.nodeCall(hub, "POST", "/api/v1/node/logs", batch); code != http.StatusOK {
+		t.Fatalf("ship: %d %s", code, b)
+	}
+	code, r := beat(laptop)
+	if code != http.StatusOK || r.SignIn == nil {
+		t.Fatalf("the laptop got no hint: %d %+v", code, r)
+	}
+	if h := r.SignIn; h.Dst != "192.168.178.10" || h.Port != 443 || h.Proto != "tcp" || h.Name != "nas.home" || h.Via != "hub1" {
+		t.Fatalf("hint: %+v", h)
+	}
+	if code, _ := beat(laptop); code != http.StatusNoContent {
+		t.Fatal("the hint came twice")
+	}
+	if code, _ := beat(phone); code != http.StatusNoContent {
+		t.Fatal("a deny without the flag became a hint")
+	}
+}

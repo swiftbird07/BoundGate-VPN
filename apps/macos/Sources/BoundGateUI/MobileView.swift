@@ -182,6 +182,9 @@ struct MobileConnectionCard: View {
                     InfoRow(label: "Through", value: (hub?.name ?? "–") + (hub?.transport == "tcp" ? " · over TCP" : ""))
                     if let u = s.user { InfoRow(label: "Signed in as", value: u.displayName) }
                     else { InfoRow(label: "User", value: model.loginInProgress ? "continue in the browser…" : "not signed in") }
+                    if s.user == nil, let h = s.signIn {
+                        Notice(tone: .warn, text: "\(h.via ?? "The network") lets \(h.target) through only for a signed-in user.")
+                    }
                     InfoRow(label: "Networks", value: (s.routes ?? []).isEmpty ? "none" : (s.routes ?? []).joined(separator: ", "))
                     DetailsView(status: s, hub: hub, rate: model.rate)
                     if let m = model.memoryMiB {

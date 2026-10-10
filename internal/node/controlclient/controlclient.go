@@ -452,10 +452,13 @@ func (c *Client) ShipLogs(ctx context.Context, events []api.ShippedEvent) error 
 	return err
 }
 
-// Heartbeat reports liveness.
-func (c *Client) Heartbeat(ctx context.Context, version uint64, tunnels int) error {
-	_, err := c.do(ctx, http.MethodPost, "/api/v1/node/heartbeat", map[string]any{"version": version, "active_tunnels": tunnels}, nil, 20*time.Second)
-	return err
+// Heartbeat reports liveness. The answer may carry something for the device
+// (api.HeartbeatReply); a control plane with nothing to say, or one older
+// than the reply, answers 204.
+func (c *Client) Heartbeat(ctx context.Context, version uint64, tunnels int) (api.HeartbeatReply, error) {
+	var r api.HeartbeatReply
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/node/heartbeat", map[string]any{"version": version, "active_tunnels": tunnels}, &r, 20*time.Second)
+	return r, err
 }
 
 // Snapshot long-polls once. It returns (nil, nil) when nothing newer than

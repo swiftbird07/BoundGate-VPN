@@ -40,6 +40,7 @@ public final class AppModel: ObservableObject {
     let installer: ServiceControlling
     private var timer: Timer?
     private var lastPhase: Phase?
+    private var lastHint: Date?
 
     public init(client: DaemonClient = DaemonClient(), installer: ServiceControlling = LaunchDaemonService()) {
         self.client = client
@@ -81,17 +82,25 @@ public final class AppModel: ObservableObject {
     // MARK: polling
 
     public func start() {
+        SignInNotice.onSignIn = { [weak self] in self?.signIn() }
         SignInNotice.requestPermission()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in Task { @MainActor in self?.refresh() } }
     }
 
     /// The session ended (24 h by default) while nobody looked at the menu
-    /// bar: say so once, when the phase turns to loginRequired.
+    /// bar: say so once, when the phase turns to loginRequired. A node
+    /// refused a connection that a signed-in user would be let through
+    /// (status.signIn): say that once per refusal, with what it was for.
     private func noticePhase() {
         let now = phase
         defer { lastPhase = now }
-        guard now != lastPhase else { return }
+        if let h = status?.signIn, status?.user == nil {
+            if h.at != lastHint { lastHint = h.at; SignInNotice.show(hint: h) }
+            return
+        }
+        guard now != lastPhase || lastHint != nil else { return }
+        lastHint = nil
         if now == .loginRequired { SignInNotice.show() } else { SignInNotice.clear() }
     }
 
@@ -331,19 +340,51 @@ public final class AppModel: ObservableObject {
 /// notification center has no home in a bare executable (bgtool, tests).
 enum SignInNotice {
     private static var available: Bool { Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app" }
+    /// what a click on the notification or its "Sign in" button does
+    @MainActor static var onSignIn: (() -> Void)?
+    private static let delegate = Delegate()
 
     static func requestPermission() {
         guard available else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = delegate
+        center.setNotificationCategories([UNNotificationCategory(identifier: "sign-in",
+            actions: [UNNotificationAction(identifier: "sign-in", title: "Sign in", options: [.foreground])],
+            intentIdentifiers: [])])
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     static func show() {
+        post(title: "Sign-in needed", body: "Your BoundGate session has ended. Sign in again from the menu bar.")
+    }
+
+    /// A refused connection a sign-in would let through: the user decides,
+    /// the button starts the sign-in in the browser.
+    static func show(hint h: SignInHint) {
+        let via = h.via.map { " (\($0))" } ?? ""
+        post(title: "Sign in to reach \(h.target)", body: "The network lets this through only for a signed-in user\(via).")
+    }
+
+    private static func post(title: String, body: String) {
         guard available else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Sign-in needed"
-        content.body = "Your BoundGate session has ended. Sign in again from the menu bar."
+        content.title = title
+        content.body = body
         content.sound = .default
+        content.categoryIdentifier = "sign-in"
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "sign-in", content: content, trigger: nil))
+    }
+
+    private final class Delegate: NSObject, UNUserNotificationCenterDelegate {
+        func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+            guard response.notification.request.content.categoryIdentifier == "sign-in",
+                  response.actionIdentifier == "sign-in" || response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+            await MainActor.run { SignInNotice.onSignIn?() }
+        }
+        // shown also while the app is in front (a menu-bar app nearly always is)
+        func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+            [.banner, .sound]
+        }
     }
 
     static func clear() {

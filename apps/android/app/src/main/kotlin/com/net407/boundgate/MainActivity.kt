@@ -83,6 +83,16 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         main.post(poll)
+        if (intent?.action == ACTION_SIGN_IN) {
+            // from the notification: go straight to the sign-in, once
+            intent = Intent(intent).setAction(null)
+            main.post { if (status?.optJSONObject("user") == null) signIn() }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 
     override fun onPause() {
@@ -417,6 +427,13 @@ class MainActivity : Activity() {
                 val u = s.optJSONObject("user")
                 if (u != null) views += ui.info("Signed in as", u.optString("username").ifEmpty { u.optString("email").ifEmpty { u.optString("subject") } })
                 else views += ui.info("User", if (loginInProgress) "continue in the browser…" else "not signed in")
+                val hint = s.optJSONObject("sign_in")
+                if (u == null && hint != null) {
+                    val port = hint.optInt("port")
+                    val addr = if (port != 0) "${hint.optString("dst")}:$port" else hint.optString("dst")
+                    val what = hint.optString("name").let { if (it.isEmpty()) addr else "$it ($addr)" }
+                    views += ui.notice(Tone.WARN, "${hint.optString("via").ifEmpty { "The network" }} lets $what through only for a signed-in user.")
+                }
                 val routes = strings(s, "routes")
                 views += ui.info("Networks", if (routes.isEmpty()) "none" else routes.joinToString(", "))
                 views += ui.info("Traffic", "↓ ${bytes(hub.optLong("bytes_in"))}  ↑ ${bytes(hub.optLong("bytes_out"))}")
@@ -472,5 +489,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val VPN_CONSENT = 1
+        /** the sign-in notification opens the app with this: it starts the sign-in */
+        const val ACTION_SIGN_IN = "com.net407.boundgate.SIGN_IN"
     }
 }

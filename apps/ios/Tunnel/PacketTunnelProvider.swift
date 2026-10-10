@@ -26,6 +26,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
     private var applied: (json: String, fd: Int32)?
     /// a "sign-in needed" notification is up
     private var signInShown = false
+    private var signInHintAt: String?
 
     // MARK: lifecycle
 
@@ -162,19 +163,35 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         let hubs = s["hubs"] as? [[String: Any]] ?? []
         let connected = hubs.contains { $0["state"] as? String == "connected" }
         let needsSignIn = (s["login_required"] as? Bool ?? false) && !connected
-        lock.lock(); let shown = signInShown; signInShown = needsSignIn; lock.unlock()
+        // a node refused a connection that a signed-in user would be let
+        // through (sign_in, only while nobody is signed in): once per refusal
+        let hint = s["sign_in"] as? [String: Any]
+        let hintAt = hint?["at"] as? String
+        lock.lock()
+        let shown = signInShown, lastHint = signInHintAt
+        signInShown = needsSignIn; signInHintAt = hintAt
+        lock.unlock()
         let center = UNUserNotificationCenter.current()
-        if needsSignIn, !shown {
-            TunnelLog.shared.write("tunnel: sign-in needed, notifying")
-            let content = UNMutableNotificationContent()
-            content.title = "Sign-in needed"
-            content.body = "Your BoundGate session has ended. Open BoundGate to sign in again."
-            content.sound = .default
-            center.add(UNNotificationRequest(identifier: "sign-in", content: content, trigger: nil)) { error in
-                if let error { TunnelLog.shared.write("tunnel: notification: \(error.localizedDescription)") }
-            }
-        } else if !needsSignIn, shown {
+        if let hint, let hintAt, hintAt != lastHint {
+            let dst = hint["dst"] as? String ?? "", port = hint["port"] as? Int ?? 0, name = hint["name"] as? String ?? ""
+            let addr = port != 0 ? "\(dst):\(port)" : dst
+            notify(title: "Sign in to reach \(name.isEmpty ? addr : name)",
+                   body: "The network lets this through only for a signed-in user. Open BoundGate to sign in.")
+        } else if needsSignIn, !shown {
+            notify(title: "Sign-in needed", body: "Your BoundGate session has ended. Open BoundGate to sign in again.")
+        } else if !needsSignIn, shown || (lastHint != nil && hintAt == nil) {
             center.removeDeliveredNotifications(withIdentifiers: ["sign-in"])
+        }
+    }
+
+    private func notify(title: String, body: String) {
+        TunnelLog.shared.write("tunnel: \(title), notifying")
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "sign-in", content: content, trigger: nil)) { error in
+            if let error { TunnelLog.shared.write("tunnel: notification: \(error.localizedDescription)") }
         }
     }
 

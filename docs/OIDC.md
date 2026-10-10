@@ -126,6 +126,40 @@ Subnet routers do not enforce sessions: they see packets from the hub
 tunnel, not per-peer identities. Enforcement is the hub's job (and, from
 M3, the ACL's, which gets the session's user and groups per flow).
 
+## Signing in, and being told to
+
+Nothing asks for a session any more, so the apps always offer one: a
+connected device without a user shows "User: not signed in" and a **Sign
+in** button beside Disconnect (macOS, iOS, Android, Windows; `boundgatectl
+login`).
+
+When a policy needs a person, the device is told which connection it was:
+
+1. The node that refuses a flow (a hub, a subnet router, a receiving peer)
+   asks the policies a second time, for a principal *with* a session
+   (`has_session` true, no user attributes). Only for a denied flow of a
+   principal without a session, once per flow. If that permits, the deny
+   record in the flow log says `sign_in: true`.
+2. The control plane takes it from the shipped flow log and keeps the newest
+   such hint per device, for ten minutes, in memory.
+3. The device's next heartbeat (every 30 s) gets it in the answer
+   (`sign_in`), once. The node shows it in its status as long as nobody is
+   signed in, at most ten minutes.
+4. The apps notify — "Sign in to reach nas.home (192.168.178.10:443)" — and
+   the notification starts the sign-in: the browser opens on the IdP's page,
+   which is the nearest a VPN can come to redirecting a connection it
+   refused (it cannot answer an HTTPS request with a page of its own).
+   `boundgatectl status` prints a `SIGN IN:` line.
+
+From refusal to notification it takes up to half a minute (the log batch
+every 5 s, the heartbeat every 30 s; ten minutes with `power_save`).
+
+What the hint does **not** cover: a policy that needs a particular user or
+group (`principal in BoundGate::Group::"staff"`). Before the sign-in nobody
+knows who will sign in, and a session without a user is in no group, so such
+a refusal brings no hint; the Sign in button is there all the same. The hint
+grants nothing either — after the sign-in the policies decide anew.
+
 ## Authentik
 
 1. **Provider**: OAuth2/OpenID, confidential client, authorization code,
