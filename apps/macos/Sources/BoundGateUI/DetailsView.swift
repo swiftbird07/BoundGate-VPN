@@ -26,14 +26,36 @@ struct DetailsView: View {
                 .foregroundStyle(t.text2).contentShape(Rectangle())
             }.buttonStyle(.plain)
             if open {
-                // a panel under the menu bar cannot grow past the screen; an image has no scrolling
-                if staticRender { sections } else { ScrollView { sections }.frame(height: min(430, sectionsHeight)) }
+                #if os(macOS)
+                // a panel under the menu bar cannot grow past the screen: as tall as
+                // the sections are, scrolling only beyond that. An image has no scrolling
+                if staticRender { sections } else {
+                    ScrollView {
+                        sections.background(GeometryReader { g in Color.clear.preference(key: SectionsHeight.self, value: g.size.height) })
+                    }
+                    .onPreferenceChange(SectionsHeight.self) { measured = $0 }
+                    .frame(height: min(Self.maxHeight, measured ?? sectionsHeight))
+                }
+                #else
+                sections // the iOS screen scrolls as a whole
+                #endif
             }
         }
         .padding(.top, 2)
     }
 
-    /// enough for what is shown, so a short list does not leave a hole
+    /// the sections' own height, once laid out
+    @State private var measured: CGFloat?
+
+    #if os(macOS)
+    /// what the screen leaves for the details below the menu bar, next to the
+    /// rest of the panel (header, address, buttons, footer: about 420 pt)
+    private static var maxHeight: CGFloat {
+        max(300, (NSScreen.main?.visibleFrame.height ?? 800) - 420)
+    }
+    #endif
+
+    /// a first guess until the sections are measured
     private var sectionsHeight: CGFloat {
         let rows = 11 + (status.hubs?.count ?? 1) - 1 + (status.paths?.count ?? 0) + ((status.routes?.count ?? 0) > 2 ? status.routes!.count : 0)
         return CGFloat(rows) * 21 + 4 * 44
@@ -92,4 +114,9 @@ struct DetailsView: View {
         .padding(10).frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous).fill(t.panel2))
     }
+}
+
+private struct SectionsHeight: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) { value = nextValue() ?? value }
 }
