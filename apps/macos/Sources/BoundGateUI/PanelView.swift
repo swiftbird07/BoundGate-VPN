@@ -24,9 +24,15 @@ public struct PanelView: View {
         .padding(14)
         .frame(width: 340)
         .background(t.bg)
+        .background(GeometryReader { g in Color.clear.preference(key: PanelHeight.self, value: g.size.height) })
+        .onPreferenceChange(PanelHeight.self) { height = $0 }
+        .background(FitWindow(height: height))
         .environment(\.theme, t)
         .tint(Theme.accent)
     }
+
+    /// the panel's own height, for FitWindow
+    @State private var height: CGFloat = 0
 
     private var t: Theme { Theme.of(scheme) }
 
@@ -348,5 +354,30 @@ struct ConnectionCard: View {
         if r.isEmpty { return "none" }
         return r.count <= 2 ? r.joined(separator: ", ") : "\(r[0]), \(r[1]) +\(r.count - 2)"
     }
+}
+/// The menu-bar window grows with its content but does not shrink with it:
+/// after a notice or the details went away it stayed as tall as before, with
+/// the panel centred in it and a gap above and below. This sets the window to
+/// the panel's height, keeping its top edge under the menu bar.
+private struct FitWindow: NSViewRepresentable {
+    var height: CGFloat
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ view: NSView, context: Context) {
+        let height = self.height
+        guard height > 0 else { return }
+        // not during SwiftUI's own layout pass
+        DispatchQueue.main.async {
+            guard let w = view.window else { return }
+            let content = w.contentRect(forFrameRect: w.frame)
+            guard abs(content.height - height) >= 0.5 else { return }
+            let fitted = NSRect(x: content.minX, y: content.maxY - height, width: content.width, height: height)
+            w.setFrame(w.frameRect(forContentRect: fitted), display: true)
+        }
+    }
+}
+
+private struct PanelHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 #endif
