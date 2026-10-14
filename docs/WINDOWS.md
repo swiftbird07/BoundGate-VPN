@@ -4,13 +4,16 @@ On Windows the node runs as a service, the same daemon as on Linux and macOS.
 The tray app is the frontend, like the Mac app for its LaunchDaemon. The
 device key lives in the TPM.
 
-Status 2026-09-21:
+Status 2026-10-14:
 
 * Service, CLI and tray build for amd64 and arm64 in the box. Everything the
   platform does not decide is tested there: the route choice for host routes,
   the tray's phases and icon, the key selection.
-* Not run on Windows yet. Acceptance is `deploy/windows/e2e.ps1` on the
-  Proxmox VM with vTPM and on a PC (see "What is still open").
+* The acceptance run `deploy/windows/e2e.ps1` passed all seven steps on the
+  Proxmox VM with vTPM on 2026-09-22 (Tiny11, Windows 11 23H2). The VM has
+  been a node of the production network (`tinywin11-lab`) since then.
+* Not yet: a regular Windows PC (Tiny11 is a stripped build), and the rest of
+  "What is still open".
 
 ## Pieces
 
@@ -50,8 +53,27 @@ running install.ps1 again repairs a directory that is merely unprotected.
 
 ## Install
 
-From the release zip `boundgate-<v>-windows-<arch>.zip`, in PowerShell as
-administrator:
+In PowerShell as administrator:
+
+```powershell
+irm https://raw.githubusercontent.com/swiftbird07/BoundGate-VPN/main/deploy/windows/setup.ps1 | iex
+```
+
+`setup.ps1` is the Windows counterpart of the server's `setup.sh`. It finds
+the latest release on GitHub and checks its `manifest.json` against the
+release keys (`ssh-keygen -Y verify`, as `update.sh` does; the OpenSSH client
+is part of Windows 10 1809 and later). It then checks the zip for this
+machine's architecture against the manifest (size and SHA-256). If Wintun is
+not installed yet, it downloads `wintun-0.14.1.zip` from www.wintun.net.
+Finally it runs the release's `install.ps1`. Run again, it updates.
+Environment variables instead of parameters: `BOUNDGATE_CONTROL` (the control
+plane, else the tray asks), `BOUNDGATE_REF` (a tag instead of the latest
+release), `BOUNDGATE_REPO`. The release keys come from GitHub at the
+release's tag, like the script itself: the signature guards against a
+swapped file, not against whoever controls the repository (R99).
+
+By hand, from the release zip `boundgate-<v>-windows-<arch>.zip`, in
+PowerShell as administrator:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -187,9 +209,10 @@ host route to the hub via the hotspot's gateway.
 
 ## What is still open
 
-1. **Run it:** `e2e.ps1` on the Proxmox VM (vTPM) and on a PC. Then a
-   policy with `hardware_bound`, a reboot with `auto_up: true`, and
-   `uninstall.ps1`.
+1. **Run it on a PC:** `e2e.ps1` on a regular Windows 11 (the VM passed).
+   Then, on both: a policy with `hardware_bound`, a reboot with
+   `auto_up: true`, `uninstall.ps1`, and `setup.ps1` from scratch (written
+   2026-10-14, not yet run on Windows).
 2. **DNS:** like the other platforms, the node sets no DNS. A split-DNS rule
    (NRPT) for overlay names comes with the DNS milestone.
 3. **Stage 2:**

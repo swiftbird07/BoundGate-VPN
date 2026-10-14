@@ -38,6 +38,14 @@ curl -fsSL https://raw.githubusercontent.com/swiftbird07/BoundGate-VPN/main/depl
 
 Interactive; control plane with a hub, or a single node. What it does, and everything it does not ask: [docs/DEPLOY.md](docs/DEPLOY.md). The macOS app: [latest release](https://github.com/swiftbird07/BoundGate-VPN/releases/latest).
 
+## Install on Windows
+
+In PowerShell as administrator ([docs/WINDOWS.md](docs/WINDOWS.md)):
+
+```powershell
+irm https://raw.githubusercontent.com/swiftbird07/BoundGate-VPN/main/deploy/windows/setup.ps1 | iex
+```
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
