@@ -148,13 +148,27 @@ func validAttrKey(k string) bool {
 	return true
 }
 
-// PruneLogs deletes events older than maxAge.
+// pruneBatch is how many events one statement of PruneLogs deletes. The
+// control plane has one database connection: between two statements a node's
+// lookup gets its turn, so a large backlog (a shorter retention, a first run)
+// does not hold the connection for minutes.
+const pruneBatch = 5000
+
+// PruneLogs deletes events older than maxAge, oldest first, pruneBatch at a time.
 func (d *DB) PruneLogs(ctx context.Context, maxAge time.Duration) (int64, error) {
-	res, err := d.sql.ExecContext(ctx, `DELETE FROM log_events WHERE ts < ?`, time.Now().UTC().Add(-maxAge).Format(timeFormat))
-	if err != nil {
-		return 0, err
+	cutoff := time.Now().UTC().Add(-maxAge).Format(timeFormat)
+	var total int64
+	for {
+		res, err := d.sql.ExecContext(ctx, `DELETE FROM log_events WHERE id IN (SELECT id FROM log_events WHERE ts < ? ORDER BY ts LIMIT ?)`, cutoff, pruneBatch)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		total += n
+		if err != nil || n < pruneBatch {
+			return total, err
+		}
 	}
-	return res.RowsAffected()
 }
 
 func nullable(s string) any {

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,5 +50,49 @@ func TestJanitorDeletesWhatExpired(t *testing.T) {
 		n.ID, old, old, old, n.ID, now(), now(), now(), n.ID, now(), time.Now().UTC().Add(time.Hour).Format(timeFormat))
 	if pruned, err := d.PruneSessions(ctx, 24*time.Hour); err != nil || pruned != 1 || count("user_sessions") != 2 {
 		t.Fatalf("prune sessions: %d %v, left %d", pruned, err, count("user_sessions"))
+	}
+}
+
+// Pruning old log events finds them through an index and deletes them in
+// batches: a scan of the whole table on the one connection made registry
+// lookups miss their deadline once the database had grown (5.8 GB on pVPN).
+func TestPruneLogsUsesTheIndexInBatches(t *testing.T) {
+	d := open(t)
+	ctx := context.Background()
+	var evs []LogEvent
+	for i := 0; i < 2*pruneBatch+7; i++ {
+		evs = append(evs, LogEvent{TS: time.Now().Add(-100 * 24 * time.Hour), Stream: "flow", Message: "allow"})
+	}
+	for i := 0; i < 3; i++ {
+		evs = append(evs, LogEvent{TS: time.Now(), Stream: "flow", Message: "allow"})
+	}
+	if err := d.InsertLogs(ctx, evs); err != nil {
+		t.Fatal(err)
+	}
+	n, err := d.PruneLogs(ctx, 90*24*time.Hour)
+	if err != nil || n != 2*pruneBatch+7 {
+		t.Fatalf("pruned %d (%v), want %d", n, err, 2*pruneBatch+7)
+	}
+	var left int
+	if err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM log_events`).Scan(&left); err != nil || left != 3 {
+		t.Fatalf("%d events left (%v), want the 3 recent ones", left, err)
+	}
+
+	rows, err := d.sql.QueryContext(ctx, `EXPLAIN QUERY PLAN SELECT id FROM log_events WHERE ts < ? ORDER BY ts LIMIT ?`, "2026-01-01", pruneBatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "; "
+	}
+	if !strings.Contains(plan, "INDEX log_events_ts") || strings.Contains(plan, "SCAN log_events") {
+		t.Fatalf("pruning does not use the ts index: %s", plan)
 	}
 }

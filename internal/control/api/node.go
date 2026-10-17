@@ -163,13 +163,14 @@ func (h *Handlers) nodeEnrollStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "device certificate required")
 		return
 	}
+	start := time.Now()
 	n, err := h.d.DB.NodeBySPKI(r.Context(), spki)
 	if errors.Is(err, db.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, EnrollStatus{Status: "unknown", Fingerprint: spki.Fingerprint()})
 		return
 	}
 	if err != nil {
-		busy(w, err, h.d.Logs.System) // the database, not this node
+		busy(w, r, err, time.Since(start), h.d.Logs.System) // the database, not this node
 		return
 	}
 	writeJSON(w, http.StatusOK, h.enrollStatus(r, n))
@@ -184,9 +185,10 @@ func (h *Handlers) nodeEnrollStatus(w http.ResponseWriter, r *http.Request) {
 // device its key was revoked.
 func (h *Handlers) approvedPeer(w http.ResponseWriter, r *http.Request) (transport.AuthenticatedPeer, bool) {
 	src, _ := netip.ParseAddr(remoteIP(r))
+	start := time.Now()
 	peer, err := transport.PeerFromTLSState(r.TLS, h.lookup, src)
 	if errors.Is(err, transport.ErrLookupFailed) {
-		busy(w, err, h.d.Logs.System)
+		busy(w, r, err, time.Since(start), h.d.Logs.System)
 		return transport.AuthenticatedPeer{}, false
 	}
 	if err != nil {
@@ -199,9 +201,17 @@ func (h *Handlers) approvedPeer(w http.ResponseWriter, r *http.Request) (transpo
 // busy answers a request the control plane could not serve for a reason that
 // has nothing to do with the node asking. Retry-After keeps a fleet that all
 // polls at once from returning in one wave.
-func busy(w http.ResponseWriter, err error, log *slog.Logger) {
+//
+// The log line names who asked, for what, and how long the database kept it
+// waiting: the device by its key, since the lookup that failed is the one
+// that would have named its node.
+func busy(w http.ResponseWriter, r *http.Request, err error, waited time.Duration, log *slog.Logger) {
 	if log != nil {
-		log.Error("the registry could not be asked; answering 503, not 403", "err", err)
+		attrs := []any{"err", err, "path", r.URL.Path, "src", remoteIP(r), "waited", waited.Round(time.Millisecond)}
+		if spki, e := transport.UnverifiedSPKI(r.TLS); e == nil {
+			attrs = append(attrs, "fingerprint", spki.Fingerprint())
+		}
+		log.Error("the registry could not be asked; answering 503, not 403", attrs...)
 	}
 	w.Header().Set("Retry-After", "5")
 	writeError(w, http.StatusServiceUnavailable, "the control plane cannot answer right now; this says nothing about this node")
