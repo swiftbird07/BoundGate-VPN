@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -180,11 +181,61 @@ func (c linuxCfg) AddBypass(ctx context.Context, host netip.Addr) error {
 			return fmt.Errorf("netcfg: %s: %w", host, err)
 		}
 	}
+	return run(ctx, bypassArgs(host, r, onLink(r.Dev, r.Gateway))...)
+}
+
+// bypassArgs builds the host route along r.
+//
+// It says onlink when the gateway is not inside a prefix of the device it is
+// reached on. `ip route get` follows the onlink flag of the route it found but
+// does not print it, so a gateway outside the interface's subnet — ordinary in
+// routed segments, where the whole LAN goes through a router — comes back
+// looking like a neighbour, and `ip route replace … via` then refuses it with
+// "Nexthop has invalid gateway". The gateway is the kernel's own answer to
+// "how do I reach this host", so there is nothing left for it to validate.
+func bypassArgs(host netip.Addr, r routeGet, gatewayOnLink bool) []string {
 	args := []string{"ip", "route", "replace", host.String() + "/" + strconv.Itoa(host.BitLen()), "dev", r.Dev}
-	if r.Gateway != "" {
-		args = append(args, "via", r.Gateway)
+	if r.Gateway == "" {
+		return args
 	}
-	return run(ctx, args...)
+	args = append(args, "via", r.Gateway)
+	if !gatewayOnLink {
+		args = append(args, "onlink")
+	}
+	return args
+}
+
+// onLink: gw lies in one of the prefixes dev carries, so the kernel takes it
+// for a neighbour by itself. A device whose addresses cannot be read counts as
+// not on-link: onlink then says what the route the kernel chose already means.
+func onLink(dev, gw string) bool {
+	addr, err := netip.ParseAddr(gw)
+	if err != nil {
+		return false
+	}
+	iface, err := net.InterfaceByName(dev)
+	if err != nil {
+		return false
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ipn.IP)
+		if !ok {
+			continue
+		}
+		ones, _ := ipn.Mask.Size()
+		if netip.PrefixFrom(ip.Unmap(), ones).Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // linuxDefaultRoute picks the default route with the lowest metric from

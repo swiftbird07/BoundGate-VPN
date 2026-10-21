@@ -969,11 +969,18 @@ func (n *Node) confirmPin(ctx context.Context, acceptPin string) error {
 		n.log.Warn("control plane key pinned as accepted at enrollment", "control", n.cfg.ControlAddr, "fingerprint", h.Fingerprint())
 		return fp.Accept(h)
 	}
-	// look at the key: the handshake stops at it, nothing of ours is sent
+	// Look at the key: the handshake stops at it, nothing of ours is sent.
+	// Reconnect first, because a key is only presented in a handshake: over a
+	// connection the snapshot loop established earlier there is nothing to
+	// learn, and the probe would come back with an answer and no key.
+	n.control.Reconnect()
 	_, probeErr := n.control.EnrollStatus(ctx)
 	h, seen := fp.Seen()
 	if !seen {
-		return fmt.Errorf("node: control plane not reachable: %w", probeErr)
+		if probeErr != nil {
+			return fmt.Errorf("node: the control plane %s did not answer: %w", n.cfg.ControlAddr, probeErr)
+		}
+		return fmt.Errorf("node: the control plane %s answered but presented no certificate to pin", n.cfg.ControlAddr)
 	}
 	if acceptPin == AcceptNewPin {
 		n.log.Warn("control plane key pinned on first use, unseen by a person", "control", n.cfg.ControlAddr, "fingerprint", h.Fingerprint())
