@@ -72,6 +72,8 @@ write_new() {
 # the user the control plane (and lego) run as in the all-in-one kit; nodes and
 # the hub run as root, but without CAP_DAC_OVERRIDE, so root must own their files
 CONTROL_UID=65532
+# the node's worker under privilege separation (privsep.user in node.yaml)
+WORKER_UID=65531
 # own UID DIR...: hands directories (relative to the kit directory) to UID. As
 # root with chown; otherwise with the kit's image, since whoever may use docker
 # may do that anyway
@@ -83,6 +85,73 @@ own() {
   docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH -v "$DIR:/kit" -w /kit --entrypoint chown "$img" -R "$u:$u" "$@" \
     || die "cannot hand $* to user $u (run this as root, or: sudo chown -R $u:$u $*)"
 }
+# identity_question: a node that is set up a second time usually wants one
+# thing the questions above do not offer - a new device key. Changing
+# key_kind is the common reason (a TPM that was forgotten), a revoked node
+# the other. Never by deleting the state directory: under a running daemon
+# that leaves the process writing into an unlinked directory.
+identity_question() {
+  [ "$KIND" = 2 ] || return 0
+  kind=
+  for f in device.tpm device.sekey device.key; do
+    [ -e "state/$f" ] || continue
+    case $f in
+      device.tpm) kind="in this machine's TPM" ;;
+      device.sekey) kind="in the Secure Enclave" ;;
+      device.key) kind="a software key in state/device.key" ;;
+    esac
+    break
+  done
+  [ -n "$kind" ] || return 0
+  say ""
+  say "This node already has an identity: $kind."
+  say "A new one means enrolling again, an administrator approving it again, and revoking"
+  say "the old node in the admin UI. Say no if you only want to change the configuration."
+  confirm "Give this node a new identity?" n || return 0
+  docker compose up -d node >/dev/null 2>&1 || true
+  if ! docker compose exec -T node boundgatectl down >/dev/null 2>&1; then
+    say "   the node does not answer at its socket. Start it, then:"
+    say "     cd $DIR && docker compose exec node boundgatectl down && docker compose exec node boundgatectl reset -new-identity"
+    return 0
+  fi
+  docker compose exec -T node boundgatectl reset -new-identity >/dev/null \
+    || die "the node did not give up its identity (run the command by hand to see why: docker compose exec node boundgatectl reset -new-identity)"
+  NEW_IDENTITY=1
+  say "   done; the node opens a new key as soon as its service is back"
+}
+
+# system_users UID...: offer to give the uids the containers run as a name on
+# this host. They exist only as numbers otherwise, which makes `ls -l` in the
+# kit unreadable and leaves the uid free for another service later. A user
+# that *operates* the stack is deliberately not offered: it would need the
+# docker group, which is root on this host anyway (docs/DEPLOY.md).
+system_users() {
+  [ "$(id -u)" = 0 ] || return 0
+  command -v useradd >/dev/null 2>&1 || command -v adduser >/dev/null 2>&1 || return 0
+  need=
+  for u in "$@"; do
+    id -u "$u" >/dev/null 2>&1 || need="$need $u"
+  done
+  [ -n "$need" ] || return 0
+  say ""
+  say "The containers run as unprivileged accounts that exist only as numbers here:$need."
+  confirm "Create system users for them (no home directory, no login shell)?" y || return 0
+  for u in $need; do
+    name=boundgate
+    [ "$u" = 65531 ] && name=boundgate-node
+    [ "$u" = 65532 ] && name=boundgate-control
+    if id -u "$name" >/dev/null 2>&1; then say "   kept    user $name"; continue; fi
+    if command -v useradd >/dev/null 2>&1; then
+      useradd --system --no-create-home --shell /usr/sbin/nologin --uid "$u" "$name" 2>/dev/null \
+        || { say "   could not create $name (uid $u); the numbers stay"; continue; }
+    else
+      adduser --system --no-create-home --shell /usr/sbin/nologin --uid "$u" --disabled-login "$name" >/dev/null 2>&1 \
+        || { say "   could not create $name (uid $u); the numbers stay"; continue; }
+    fi
+    say "   wrote   user $name (uid $u)"
+  done
+}
+
 # kit PATH-IN-deploy/prod: downloads to $GOT. Not in a pipeline: a failed download must stop everything
 kit() {
   GOT=$TMPD/$(basename "$1")
@@ -115,12 +184,15 @@ main() {
   ask DIR "Directory for the configuration and state" /opt/boundgate '^/[A-Za-z0-9._/-]+$' "an absolute path without spaces"
   mkdir -p "$DIR" || die "cannot create $DIR"
   cd "$DIR"
+  # what the questions below may set (set -u: next_steps reads them)
+  NEW_IDENTITY=; PROFILE=; PROFILES_DIR=
   if [ -e docker-compose.yml ]; then
     confirm "There is a setup in $DIR already. Existing files are kept, missing ones written. Continue?" n || exit 0
   fi
   TPM=softkey
   if [ -e /dev/tpmrm0 ] && confirm "This machine has a TPM. Keep the node's device key in it? (the key then cannot be copied off this machine)" y; then TPM=tpm2; fi
   tpm_device() { if [ $TPM = tpm2 ]; then sed 's|^      # - /dev/tpmrm0:/dev/tpmrm0|      - /dev/tpmrm0:/dev/tpmrm0|'; else cat; fi; }
+  identity_question
 
   if [ "$KIND" = 1 ]; then setup_control; else setup_node; fi
 
@@ -158,9 +230,11 @@ main() {
   # their directories must belong to the user each one runs as
   HAVE_SECRET=; [ ! -s state/control/oidc.secret ] || HAVE_SECRET=1
   if [ "$KIND" = 1 ]; then
+    system_users "$CONTROL_UID" "$WORKER_UID"
     own "$CONTROL_UID" state/control state/certs logs/control
     own 0 state/hub logs/hub
   else
+    system_users "$WORKER_UID"
     own 0 state logs
   fi
 
@@ -229,8 +303,38 @@ listen: \":443\"
 public_addr: \"$PUBLIC:443\"" ;;
     4) EXTRA="roles: [endpoint]" ;;
   esac
+  # Which of the networks the hubs advertise this machine routes. A server
+  # that takes an exit node's 0.0.0.0/0 loses its own internet, its other
+  # VPNs and everything outside the overlay, and a subnet router must not
+  # take a route for the network it announces itself (docs/PROFILES.md).
   say ""
-  kit node/docker-compose.yml; tpm_device < "$GOT" | write_new docker-compose.yml
+  say "  1  only the private networks the overlay offers; this machine keeps its own internet"
+  say "  2  everything the hubs advertise, an exit node's default route included"
+  say "  3  only the internet through an exit node, none of the LANs"
+  say "  4  only the networks you name"
+  ask ROUTING "What should this machine route through the overlay?" 1 '^[1-4]$' "1 to 4"
+  PROFILE=lan-only; PROFILES_DIR=
+  case "$ROUTING" in
+    2) PROFILE=full
+       say "   note: this takes over the machine's default route. A server behind a port forward"
+       say "   also needs reply_via_arrival in node.yaml (docs/ARRIVAL.md)" ;;
+    3) PROFILE=wan-only ;;
+    4) PROFILE=site; PROFILES_DIR=/etc/boundgate/profiles
+       NETS=
+       while :; do
+         ask NET "Network to route through the overlay (CIDR; empty when done)" "" "(^\$)|$CIDR_RE" "like 10.20.0.0/16, or nothing to finish"
+         [ -n "$NET" ] || break
+         NETS="$NETS    - $NET
+"
+       done
+       [ -n "$NETS" ] || die "a profile of your own needs at least one network"
+       mkdir -p profiles
+       printf 'name: site\nrouting:\n  mode: include\n  networks:\n%s' "$NETS" | write_new profiles/site.yaml ;;
+  esac
+  profile_mount() { if [ -n "$PROFILES_DIR" ]; then sed 's|^      # - ./profiles:/etc/boundgate/profiles:ro|      - ./profiles:/etc/boundgate/profiles:ro|'; else cat; fi; }
+
+  say ""
+  kit node/docker-compose.yml; tpm_device < "$GOT" | profile_mount | write_new docker-compose.yml
   write_new node.yaml <<EOF
 # Written by setup.sh. Every setting: deploy/prod/node/node.yaml.example, docs/DEPLOY.md
 name: $NODE
@@ -244,7 +348,8 @@ privsep:                           # the node runs as this user; the key and the
 # requested here, granted by the admin at approval
 $EXTRA
 auto_up: true
-profile: full                      # a server should not follow an exit node's default route: docs/PROFILES.md
+profile: $PROFILE                  # which of the advertised networks this machine routes: docs/PROFILES.md${PROFILES_DIR:+
+profiles_dir: $PROFILES_DIR        # mounted read-only in docker-compose.yml}
 socket: /run/boundgate/node.sock
 tun_name: bg0
 log_dir: /var/log/boundgate
@@ -271,7 +376,10 @@ next_steps() {
   else
     say "  * enroll:  cd $DIR && docker compose exec node boundgatectl enroll"
     say "    compare the fingerprint with the admin UI of https://$NAME, confirm the node with its role and sign it."
+    [ -z "$NEW_IDENTITY" ] || say "    this node gave up its old identity: revoke the old node in the admin UI."
     say "  * status:  docker compose exec node boundgatectl status"
+    say "  * routing: profile $PROFILE; see it with   docker compose exec node boundgatectl status   (routes, not routed)"
+    [ -z "$PROFILES_DIR" ] || say "    the profile is $DIR/profiles/site.yaml; change it and run: docker compose exec node boundgatectl up -profile site"
     say "  * back up $DIR/state: it is this node's identity."
   fi
   if [ "$UPD" = 1 ]; then say "  * updates: cd $DIR && ./update.sh   (check: ./update.sh check)"

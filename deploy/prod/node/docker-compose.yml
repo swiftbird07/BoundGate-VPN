@@ -41,6 +41,9 @@ services:
       # - /dev/tpmrm0:/dev/tpmrm0
     volumes:
       - ./node.yaml:/etc/boundgate/node.yaml:ro
+      # routing profiles (docs/PROFILES.md); the path must be the one
+      # profiles_dir names, which is a path inside the container
+      # - ./profiles:/etc/boundgate/profiles:ro
       - ./state:/var/lib/boundgate             # the device identity: losing it means re-enrolling
       - ./logs:/var/log/boundgate
     command: ["boundgate-node", "-config", "/etc/boundgate/node.yaml"]

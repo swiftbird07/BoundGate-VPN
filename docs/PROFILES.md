@@ -33,7 +33,13 @@ through the hub, where the policies decide about it: what no policy permits
 is denied, and with the default route gone through the tunnel the machine
 loses its own internet, its other VPNs and everything not in the overlay.
 That is why `deploy/prod/node/node.yaml.example` says a server needs an
-`include` profile.
+`include` profile, and why `setup.sh` asks which networks a node should route
+and writes `lan-only` unless something else is chosen.
+
+A node never routes a network it announces itself, whatever the profile says:
+it reaches that network on its own, and a route through a hub would send its
+own traffic for it back into the tunnel (R138). Such a network stands under
+`not routed` in the status, next to the overlaps.
 
 An iPhone with `full` takes the exit node's default route and then resolves
 names only through the resolvers the hub offers (hub option `dns`). Without

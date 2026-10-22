@@ -31,7 +31,30 @@ the OIDC application, and how the server is to be updated; it writes the kit
 described below into a directory (`/opt/boundgate`), with the files of the
 latest release, and starts it. It keeps every file that already exists, so it
 can be run again, and it touches nothing outside that directory except, if
-you agree, `/etc/cron.d/boundgate-update`. To read it first: download it
+you agree, `/etc/cron.d/boundgate-update` and the system accounts below.
+
+For a node it also asks:
+
+* **Which networks this machine routes** through the overlay —
+  `lan-only` (the default: the private networks the overlay offers, and the
+  machine keeps its own internet), `full` (everything, an exit node's default
+  route included, which takes over the machine's default route), `wan-only`,
+  or networks you name. The last writes `profiles/site.yaml`, names it in
+  `node.yaml` and mounts it read-only into the container
+  ([PROFILES.md](PROFILES.md)).
+* **A new identity**, when the directory already holds a node with a device
+  key — the usual reason being a `key_kind` that changed. It has the daemon
+  do it (`boundgatectl down`, then `reset -new-identity`) and never deletes
+  the state directory: under a running daemon that leaves the process writing
+  into an unlinked directory. Enrolling and an administrator's approval
+  follow, and the old node wants revoking in the admin UI.
+* **System accounts for the uids the containers run as** (65532 for the
+  control plane, 65531 for the node's privsep worker), without a home
+  directory or a login shell. They exist only as numbers otherwise, which
+  makes `ls -l` in the kit unreadable and leaves the uid free for another
+  service later. A user that *operates* the stack is deliberately not
+  offered: it would need the `docker` group, which is equivalent to root on
+  this host, so it would buy no isolation. To read it first: download it
 (`curl -fsSLO …/setup.sh`), then `sh setup.sh`. The rest of this page is what
 it does, by hand, and the layouts it does not ask about (a reverse proxy in
 front, two addresses, certificates by DNS challenge). Tested by

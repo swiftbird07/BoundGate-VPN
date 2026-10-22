@@ -52,23 +52,66 @@ grep -q '^# mine$' "$D/control.yaml" && grep -q 'vpn.example.org' "$D/hub.yaml" 
 
 echo "== 3. a subnet router following the tag latest, not started"
 D=$T/router; : > "$T/log"
-run 2 "$D" router7 vpn.example.org 1 10.20.30.0/24 routed 2 n || { cat "$T/out"; fail "node setup failed"; }
+run 2 "$D" router7 vpn.example.org 1 10.20.30.0/24 routed 1 2 n || { cat "$T/out"; fail "node setup failed"; }
 grep -q '^name: router7$' "$D/node.yaml" && grep -q '^  server_name: nodes.vpn.example.org$' "$D/node.yaml" && grep -q '^roles: \[subnet-router\]$' "$D/node.yaml" \
   && grep -q '^  - {prefix: 10.20.30.0/24, mode: routed}$' "$D/node.yaml" || fail "node.yaml: $(cat "$D/node.yaml")"
+# a server does not take an exit node's default route unless it is asked for
+grep -q '^profile: lan-only ' "$D/node.yaml" && ! grep -q '^profiles_dir' "$D/node.yaml" || fail "routing: $(grep -n 'profile' "$D/node.yaml")"
+! grep -q '^      - ./profiles:' "$D/docker-compose.yml" || fail "the profiles mount was enabled without a profile of its own"
 grep -q '^BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:latest$' "$D/.env" && ! grep -q 'COMPOSE_PROFILES' "$D/.env" || fail ".env: $(cat "$D/.env")"
 [ "$(cat "$T/log")" = "docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH -v $D:/kit -w /kit --entrypoint chown ghcr.io/swiftbird07/boundgate:latest -R 0:0 state logs" ] \
   || fail "something other than the ownership was done: $(cat "$T/log")"
 grep -q 'docker compose pull && docker compose up -d' "$T/out" || fail "next steps"
 
 echo "== 4. the other roles; answers that make no sense are asked again"
-D=$T/hub2; run 2 "$D" 'bad name!' hub2 'not a host' vpn.example.org 9 3 hub2.example.org 2 n || { cat "$T/out"; fail "hub"; }
+D=$T/hub2; run 2 "$D" 'bad name!' hub2 'not a host' vpn.example.org 9 3 hub2.example.org 1 2 n || { cat "$T/out"; fail "hub"; }
 grep -q '^name: hub2$' "$D/node.yaml" && grep -q '^roles: \[hub\]$' "$D/node.yaml" && grep -q '^listen: ":443"$' "$D/node.yaml" && grep -q '^public_addr: "hub2.example.org:443"$' "$D/node.yaml" || fail "hub node.yaml"
-D=$T/exit; run 2 "$D" exit1 vpn.example.org 2 2 n; grep -q '^roles: \[exit-node\]$' "$D/node.yaml" && grep -q 'prefix: 0.0.0.0/0, mode: snat' "$D/node.yaml" || fail "exit node"
-D=$T/wl; run 2 "$D" db1 vpn.example.org 4 2 n; grep -q '^roles: \[endpoint\]$' "$D/node.yaml" && ! grep -q '^prefixes' "$D/node.yaml" || fail "endpoint"
+D=$T/exit; run 2 "$D" exit1 vpn.example.org 2 2 2 n; grep -q '^roles: \[exit-node\]$' "$D/node.yaml" && grep -q 'prefix: 0.0.0.0/0, mode: snat' "$D/node.yaml" || fail "exit node"
+grep -q '^profile: full ' "$D/node.yaml" || fail "the profile that was asked for: $(grep -n 'profile' "$D/node.yaml")"
+grep -q 'reply_via_arrival' "$T/out" || fail "full without the note about the default route: $(cat "$T/out")"
+D=$T/wl; run 2 "$D" db1 vpn.example.org 4 4 10.20.0.0/16 192.168.5.0/24 '' 2 n; grep -q '^roles: \[endpoint\]$' "$D/node.yaml" && ! grep -q '^prefixes' "$D/node.yaml" || fail "endpoint"
+# a profile of one's own: the file, the path inside the container, the mount
+grep -q '^profile: site ' "$D/node.yaml" && grep -q '^profiles_dir: /etc/boundgate/profiles' "$D/node.yaml" || fail "routing: $(grep -n 'profile' "$D/node.yaml")"
+grep -q '^      - ./profiles:/etc/boundgate/profiles:ro$' "$D/docker-compose.yml" || fail "the profiles mount is not enabled: $(grep -n profiles "$D/docker-compose.yml")"
+printf 'name: site\nrouting:\n  mode: include\n  networks:\n    - 10.20.0.0/16\n    - 192.168.5.0/24\n' | cmp -s - "$D/profiles/site.yaml" || fail "the profile written: $(cat "$D/profiles/site.yaml")"
+
+echo "== 4b. a node that is set up again may give up its identity, through the daemon, never with rm"
+D=$T/again; run 2 "$D" db2 vpn.example.org 4 1 2 n
+mkdir -p "$D/state"; : > "$D/state/device.key"; : > "$T/log"
+# declined: nothing is asked of the daemon and the key stays
+run 2 "$D" y n db2 vpn.example.org 4 1 2 n || { cat "$T/out"; fail "second run over a node"; }
+grep -q 'This node already has an identity: a software key' "$T/out" || fail "the identity question did not come: $(cat "$T/out")"
+! grep -q 'boundgatectl' "$T/log" || fail "a declined reset still asked the daemon: $(cat "$T/log")"
+[ -e "$D/state/device.key" ] || fail "a declined reset deleted the key"
+# accepted: down, then reset -new-identity; the script never removes files itself
+: > "$T/log"; run 2 "$D" y y db2 vpn.example.org 4 1 2 n || { cat "$T/out"; fail "second run with a new identity" ; }
+grep -q 'docker compose exec -T node boundgatectl down' "$T/log" || fail "no down before the reset: $(cat "$T/log")"
+grep -q 'docker compose exec -T node boundgatectl reset -new-identity' "$T/log" || fail "no reset: $(cat "$T/log")"
+grep -q 'revoke the old node in the admin UI' "$T/out" || fail "the next steps do not mention the old node: $(cat "$T/out")"
+[ -e "$D/state/device.key" ] || fail "setup.sh deleted a key file itself"
+
+echo "== 4c. the uids the containers run as can get a name on the host"
+mkdir -p "$T/root"
+printf '#!/bin/sh\n[ "$1" = -u ] && [ $# = 1 ] && { echo 0; exit 0; }\nexit 1\n' > "$T/root/id"
+printf '#!/bin/sh\necho "useradd $*" >> "%s/log"\n' "$T" > "$T/root/useradd"
+# as root the script chowns directly; here it only has to be recorded
+printf '#!/bin/sh\necho "chown $*" >> "%s/log"\n' "$T" > "$T/root/chown"
+chmod +x "$T/root/id" "$T/root/useradd" "$T/root/chown"
+D=$T/named; : > "$T/log"
+printf '%s\n' 2 "$D" db3 vpn.example.org 4 1 2 y n > "$T/answers"
+PATH="$T/root:$T/bin:$PATH" BOUNDGATE_REF=vtest BOUNDGATE_KIT_URL="file://$T/kit" BOUNDGATE_SETUP_INPUT="$T/answers" sh "$SRC/deploy/prod/setup.sh" > "$T/out" 2>&1 \
+  || { cat "$T/out"; fail "node setup as root"; }
+grep -q 'useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65531 boundgate-node' "$T/log" || fail "no system user for the worker: $(cat "$T/log")"
+! grep -q 'useradd .* 65532' "$T/log" || fail "a node got the control plane's user: $(cat "$T/log")"
+# declined, and the numbers stay
+: > "$T/log"; printf '%s\n' 2 "$T/numbers" db4 vpn.example.org 4 1 2 n n > "$T/answers"
+PATH="$T/root:$T/bin:$PATH" BOUNDGATE_REF=vtest BOUNDGATE_KIT_URL="file://$T/kit" BOUNDGATE_SETUP_INPUT="$T/answers" sh "$SRC/deploy/prod/setup.sh" > "$T/out" 2>&1 \
+  || { cat "$T/out"; fail "node setup as root, users declined" ; }
+! grep -q useradd "$T/log" || fail "a declined question still created a user: $(cat "$T/log")"
 
 echo "== 5. stops before writing anything: a download that fails, answers that run out"
 rm "$T/kit/node/docker-compose.yml"; D=$T/broken
-if run 2 "$D" n1 vpn.example.org 4 2 n; then fail "went on without the compose file"; fi
+if run 2 "$D" n1 vpn.example.org 4 1 2 n; then fail "went on without the compose file"; fi
 [ ! -e "$D/node.yaml" ] && [ ! -e "$D/docker-compose.yml" ] || fail "a failed download left files"
 if run 1 "$T/short" vpn.example.org; then fail "went on without answers"; fi
 echo "PASS: setup.sh"
