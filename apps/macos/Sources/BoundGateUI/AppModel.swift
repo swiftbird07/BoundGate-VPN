@@ -32,6 +32,10 @@ public final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(profile, forKey: "profile") }
     }
     @Published public var loginInProgress = false
+    /// The meshes this device belongs to and which one runs
+    /// (docs/NETWORKS.md). A daemon with a single network answers with that
+    /// one and says why there can be no other.
+    @Published public var networks = NetworkList()
     /// what goes through the tunnels right now, from two readings of the daemon's counters
     @Published public var rate: Traffic.Rate?
     private var lastTraffic: Traffic.Reading?
@@ -110,6 +114,7 @@ public final class AppModel: ObservableObject {
             let svc = installer.state()
             let result = Result { try client.status() }
             let names = (try? client.profiles()) ?? []
+            let nets = try? client.networks()
             await MainActor.run {
                 self.service = svc
                 switch result {
@@ -120,6 +125,7 @@ public final class AppModel: ObservableObject {
                 self.rate = Traffic.rate(from: self.lastTraffic, to: now)
                 self.lastTraffic = now
                 if !names.isEmpty || self.status != nil { self.profiles = names }
+                if let nets { self.networks = nets }
                 // while connected the daemon owns the choice: it may have
                 // been changed from boundgatectl or another window
                 if let p = self.status?.profile, self.busy == nil {
@@ -303,6 +309,71 @@ public final class AppModel: ObservableObject {
         run("Switching route…") { c in _ = try c.setProfile(name) }
     }
     public func logout() { run("Signing out…") { _ = try $0.logout() } }
+
+    // MARK: networks
+
+    /// The network this node is in right now, as far as the app can tell:
+    /// what the status says, else what the list calls current.
+    public var currentNetwork: NetworkInfo? {
+        if let id = status?.networkId, let n = networks.networks.first(where: { $0.id == id }) { return n }
+        return networks.currentNetwork
+    }
+
+    /// Several meshes to choose between -- below that the picker shows
+    /// profiles alone, as it always did.
+    public var hasSeveralNetworks: Bool { networks.networks.count > 1 }
+
+    /// Switch to another mesh, coming up in `profile`. The daemon brings
+    /// this network down first, then starts the other one: its routes are
+    /// gone before the other's appear (R143). The socket goes away for a
+    /// moment while that happens, which the polling simply waits out.
+    public func selectNetwork(_ id: String, profile: String? = nil) {
+        guard id != currentNetwork?.id || status?.state == "unconfigured" else {
+            if let profile { setProfile(profile) }
+            return
+        }
+        let label = networks.networks.first { $0.id == id }?.label ?? id
+        let wanted = profile ?? (self.profile.isEmpty ? nil : self.profile)
+        run("Switching to \(label)…") { c in
+            _ = try? c.down()
+            try c.selectNetwork(id, profile: wanted)
+            // the daemon restarts its socket with the other network; wait
+            // for it so the panel does not flash "service not running"
+            for _ in 0..<40 {
+                Thread.sleep(forTimeInterval: 0.5)
+                if let s = try? c.status(), s.networkId == id || s.state == "unconfigured" { return }
+            }
+        }
+    }
+
+    /// Add a mesh: its own device key, so it enrolls and is approved on its
+    /// own. With `select` the daemon switches to it right away.
+    public func addNetwork(name: String, control: String, select: Bool = true) {
+        run("Adding \(name.isEmpty ? control : name)…") { c in
+            if select { _ = try? c.down() }
+            let n = try c.addNetwork(NewNetwork(name: name, controlAddr: control, select: select))
+            guard select else { return }
+            for _ in 0..<40 {
+                Thread.sleep(forTimeInterval: 0.5)
+                if let s = try? c.status(), s.networkId == n.id || s.state == "unconfigured" { return }
+            }
+        }
+    }
+
+    /// Give up a network: its pinned control plane, its enrollment and, for
+    /// a network with a state directory of its own, its device key. The node
+    /// should be revoked in that network's admin UI afterwards.
+    public func removeNetwork(_ id: String) {
+        let label = networks.networks.first { $0.id == id }?.label ?? id
+        run("Removing \(label)…") { c in
+            _ = try? c.down()
+            try c.removeNetwork(id)
+            for _ in 0..<40 {
+                Thread.sleep(forTimeInterval: 0.5)
+                if let s = try? c.status(), s.networkId != id { return }
+            }
+        }
+    }
 
     public func connect() {
         let profile = self.profile

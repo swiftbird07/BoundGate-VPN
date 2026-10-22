@@ -60,6 +60,14 @@ type Networks struct {
 	List    []Network `json:"networks"`
 }
 
+// Label is what to show: its name, or the address it was never named after.
+func (n Network) Label() string {
+	if n.Name != "" {
+		return n.Name
+	}
+	return n.ControlAddr
+}
+
 // Settings of this network, as the daemon runs it.
 func (n Network) Settings() Settings {
 	return Settings{ControlAddr: n.ControlAddr, ControlServerName: n.ControlServerName, Name: n.NodeName}

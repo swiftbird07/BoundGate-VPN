@@ -14,6 +14,7 @@ import (
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 )
 
 // ErrNoAccess is what the tray reports when the service answers but its
@@ -185,6 +186,81 @@ func ProfileLabel(name string) string {
 		return "WAN only"
 	}
 	return name
+}
+
+// builtinProfiles are the profiles every daemon has
+// (internal/node/profile). A profile from a file is only known where its
+// file lies, so a network that is not running is offered these.
+var builtinProfiles = []string{"full", "lan-only", "wan-only"}
+
+// RouteChoice is one entry of the route picker: a profile, in a network.
+// With a single network the network fields are empty and the picker is what
+// it always was.
+type RouteChoice struct {
+	// Network is the id to switch to, empty for the network that runs.
+	Network      string
+	NetworkLabel string
+	Profile      string
+	// Label is the profile as a person reads it; Title adds the network, for
+	// a flat menu that cannot group.
+	Label string
+	Title string
+	// On: the profile in effect, in the network that runs.
+	On bool
+}
+
+// RouteChoices is the picker behind "Route" (one network) or "Network"
+// (several, docs/NETWORKS.md): the profiles of the network that runs, and
+// the built-ins of every other network, which the daemon comes up in after
+// the switch. Nothing to choose from (one profile, one network) returns nil.
+func RouteChoices(st *node.Status, profiles []string, nets ipc.NetworkList) []RouteChoice {
+	current := ""
+	if st != nil {
+		current = st.Profile
+		if current == "" {
+			current = "full" // the node's default
+		}
+	}
+	here := ""
+	if st != nil {
+		here = st.NetworkID
+	}
+	if len(nets.Networks) < 2 {
+		if len(profiles) < 2 {
+			return nil
+		}
+		out := make([]RouteChoice, 0, len(profiles))
+		for _, p := range profiles {
+			out = append(out, RouteChoice{Profile: p, Label: ProfileLabel(p), Title: ProfileLabel(p), On: p == current})
+		}
+		return out
+	}
+	var out []RouteChoice
+	for _, n := range nets.Networks {
+		mine := n.ID == here
+		names := builtinProfiles
+		if mine && len(profiles) > 0 {
+			names = profiles
+		}
+		for _, p := range names {
+			c := RouteChoice{NetworkLabel: n.Label(), Profile: p, Label: ProfileLabel(p),
+				Title: n.Label() + " · " + ProfileLabel(p), On: mine && p == current}
+			if !mine {
+				c.Network = n.ID
+			}
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Action is what a click on this choice asks of the daemon: the profile of
+// the network that runs, or a switch to another network.
+func (c RouteChoice) Action() string {
+	if c.Network == "" {
+		return ActProfile + c.Profile
+	}
+	return ActNetwork + c.Network + "|" + c.Profile
 }
 
 // Tooltip is the text on hover; Windows cuts it at 127 characters.

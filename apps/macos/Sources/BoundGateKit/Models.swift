@@ -116,8 +116,67 @@ public struct NodeStatus: Codable, Equatable, Sendable {
     public var policies: Int?
     public var flows: Int?
     public var flowsDenied: Int?
+    /// Which mesh this node belongs to, when the daemon knows several
+    /// (docs/NETWORKS.md); nil with a single network.
+    public var networkId: String?
+    public var networkName: String?
 
     public init(state: String) { self.state = state }
+}
+
+/// One mesh this device belongs to (GET /v1/networks, docs/NETWORKS.md).
+public struct NetworkInfo: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var controlAddr: String
+    public var controlServerName: String?
+    public var nodeName: String?
+    /// its state directory, relative to the daemon's state root; empty for
+    /// the network that owns the root
+    public var dir: String?
+    /// what its control plane said last: a network that is not running has
+    /// no control channel to ask
+    public var lastEnrollment: String?
+
+    public init(id: String, name: String, controlAddr: String, lastEnrollment: String? = nil) {
+        self.id = id; self.name = name; self.controlAddr = controlAddr; self.lastEnrollment = lastEnrollment
+    }
+
+    /// what to show: the name, or the address it was never named after
+    public var label: String { name.isEmpty ? controlAddr : name }
+}
+
+/// The daemon's networks and which one runs.
+public struct NetworkList: Codable, Equatable, Sendable {
+    public var current: String
+    public var networks: [NetworkInfo]
+    /// Set when this daemon holds the one network it was given, and says
+    /// why (a configuration file, privilege separation, a packet tunnel).
+    public var single: String?
+
+    public init(current: String = "", networks: [NetworkInfo] = [], single: String? = nil) {
+        self.current = current; self.networks = networks; self.single = single
+    }
+
+    public var currentNetwork: NetworkInfo? { networks.first { $0.id == current } }
+    /// whether this daemon can be given another network at all
+    public var canAdd: Bool { single == nil || single!.isEmpty }
+}
+
+/// A network to add (POST /v1/networks).
+public struct NewNetwork: Codable, Sendable {
+    public var name: String
+    public var controlAddr: String
+    public var controlServerName: String?
+    public var nodeName: String?
+    /// switch to it as soon as it is stored, coming up in `profile`
+    public var select: Bool
+    public var profile: String?
+
+    public init(name: String, controlAddr: String, controlServerName: String? = nil, nodeName: String? = nil, select: Bool = false, profile: String? = nil) {
+        self.name = name; self.controlAddr = controlAddr; self.controlServerName = controlServerName
+        self.nodeName = nodeName; self.select = select; self.profile = profile
+    }
 }
 
 public struct EnrollStatus: Codable, Sendable {

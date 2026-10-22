@@ -137,6 +137,17 @@ another one. While the node is up the daemon only changes the kernel routes,
 the tunnel stays ([PROFILES.md](PROFILES.md)); while it is down the choice is
 remembered for the next connection.
 
+With more than one network ([NETWORKS.md](NETWORKS.md)) that row becomes the
+one picker for both questions: it says "Network", shows "Work · Full", and
+its menu has a section per network with that network's profiles. A profile of
+the network in use is applied live; a profile of another network switches the
+network -- the daemon takes this one down, which takes its routes with it,
+and comes up in the other one, in the profile that was picked. The header
+shows the network's name under the wordmark while there are several. The gear
+menu then offers "Add network…" -- a name and the address of its control
+plane, where this Mac gets a device key of its own, enrolls and has to be
+approved -- and "Remove <network>…" in place of "Forget this control plane…".
+
 When the phase turns to "sign in required" (the user session ended, 24 h by
 default; OIDC.md) the app posts a notification "Sign-in needed", once per
 occasion, and withdraws it once a hub is connected again. It asks for the
@@ -159,7 +170,7 @@ yellow as fill and marker, orange for warnings.
 
 | | |
 |---|---|
-| State (device key, pins, settings) | `/var/db/boundgate` (root, 0700) |
+| State (device key, pins, settings) | `/var/db/boundgate` (root, 0700); a second network in `/var/db/boundgate/networks/<id>` (NETWORKS.md) |
 | Socket | `/var/run/boundgate/node.sock` (`root:admin`, 0660) |
 | Logs | `/var/log/boundgate/*.jsonl`, launchd's stderr in `/var/log/boundgate-node.log` |
 | Profiles (optional) | `/Library/Application Support/BoundGate/profiles/*.yaml` (MACOS.md); without any, "Everything offered" |

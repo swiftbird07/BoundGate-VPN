@@ -166,7 +166,12 @@ struct FingerprintView: View {
 #if os(macOS)
 @MainActor
 enum PopupMenu {
-    enum Item { case action(String, checked: Bool = false, () -> Void), separator }
+    enum Item {
+        case action(String, checked: Bool = false, () -> Void), separator
+        /// A section title, for a menu that groups its entries (the profiles
+        /// of each network, docs/NETWORKS.md).
+        case header(String)
+    }
 
     private final class Target: NSObject {
         let run: () -> Void
@@ -180,6 +185,10 @@ enum PopupMenu {
         for item in items {
             switch item {
             case .separator: menu.addItem(.separator())
+            case .header(let title):
+                let mi = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                mi.isEnabled = false
+                menu.addItem(mi)
             case .action(let title, let checked, let run):
                 let t = Target(run); targets.append(t)
                 let mi = NSMenuItem(title: title, action: #selector(Target.fire), keyEquivalent: "")

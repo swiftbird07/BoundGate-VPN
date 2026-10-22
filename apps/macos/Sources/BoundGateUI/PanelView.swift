@@ -41,7 +41,13 @@ public struct PanelView: View {
     private var header: some View {
         HStack(spacing: 10) {
             LogoTile(size: 30)
-            Text("BoundGate").font(.display(17)).foregroundStyle(t.text)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("BoundGate").font(.display(17)).foregroundStyle(t.text)
+                // with several meshes it matters which one this is
+                if model.hasSeveralNetworks, let n = model.currentNetwork {
+                    Text(n.label).font(.body(11.5)).foregroundStyle(t.text3).lineLimit(1)
+                }
+            }
             Spacer()
             statePill
         }
@@ -81,7 +87,18 @@ public struct PanelView: View {
         var items: [PopupMenu.Item] = []
         if model.status != nil, model.status?.state != "unconfigured" {
             if model.status?.user != nil { items.append(.action("Sign out") { model.logout() }) }
-            items.append(.action("Forget this control plane…") { confirmForget() })
+            if model.networks.canAdd {
+                items.append(.action("Add network…") { askForNetwork() })
+            }
+            if model.hasSeveralNetworks, let n = model.currentNetwork {
+                items.append(.action("Remove \(n.label)…") { confirmRemove(n) })
+            } else {
+                items.append(.action("Forget this control plane…") { confirmForget() })
+            }
+            items.append(.separator)
+        }
+        if model.status?.state == "unconfigured", model.networks.canAdd, !model.networks.networks.isEmpty {
+            items.append(.action("Add network…") { askForNetwork() })
             items.append(.separator)
         }
         if model.service == .enabled || model.service == .requiresApproval {
@@ -90,6 +107,39 @@ public struct PanelView: View {
         if model.status != nil { items.append(.action("Check for Updates…") { model.checkForUpdates() }) }
         items.append(.action("Quit BoundGate") { NSApp.terminate(nil) })
         PopupMenu.show(items)
+    }
+
+    /// Another mesh: its address and what to call it. It gets a device key
+    /// of its own, so it enrolls and is approved on its own.
+    private func askForNetwork() {
+        let a = NSAlert()
+        a.messageText = "Add a network"
+        a.informativeText = "This Mac gets a device key of its own in the new network, enrolls there and has to be approved there. One network is connected at a time."
+        let name = NSTextField(frame: NSRect(x: 0, y: 30, width: 280, height: 24))
+        name.placeholderString = "Name, e.g. Work"
+        let addr = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        addr.placeholderString = "Control plane, e.g. vpn.corp.example"
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 54))
+        box.addSubview(name); box.addSubview(addr)
+        a.accessoryView = box
+        a.addButton(withTitle: "Add and switch"); a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = name
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let control = addr.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !control.isEmpty else { return }
+        model.addNetwork(name: name.stringValue.trimmingCharacters(in: .whitespaces), control: control)
+    }
+
+    private func confirmRemove(_ n: NetworkInfo) {
+        let a = NSAlert()
+        a.messageText = "Remove \(n.label)?"
+        let own = (n.dir ?? "").isEmpty
+            ? "This Mac keeps its device key for this network and can enroll there again."
+            : "Its device key goes with it: this Mac becomes a stranger to that control plane."
+        a.informativeText = "\(own) Revoke this node in that network's admin UI afterwards."
+        a.addButton(withTitle: "Remove"); a.addButton(withTitle: "Cancel")
+        a.alertStyle = .warning
+        if a.runModal() == .alertFirstButtonReturn { model.removeNetwork(n.id) }
     }
 
     private func confirmForget() {
@@ -335,29 +385,58 @@ struct ConnectionCard: View {
 /// after a notice or the details went away it stayed as tall as before, with
 /// the panel centred in it and a gap above and below. This sets the window to
 /// the panel's height, keeping its top edge under the menu bar.
-/// What this node routes. The daemon swaps the routes under a running tunnel,
-/// so the choice is the same question whether the node is up or down.
+/// What this node routes, and in which mesh. The daemon swaps the routes
+/// under a running tunnel, so the route is the same question whether the node
+/// is up or down; another network is a bigger step -- the daemon ends this
+/// node and starts the other one (docs/NETWORKS.md) -- but it is the same
+/// choice to the person: "Work, everything" instead of "Private, LAN only".
 private struct RouteRow: View {
     @ObservedObject var model: AppModel
     @Environment(\.theme) private var t
 
+    /// the profiles of a network that is not running: every daemon has the
+    /// built-ins, a profile from a file is only known where it lies
+    private static let builtIn = ["full", "lan-only", "wan-only"]
+
+    private var current: String { model.profile.isEmpty ? "full" : model.profile }
+
+    private var label: String {
+        guard model.hasSeveralNetworks, let n = model.currentNetwork else { return profileLabel(current) }
+        return "\(n.label) · \(profileLabel(current))"
+    }
+
     var body: some View {
-        if model.profiles.count > 1 {
+        if model.profiles.count > 1 || model.hasSeveralNetworks {
             HStack {
-                Text("Route").font(.body(12)).foregroundStyle(t.text2)
+                Text(model.hasSeveralNetworks ? "Network" : "Route").font(.body(12)).foregroundStyle(t.text2)
                 Spacer()
-                Button {
-                    // "" is the node's default, which is full
-                    let current = model.profile.isEmpty ? "full" : model.profile
-                    PopupMenu.show(model.profiles.map { p in .action(profileLabel(p), checked: current == p) { model.setProfile(p) } })
-                } label: {
+                Button { PopupMenu.show(items()) } label: {
                     HStack(spacing: 6) {
-                        Text(profileLabel(model.profile.isEmpty ? "full" : model.profile))
+                        Text(label)
                         Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
                     }
                 }.buttonStyle(BGButtonStyle()).disabled(model.busy != nil)
             }
         }
+    }
+
+    private func items() -> [PopupMenu.Item] {
+        guard model.hasSeveralNetworks else {
+            return model.profiles.map { p in .action(profileLabel(p), checked: current == p) { model.setProfile(p) } }
+        }
+        let here = model.currentNetwork?.id
+        var items: [PopupMenu.Item] = []
+        for (i, n) in model.networks.networks.enumerated() {
+            if i > 0 { items.append(.separator) }
+            items.append(.header(n.label))
+            let mine = n.id == here
+            for p in mine ? model.profiles : Self.builtIn {
+                items.append(.action("   " + profileLabel(p), checked: mine && current == p) {
+                    if mine { model.setProfile(p) } else { model.selectNetwork(n.id, profile: p) }
+                })
+            }
+        }
+        return items
     }
 }
 

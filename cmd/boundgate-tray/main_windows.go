@@ -29,7 +29,9 @@ import (
 )
 
 const (
-	maxProfiles = 8
+	// the route picker: the profiles of the network that runs plus the
+	// built-ins of every other network it belongs to (docs/NETWORKS.md)
+	maxProfiles = 16
 	maxDetails  = 20
 	idYes       = 6 // MessageBox answer
 )
@@ -60,6 +62,7 @@ type app struct {
 	title, detail                        *systray.MenuItem
 	connect, disconnect, signIn, signOut *systray.MenuItem
 	enroll, setup, profileMenu           *systray.MenuItem
+	addNet                               *systray.MenuItem
 	details, copyFP                      *systray.MenuItem
 	profiles                             [maxProfiles]*systray.MenuItem
 	detailLines                          [maxDetails]*systray.MenuItem
@@ -69,6 +72,9 @@ type app struct {
 	actionErr string // the last action's failure, shown in the panel
 	status    *node.Status
 	names     []string
+	nets      ipc.NetworkList
+	// routes is the picker as the menu shows it, in the order of the items
+	routes    []tray.RouteChoice
 	last      tray.Reading
 	lastPhase tray.Phase
 	phaseSeen bool
@@ -96,12 +102,13 @@ func (a *app) ready() {
 	a.signIn = systray.AddMenuItem("Sign in…", "Sign in with your organization's account in the browser")
 	a.signOut = systray.AddMenuItem("Sign out", "End the user session on this device")
 	a.setup = systray.AddMenuItem("Set up…", "Enter your organization's control plane")
+	a.addNet = systray.AddMenuItem("Add network…", "Another mesh this PC belongs to; it gets a device key of its own")
 	a.enroll = systray.AddMenuItem("Request access…", "Enroll this device with the control plane")
 	a.profileMenu = systray.AddMenuItem("Profile", "Which networks go through BoundGate")
 	for i := range a.profiles {
 		a.profiles[i] = a.profileMenu.AddSubMenuItemCheckbox("", "", false)
 		a.profiles[i].Hide()
-		go a.onClick(a.profiles[i].ClickedCh, func() { a.pickProfile(i) })
+		go a.onClick(a.profiles[i].ClickedCh, func() { a.pickRoute(i) })
 	}
 	systray.AddSeparator()
 	a.details = systray.AddMenuItem("Details", "Traffic, protocols, device key")
@@ -121,6 +128,7 @@ func (a *app) ready() {
 	go a.onClick(a.signOut.ClickedCh, func() { a.run("Signing out", func() error { _, err := a.client.Logout(); return err }) })
 	go a.onClick(a.enroll.ClickedCh, a.requestAccess)
 	go a.onClick(a.setup.ClickedCh, a.setUp)
+	go a.onClick(a.addNet.ClickedCh, a.addNetwork)
 	go a.onClick(a.copyFP.ClickedCh, a.copyFingerprint)
 	go a.onClick(quit.ClickedCh, systray.Quit)
 
@@ -150,14 +158,22 @@ func (a *app) refresh() {
 		err = tray.ErrNoAccess
 	}
 	var names []string
+	var nets ipc.NetworkList
 	if st != nil && st.Enrollment == "approved" {
 		names, _ = a.client.Profiles()
+	}
+	if st != nil {
+		// a daemon that holds one network answers with that one; an older
+		// one does not know the endpoint, and the picker stays as it was
+		nets, _ = a.client.Networks()
 	}
 	now := tray.ReadingOf(st, time.Now())
 
 	a.mu.Lock()
 	rate := tray.RateOf(a.last, now)
-	a.last, a.status, a.names = now, st, names
+	a.last, a.status, a.names, a.nets = now, st, names, nets
+	a.routes = tray.RouteChoices(st, names, nets)
+	routes := a.routes
 	busy, actionErr := a.busy, a.actionErr
 	phase := tray.PhaseOf(st, err)
 	askSignIn := a.phaseSeen && phase == tray.LoginRequired && a.lastPhase != tray.LoginRequired && busy == ""
@@ -185,7 +201,7 @@ func (a *app) refresh() {
 			}
 		}()
 	}
-	a.panel.update(tray.PanelInput{Status: st, Err: err, Busy: busy, Profiles: names, Rate: rate, ActionError: actionErr})
+	a.panel.update(tray.PanelInput{Status: st, Err: err, Busy: busy, Profiles: names, Networks: nets, Rate: rate, ActionError: actionErr})
 
 	v := tray.Describe(st, err)
 	light := taskbarLight()
@@ -215,19 +231,24 @@ func (a *app) refresh() {
 	show(a.signOut, v.CanLogout, idle)
 	show(a.enroll, v.CanEnroll, idle)
 	show(a.setup, v.CanSetup, idle)
+	// another network is for a PC a person uses; a daemon whose control
+	// plane stands in its configuration file says so instead
+	show(a.addNet, st != nil && nets.Single == "" && !v.CanSetup, idle)
 
-	current := ""
-	if st != nil {
-		current = st.Profile
+	// one picker: the profiles of this network, and with several networks
+	// the other networks' as well ("Work · Full")
+	a.profileMenu.SetTitle("Route")
+	if len(nets.Networks) > 1 {
+		a.profileMenu.SetTitle("Network")
 	}
-	show(a.profileMenu, len(names) > 1, idle)
+	show(a.profileMenu, len(routes) > 1, idle)
 	for i, it := range a.profiles {
-		if i >= len(names) {
+		if i >= len(routes) {
 			it.Hide()
 			continue
 		}
-		it.SetTitle(tray.ProfileLabel(names[i]))
-		if names[i] == current {
+		it.SetTitle(routes[i].Title)
+		if routes[i].On {
 			it.Check()
 		} else {
 			it.Uncheck()
@@ -312,13 +333,14 @@ func (a *app) dispatch(act string) {
 		a.copyFingerprint()
 	case act == tray.ActQuit:
 		systray.Quit()
-	case strings.HasPrefix(act, tray.ActProfile):
+	case strings.HasPrefix(act, tray.ActProfile), strings.HasPrefix(act, tray.ActNetwork):
 		a.mu.Lock()
-		names := a.names
+		routes := a.routes
 		a.mu.Unlock()
-		for i, n := range names {
-			if n == strings.TrimPrefix(act, tray.ActProfile) {
-				a.pickProfile(i)
+		for i, c := range routes {
+			if c.Action() == act {
+				a.pickRoute(i)
+				return
 			}
 		}
 	}
@@ -328,25 +350,43 @@ func (a *app) up(profile string) {
 	a.run("Connecting", func() error { _, err := a.client.Up(profile); return err })
 }
 
-func (a *app) pickProfile(i int) {
+// pickRoute is the i-th entry of the route picker: a profile of this
+// network, or a profile of another one.
+func (a *app) pickRoute(i int) {
 	a.mu.Lock()
-	var name, current string
-	if i < len(a.names) {
-		name = a.names[i]
-	}
-	if a.status != nil {
-		current = a.status.Profile
+	var c tray.RouteChoice
+	if i < len(a.routes) {
+		c = a.routes[i]
 	}
 	a.mu.Unlock()
-	if name == "" || name == current {
+	switch {
+	case c.Profile == "" || c.On:
 		return
+	case c.Network == "":
+		// The routes follow the profile; the tunnel stays. Taking the overlay
+		// down and up for it dropped every connection through it.
+		a.run("Switching to "+c.Label, func() error {
+			_, err := a.client.SetProfile(c.Profile)
+			return err
+		})
+	default:
+		// another mesh: the daemon takes this network down, which takes its
+		// routes with it, and comes up in the other one (R143)
+		a.run("Switching to "+c.NetworkLabel, func() error {
+			_, _ = a.client.Down()
+			if err := a.client.SelectNetwork(c.Network, c.Profile); err != nil {
+				return err
+			}
+			// the daemon restarts its socket with the other network
+			for i := 0; i < 40; i++ {
+				time.Sleep(500 * time.Millisecond)
+				if st, err := a.client.Status(); err == nil && (st.NetworkID == c.Network || st.State == ipc.StateUnconfigured) {
+					return nil
+				}
+			}
+			return nil
+		})
 	}
-	// The routes follow the profile; the tunnel stays. Taking the overlay
-	// down and up for it dropped every connection through it.
-	a.run("Switching to "+tray.ProfileLabel(name), func() error {
-		_, err := a.client.SetProfile(name)
-		return err
-	})
 }
 
 // login opens the control plane's sign-in page in the browser and waits for
@@ -407,6 +447,37 @@ func (a *app) setUp() {
 			time.Sleep(500 * time.Millisecond)
 		}
 		return errors.New("the service did not take the address; see its log")
+	})
+}
+
+// addNetwork asks for another mesh and switches to it: a device key of its
+// own, so it enrolls and is approved there on its own (docs/NETWORKS.md).
+func (a *app) addNetwork() {
+	addr, ok := prompt("BoundGate: add a network",
+		"Address of the other network's control plane (for example vpn.corp.example).\nThis PC gets a device key of its own there and has to be approved there:", "", true)
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	if !ok || addr == "" {
+		return
+	}
+	name, _ := prompt("BoundGate: add a network", "What to call it (for example Work). Empty: its address.", "", false)
+	name = strings.TrimSpace(name)
+	label := name
+	if label == "" {
+		label = addr
+	}
+	a.run("Adding "+label, func() error {
+		_, _ = a.client.Down()
+		n, err := a.client.AddNetwork(ipc.NewNetwork{Name: name, ControlAddr: addr, Select: true})
+		if err != nil {
+			return err
+		}
+		for i := 0; i < 40; i++ { // the service comes back in the new network
+			time.Sleep(500 * time.Millisecond)
+			if st, err := a.client.Status(); err == nil && (st.NetworkID == n.ID || st.State == ipc.StateUnconfigured) {
+				return a.enrollAsking()
+			}
+		}
+		return errors.New("the service did not switch to the new network; see its log")
 	})
 }
 

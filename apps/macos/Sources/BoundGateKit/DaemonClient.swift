@@ -38,6 +38,28 @@ public struct DaemonClient: Sendable {
         try call("POST", "/v1/profile", body: ["profile": name], timeout: 20)
     }
 
+    /// The meshes this device belongs to and which one runs
+    /// (docs/NETWORKS.md). A daemon that holds one network answers with that
+    /// one and `single`: the reason there can be no other.
+    public func networks() throws -> NetworkList { try call("GET", "/v1/networks", timeout: 5) }
+
+    /// Stores another network. With `select` the daemon switches as soon as
+    /// it has answered, which closes the socket for a moment.
+    public func addNetwork(_ n: NewNetwork) throws -> NetworkInfo { try call("POST", "/v1/networks", body: n, timeout: 15) }
+
+    /// Switches to another network, coming up in `profile`. The overlay has
+    /// to be down; the daemon answers first and then restarts its socket, so
+    /// the next status may take a moment.
+    public func selectNetwork(_ id: String, profile: String? = nil) throws {
+        let _: [String: String] = try call("POST", "/v1/networks/\(id)/select", body: ["profile": profile ?? ""], timeout: 20)
+    }
+
+    /// Gives up a network and its state: the device key of a network with a
+    /// directory of its own goes with it.
+    public func removeNetwork(_ id: String) throws {
+        let _: [String: String] = try call("DELETE", "/v1/networks/\(id)", timeout: 20)
+    }
+
     public func up(profile: String?) throws -> NodeStatus {
         try call("POST", "/v1/up", body: ["profile": profile ?? ""], timeout: 45)
     }

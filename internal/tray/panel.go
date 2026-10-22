@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
 
@@ -162,14 +163,19 @@ const (
 	ActDetails    = "details"
 	ActQuit       = "quit"
 	ActProfile    = "profile:" // + the profile's name
+	ActNetwork    = "network:" // + "<network id>|<profile>"
 )
 
 // PanelInput is everything the panel shows.
 type PanelInput struct {
-	Status      *node.Status
-	Err         error // of fetching the status
-	Busy        string
-	Profiles    []string
+	Status   *node.Status
+	Err      error // of fetching the status
+	Busy     string
+	Profiles []string
+	// Networks: the meshes this device belongs to, when the daemon knows
+	// several (docs/NETWORKS.md). The picker then offers a profile per
+	// network instead of profiles alone.
+	Networks    ipc.NetworkList
 	Rate        Rate
 	ActionError string // the last action's failure
 	DetailsOpen bool
@@ -417,7 +423,7 @@ func (l *layout) connection(v View) {
 			// the routing profile can be changed while connected: the routes
 			// follow, the tunnel stays (a PC that is always connected would
 			// otherwise never see this)
-			if len(in.Profiles) > 1 {
+			if len(in.Profiles) > 1 || len(in.Networks.Networks) > 1 {
 				l.y += 12
 				l.y += l.profiles(x, w)
 			}
@@ -440,7 +446,7 @@ func (l *layout) connection(v View) {
 			}
 		default:
 			l.y += l.text(x, w, "Not connected", FontTitle, t.Text)
-			if len(in.Profiles) > 1 {
+			if len(in.Profiles) > 1 || len(in.Networks.Networks) > 1 {
 				l.y += 12
 				l.y += l.profiles(x, w)
 			}
@@ -518,38 +524,72 @@ func (l *layout) connection(v View) {
 	}
 }
 
-// profiles: a pill per profile, the current one filled.
+// profiles: a pill per profile, the current one filled. With several
+// networks the pills are grouped, one block per network under its name: the
+// pills of the network that runs change the routes live, the others switch
+// the network and come up in that profile (docs/NETWORKS.md).
 func (l *layout) profiles(x, w float64) float64 {
 	t := l.t
-	_, lh := l.m.Measure("Route", FontBody, 0)
-	l.add(Item{Kind: KindText, R: Rect{x, l.y, w, lh}, Text: "Route", Font: FontBody, Color: t.Text2})
+	choices := RouteChoices(l.in.Status, l.in.Profiles, l.in.Networks)
+	if len(choices) == 0 {
+		return 0
+	}
+	label := "Route"
+	grouped := len(l.in.Networks.Networks) > 1
+	if grouped {
+		label = "Network"
+	}
+	_, lh := l.m.Measure(label, FontBody, 0)
+	l.add(Item{Kind: KindText, R: Rect{x, l.y, w, lh}, Text: label, Font: FontBody, Color: t.Text2})
 	top := l.y
 	l.y += lh + 8
-	cx, rowH := x, 0.0
-	current := l.in.Status.Profile
-	if current == "" {
-		current = "full" // the node's default
+	group := ""
+	for i := 0; i < len(choices); {
+		if grouped && choices[i].NetworkLabel != group {
+			group = choices[i].NetworkLabel
+			if i > 0 {
+				l.y += 8
+			}
+			_, gh := l.m.Measure(group, FontStrong, 0)
+			l.add(Item{Kind: KindText, R: Rect{x, l.y, w, gh}, Text: group, Font: FontStrong, Color: t.Text})
+			l.y += gh + 6
+		}
+		j := i
+		for j < len(choices) && (!grouped || choices[j].NetworkLabel == group) {
+			j++
+		}
+		l.y += l.pills(x, w, choices[i:j])
+		i = j
 	}
-	for _, p := range l.in.Profiles {
-		pw, ph := l.m.Measure(ProfileLabel(p), FontStrong, 0)
+	h := l.y - top
+	l.y = top
+	return h
+}
+
+// pills lays out one block of route pills and returns its height.
+func (l *layout) pills(x, w float64, choices []RouteChoice) float64 {
+	t := l.t
+	top := l.y
+	cx, rowH := x, 0.0
+	for _, c := range choices {
+		pw, ph := l.m.Measure(c.Label, FontStrong, 0)
 		bw, bh := pw+20, ph+10
 		if cx+bw > x+w && cx > x {
 			cx = x
 			l.y += rowH + 6
 		}
 		fill, stroke, text := t.Panel2, t.Border, t.Text
-		if p == current {
+		if c.On {
 			fill, stroke, text = Accent, color.NRGBA{}, OnAccent
 		}
 		r := Rect{cx, l.y, bw, bh}
-		l.add(Item{Kind: KindBox, R: r, Fill: fill, HoverFill: fill, Stroke: stroke, Radius: bh / 2, Action: ActProfile + p, Pointer: p != current})
-		l.add(Item{Kind: KindText, R: r, Text: ProfileLabel(p), Font: FontStrong, Color: text, Align: Center, VerticalAlign: true})
+		l.add(Item{Kind: KindBox, R: r, Fill: fill, HoverFill: fill, Stroke: stroke, Radius: bh / 2, Action: c.Action(), Pointer: !c.On})
+		l.add(Item{Kind: KindText, R: r, Text: c.Label, Font: FontStrong, Color: text, Align: Center, VerticalAlign: true})
 		cx += bw + 6
 		rowH = math.Max(rowH, bh)
 	}
-	h := l.y + rowH - top
-	l.y = top
-	return h
+	l.y = top + rowH
+	return rowH
 }
 
 // rowSmall: a details line, label and value in the small face.
@@ -807,6 +847,8 @@ func SamplePanels(now time.Time) map[string]PanelInput {
 		Since: now.Add(-12 * time.Minute), Routes: []string{"0.0.0.0/1", "128.0.0.0/1"}, User: &node.UserStatus{Username: "offerman"},
 		Hubs:    []node.HubStatus{{Name: "hub-pvpn", State: "connected", Transport: "quic", Primary: true, TunnelStats: transport.TunnelStats{BytesIn: 19549805, BytesOut: 725769}}},
 		Control: "vpn.net407.com:443", ControlTransport: "h3", KeyKind: "tpm2", Interface: "BoundGate", MTU: 1280, Profile: "full", Fingerprint: fp, Version: "v0.1.11"}
+	twoNets := *up
+	twoNets.NetworkID, twoNets.NetworkName, twoNets.Profile = "home", "Private", "lan-only"
 	return map[string]PanelInput{
 		"service":      {Err: errors.New("node daemon not reachable at x: refused"), Now: now},
 		"unconfigured": {Status: &node.Status{State: "unconfigured", NodeName: "DESKTOP-Q8EUT8R", HardwareBound: true}, Now: now},
@@ -816,5 +858,11 @@ func SamplePanels(now time.Time) map[string]PanelInput {
 		"login":        {Status: &node.Status{State: node.StateUp, Enrollment: "approved", LoginRequired: true, NodeName: "DESKTOP-Q8EUT8R", HardwareBound: true}, Now: now},
 		"connected":    {Status: up, Profiles: []string{"full", "lan-only", "wan-only"}, Now: now, Rate: Rate{Valid: true, In: 1.2e6, Out: 48e3}},
 		"details":      {Status: up, Now: now, DetailsOpen: true},
+		// a PC in two meshes: the picker groups the profiles by network
+		"networks": {Status: &twoNets, Profiles: []string{"full", "lan-only", "wan-only"}, Now: now,
+			Networks: ipc.NetworkList{Current: "home", Networks: []ipc.Network{
+				{ID: "home", Name: "Private", ControlAddr: "vpn.net407.com", LastEnrollment: "approved"},
+				{ID: "work", Name: "Work", ControlAddr: "vpn.corp.example", Dir: "networks/work", LastEnrollment: "pending"},
+			}}},
 	}
 }

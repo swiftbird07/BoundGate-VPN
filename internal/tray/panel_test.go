@@ -109,3 +109,57 @@ func TestReadable(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A PC in two meshes: the picker shows every network's profiles, the one in
+// effect is filled and not clickable, and a profile of the other network
+// asks for a switch, not for a route change.
+func TestThePickerGroupsProfilesByNetwork(t *testing.T) {
+	p := LayoutPanel(phases()["networks"], fakeMeasure{}, ThemeOf(false))
+	var here, there, on int
+	for _, it := range p.Items {
+		switch {
+		case it.Kind != KindBox:
+		case strings.HasPrefix(it.Action, ActProfile):
+			here++
+			if !it.Pointer {
+				on++
+			}
+		case strings.HasPrefix(it.Action, ActNetwork):
+			there++
+			if !strings.HasPrefix(it.Action, ActNetwork+"work|") {
+				t.Errorf("a pill of the wrong network: %q", it.Action)
+			}
+			if p.HitTest(it.R.X+it.R.W/2, it.R.Y+it.R.H/2) != it.Action {
+				t.Errorf("hit test misses %s", it.Action)
+			}
+		}
+	}
+	// three profiles of the network that runs, the built-ins of the other
+	if here != 3 || there != 3 || on != 1 {
+		t.Fatalf("%d pills here (%d in effect), %d of the other network", here, on, there)
+	}
+	// both names are on the panel, so a person sees which is which
+	var names int
+	for _, it := range p.Items {
+		if it.Kind == KindText && (it.Text == "Private" || it.Text == "Work") {
+			names++
+		}
+	}
+	if names < 2 {
+		t.Fatalf("the networks are not named on the panel (%d)", names)
+	}
+}
+
+// With one network nothing about the picker changes: "Route" and the
+// profiles, as before.
+func TestASingleNetworkStillJustPicksTheRoute(t *testing.T) {
+	p := LayoutPanel(phases()["connected"], fakeMeasure{}, ThemeOf(false))
+	for _, it := range p.Items {
+		if strings.HasPrefix(it.Action, ActNetwork) {
+			t.Fatalf("a network pill with one network: %q", it.Action)
+		}
+		if it.Kind == KindText && it.Text == "Network" {
+			t.Fatal("the picker is called Network with one network")
+		}
+	}
+}

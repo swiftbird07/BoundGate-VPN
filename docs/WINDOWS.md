@@ -158,10 +158,20 @@ The right button opens the menu, which shows:
 * Set up…, when no control plane is configured: a small window for its
   address. The field lowercases what is typed (the control plane compares
   its name exactly), then the tray requests access.
-* Connect and Disconnect. A profile submenu when there is more than one
+* Connect and Disconnect. A "Route" submenu when there is more than one
   profile, by what each profile does ("LAN only", not `lan-only`). It is
   there while the node is up as well: picking a profile then changes the
   routes under the running tunnel ([PROFILES.md](PROFILES.md)).
+* With more than one network ([NETWORKS.md](NETWORKS.md)) that submenu is
+  called "Network" and its entries name both ("Work · Full"); in the panel
+  the pills are grouped under each network's name. A profile of the network
+  in use is applied live, a profile of another network switches the network
+  and comes up in that profile.
+* Add network…, below "Set up…": the address of the other control plane and
+  what to call it, then the tray switches to it and asks for access there --
+  this PC has a device key of its own in every network. Removing one is
+  `boundgatectl network remove ID`; the tray does not offer it, because
+  giving up a key is not a menu entry to hit by accident.
 * Sign in (browser) and Sign out. When the session ends while the tray
   runs (24 h by default), a message box offers to sign in again, once per
   occasion.
