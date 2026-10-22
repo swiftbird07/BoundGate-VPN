@@ -141,6 +141,20 @@ x node-a ping -c 2 -W 2 "$R_IP" >/dev/null || fail "node-r overlay ip $R_IP unre
 H2_IP=$(x hub2 boundgatectl -json status | jq -r .overlay_ip)
 x node-a ping -c 2 -W 2 "$H2_IP" >/dev/null || fail "hub2 overlay ip $H2_IP unreachable"
 
+# A subnet router does not route its own network through a hub, not even
+# under the full profile, whose split default would otherwise cover it: its
+# packets for that network would come back to it through the tunnel and the
+# hub would refuse them as a source that is not this tunnel's (R138). The
+# status says so under skipped_routes.
+status_is node-r '[.routes[] | select(. == "192.168.178.0/24")] | length == 0' \
+  || fail "node-r routes the network it announces itself: $(x node-r boundgatectl -json status | jq -c .routes)"
+status_is node-r '[.skipped_routes[]? | select(test("192.168.178.0/24"))] | length == 1' \
+  || fail "node-r does not say why its own network is not routed: $(x node-r boundgatectl -json status | jq -c .skipped_routes)"
+# and it still takes the other networks, the halves of the default route
+# among them
+status_is node-r '[.routes[] | select(. == "10.60.0.0/24")] | length == 1' \
+  || fail "node-r lost the network behind the hubs: $(x node-r boundgatectl -json status | jq -c .routes)"
+
 echo "== 4b. ACL: a forbid for the LAN prefix takes effect on hub and router within seconds; removing it restores"
 wait_for 10 reach_tls public.lab 10.60.0.11 || fail "TLS target unreachable"
 policy no-lan 'forbid(principal, action, resource) when { resource.ip.isInRange(ip("192.168.178.0/24")) };'

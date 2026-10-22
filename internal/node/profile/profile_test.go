@@ -147,3 +147,59 @@ func TestExcludeSplitsAroundAndFromAFile(t *testing.T) {
 		t.Fatal("without: equal prefixes or another family")
 	}
 }
+
+// A node's own announced networks come out of what a hub advertises: an
+// equal network disappears, a broader one is replaced by the routes around
+// it, and a default route among them means nothing.
+func TestEffectiveExceptTakesOutOwnNetworks(t *testing.T) {
+	full := Full()
+	adv := pfx("10.25.0.0/16", "192.168.3.0/24", "0.0.0.0/0")
+	own := pfx("192.168.3.0/24")
+
+	got := full.EffectiveExcept(adv, own)
+	for _, p := range got {
+		if p == netip.MustParsePrefix("192.168.3.0/24") {
+			t.Fatalf("the node's own network is still routed: %v", got)
+		}
+		if p.Contains(netip.MustParseAddr("192.168.3.7")) && p.Bits() > 0 {
+			t.Fatalf("%s still covers the node's own network: %v", p, got)
+		}
+	}
+	// the default route is gone as a whole: what is left of it goes around
+	// the own network, and the overlay pool stays
+	var pool, around bool
+	for _, p := range got {
+		switch {
+		case p == netip.MustParsePrefix("10.25.0.0/16"):
+			pool = true
+		case p.Bits() > 0 && p.Addr() == netip.MustParseAddr("0.0.0.0"):
+			around = true
+		}
+	}
+	if !pool || !around {
+		t.Fatalf("pool %v, routes around the own network %v: %v", pool, around, got)
+	}
+
+	// a default route of one's own (an exit node) changes nothing
+	if a, b := full.EffectiveExcept(adv, pfx("0.0.0.0/0")), full.Effective(adv); !reflect.DeepEqual(a, b) {
+		t.Fatalf("a default route of one's own took routes away: %v, want %v", a, b)
+	}
+	// and nothing extra is the old behaviour
+	if a, b := full.EffectiveExcept(adv, nil), full.Effective(adv); !reflect.DeepEqual(a, b) {
+		t.Fatalf("without extra networks: %v, want %v", a, b)
+	}
+}
+
+// An include profile loses only what the node announces itself.
+func TestEffectiveExceptWithAnIncludeProfile(t *testing.T) {
+	p := &Profile{}
+	p.Routing.Mode = ModeInclude
+	p.Routing.Networks = []string{"10.20.0.0/16", "192.168.3.0/24"}
+	if err := p.validate(); err != nil {
+		t.Fatal(err)
+	}
+	adv := pfx("10.20.0.0/16", "192.168.3.0/24")
+	if got, want := p.EffectiveExcept(adv, pfx("192.168.3.0/24")), pfx("10.20.0.0/16"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

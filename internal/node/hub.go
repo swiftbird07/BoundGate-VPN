@@ -53,7 +53,7 @@ func (h *hubService) Accept(_ context.Context, peer transport.AuthenticatedPeer)
 	}
 	return transport.TunnelConfig{
 		Assigned: assigned,
-		Routes:   advertisedRoutes(snap, p.ID),
+		Routes:   advertisedRoutes(snap, p),
 		DNS:      n.cfg.DNS,
 	}, http.StatusOK, nil
 }
@@ -236,15 +236,45 @@ func announced(snap *registry.Snapshot) []netip.Prefix {
 	return out
 }
 
+// ownNetworks is what one node announces, a default route left out: the
+// networks it reaches by itself and must never take from a hub, longest
+// first. An exit node's 0.0.0.0/0 says nothing about which networks it
+// reaches on its own, so it does not count.
+func ownNetworks(self registry.Node) []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range self.Prefixes {
+		if p.Prefix.Bits() > 0 {
+			out = append(out, p.Prefix.Masked())
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bits() > out[j].Bits() })
+	return out
+}
+
 // advertisedRoutes is what a hub tells a peer it can reach: the overlay
 // pool, the hub's own prefixes and every other peer's prefixes.
-func advertisedRoutes(snap *registry.Snapshot, except transport.DeviceID) []connectip.IPRoute {
+//
+// Not what the receiver announces itself, as long as its own prefix is equal
+// or broader: it reaches that network on its own, and routing it through the
+// hub sends its traffic for it back to itself (R118). A router that announces
+// a /25 still learns the /24 another node announces, and a default route
+// never counts, or an exit node would stop learning specific networks.
+func advertisedRoutes(snap *registry.Snapshot, recv registry.Node) []connectip.IPRoute {
+	own := ownNetworks(recv)
+	mine := func(p netip.Prefix) bool {
+		for _, o := range own {
+			if o.Contains(p.Addr()) && o.Bits() <= p.Bits() {
+				return true
+			}
+		}
+		return false
+	}
 	seen := map[netip.Prefix]bool{snap.Pool.Masked(): true}
 	prefixes := []netip.Prefix{snap.Pool.Masked()}
 	add := func(ps []registry.Prefix) {
 		for _, p := range ps {
 			m := p.Prefix.Masked()
-			if !seen[m] {
+			if !seen[m] && !mine(m) {
 				seen[m] = true
 				prefixes = append(prefixes, m)
 			}
@@ -252,7 +282,7 @@ func advertisedRoutes(snap *registry.Snapshot, except transport.DeviceID) []conn
 	}
 	add(snap.Self.Prefixes)
 	for _, n := range snap.Peers {
-		if n.ID != except {
+		if n.ID != recv.ID {
 			add(n.Prefixes)
 		}
 	}

@@ -1356,7 +1356,10 @@ type session struct {
 	self    registry.Node
 	pool    netip.Prefix
 	// nets is announced() of the current snapshot, for allowedSource
-	nets  atomic.Pointer[[]netip.Prefix]
+	nets atomic.Pointer[[]netip.Prefix]
+	// own is what this node announces itself (a default route left out), for
+	// the routes it must not take from a hub
+	own   atomic.Pointer[[]netip.Prefix]
 	isHub bool
 
 	dev    tun.Device
@@ -1402,6 +1405,8 @@ func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *sessio
 	}
 	nets := announced(snap)
 	s.nets.Store(&nets)
+	own := ownNetworks(snap.Self)
+	s.own.Store(&own)
 	s.flows = flow.New(flow.Timeouts{}, s.onFlowEvent)
 	s.dns = dnsmap.New(maxLearnedAddrs)
 	s.flows.SetLearner(s.learnDNS)
@@ -1598,6 +1603,8 @@ func (s *session) applyDiff(diff registry.Diff, snap *registry.Snapshot) {
 	}
 	nets := announced(snap)
 	s.nets.Store(&nets)
+	own := ownNetworks(snap.Self)
+	s.own.Store(&own)
 	if s.srv != nil {
 		for _, id := range diff.RemovedPeers {
 			if c := s.srv.CloseDevice(id, transport.ErrCodeRevoked, "peer unenrolled or reconfigured"); c > 0 {
@@ -1936,4 +1943,12 @@ func keyWarning(kind string, enclave bool) string {
 		return "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. This Mac has a Secure Enclave; the node kept the software key it enrolled with. A new identity in the Secure Enclave cannot be copied (the Mac then has to be approved again)."
 	}
 	return "This Mac's identity is a software key: a file that anyone with administrator rights, a backup or malware can copy to another machine. No usable Secure Enclave was found (Intel Macs without a T2 chip have none, or the helper boundgate-sekey is missing from the app), so it cannot be bound to the hardware."
+}
+
+// ownNetworks is what this node announces itself, a default route left out.
+func (s *session) ownNetworks() []netip.Prefix {
+	if p := s.own.Load(); p != nil {
+		return *p
+	}
+	return nil
 }

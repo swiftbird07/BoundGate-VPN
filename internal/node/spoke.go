@@ -559,7 +559,25 @@ func (m *spokeManager) applyRoutesLocked() {
 	if !s.n.cfg.AllowOverlap {
 		locals = localNets(s.ifname)
 	}
+	// What this node announces it reaches on its own. Routing it through a
+	// hub sends its own traffic for that network back into the tunnel, where
+	// the hub refuses it as a source that is not this tunnel's, and nothing
+	// behind the node is reachable (R118). The overlap guard below cannot see
+	// such a network - it is not on an interface of this machine but behind a
+	// static route or the gateway - and a profile's default route covers it in
+	// any case, because splitDefault's halves beat the machine's own default.
+	own := s.ownNetworks()
 	for _, p := range s.profile.Effective(adv) {
+		for _, o := range own {
+			if p.Contains(o.Addr()) && p.Bits() <= o.Bits() {
+				skipped[o] = describeOwn(o)
+				if _, known := m.skipped[o]; !known {
+					s.n.log.Info("not routing a network this node announces itself", "prefix", o, "advertised", p)
+				}
+			}
+		}
+	}
+	for _, p := range s.profile.EffectiveExcept(adv, own) {
 		if p == s.pool.Masked() {
 			continue // installed for the session's lifetime
 		}

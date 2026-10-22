@@ -183,7 +183,27 @@ func (p *Profile) Networks() []netip.Prefix { return p.networks }
 // partially overlapping prefixes are ignored. Never returns something
 // outside advertised.
 func (p *Profile) Effective(advertised []netip.Prefix) []netip.Prefix {
-	return dedupe(subtract(p.chosen(advertised), p.exclude))
+	return p.EffectiveExcept(advertised, nil)
+}
+
+// EffectiveExcept is Effective with extra networks taken out as if the
+// profile excluded them: what a node announces itself it reaches on its own,
+// never through a hub, and a broader advertised network is replaced by the
+// routes around it. A default route among extra is ignored — it would leave
+// nothing, and an exit node announcing one says nothing about the networks it
+// reaches by itself.
+func (p *Profile) EffectiveExcept(advertised, extra []netip.Prefix) []netip.Prefix {
+	exclude := p.exclude
+	if len(extra) > 0 {
+		exclude = make([]netip.Prefix, 0, len(p.exclude)+len(extra))
+		exclude = append(exclude, p.exclude...)
+		for _, e := range extra {
+			if e.Bits() > 0 {
+				exclude = append(exclude, e.Masked())
+			}
+		}
+	}
+	return dedupe(subtract(p.chosen(advertised), exclude))
 }
 
 func (p *Profile) chosen(advertised []netip.Prefix) []netip.Prefix {

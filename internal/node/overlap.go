@@ -78,3 +78,10 @@ func localNets(skipIface string) []localNet {
 func describeConflict(p netip.Prefix, l localNet) string {
 	return fmt.Sprintf("%s overlaps %s on %s", p, l.Prefix, l.Iface)
 }
+
+// describeOwn says why an announced network of this node's own is not routed
+// through a hub. It appears under "not routed" in the status, next to the
+// overlaps.
+func describeOwn(p netip.Prefix) string {
+	return fmt.Sprintf("%s is announced by this node and reached on its own", p)
+}
