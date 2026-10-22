@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -32,8 +34,9 @@ var migrations embed.FS
 // several. A node's lookup at the TLS handshake therefore no longer waits
 // behind an admin page's query or behind housekeeping.
 type DB struct {
-	sql *sql.DB
-	ro  *sql.DB
+	sql  *sql.DB
+	ro   *sql.DB
+	path string
 	// logCols is the lowest log_events id whose hot attribute columns are
 	// filled (migration 0018). Rows below it still need json_extract until
 	// housekeeping has worked its way down. It only ever decreases, so a
@@ -56,7 +59,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// SQLite handles one writer at a time; a single connection avoids
 	// SQLITE_BUSY dances for a control plane of this size.
 	s.SetMaxOpenConns(1)
-	d := &DB{sql: s}
+	d := &DB{sql: s, path: path}
 	if err := d.migrate(ctx); err != nil {
 		s.Close()
 		return nil, err
@@ -78,6 +81,26 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	d.ro = ro
 	d.logCols.Store(d.readWatermark(ctx))
 	return d, nil
+}
+
+// Size is how much room the database takes (the file and its write-ahead
+// log) and how much is left where it lives. A free of 0 means the platform
+// did not say.
+//
+// Both are watched because the retention has to fit the machine and nothing
+// else notices when it stops fitting: on 2026-10-22 a 90-day retention had
+// grown the log copy to 7.5 GB on a 16 GB disk, and the first thing anyone
+// saw was every node getting 503 (docs/SECURITY.md R139).
+func (d *DB) Size() (size, free uint64) {
+	if d.path == "" {
+		return 0, 0
+	}
+	for _, suffix := range []string{"", "-wal"} {
+		if fi, err := os.Stat(d.path + suffix); err == nil {
+			size += uint64(fi.Size())
+		}
+	}
+	return size, freeBytes(filepath.Dir(d.path))
 }
 
 // read is the pool for queries that only read. It falls back to the writer
@@ -220,4 +243,24 @@ func (d *DB) SnapshotVersion(ctx context.Context) (uint64, error) {
 	var v uint64
 	err := d.sql.QueryRowContext(ctx, `SELECT version FROM snapshot_version`).Scan(&v)
 	return v, err
+}
+
+// SpaceWarning judges the pair Size returns: an empty string when there is
+// room, otherwise one sentence for the log and the admin UI.
+//
+// Two lines are drawn. A database bigger than what is left cannot be rebuilt
+// or vacuumed any more, which is exactly where pVPN stood on 2026-10-22: the
+// space to delete the rows was no longer there, and repairing it meant
+// copying the real data into a new file. And below a gigabyte the next prune
+// of a long retention can fill the disk between two ticks of housekeeping.
+func SpaceWarning(size, free uint64) string {
+	switch {
+	case free == 0 || size == 0: // the platform does not say
+		return ""
+	case free < size:
+		return "the database is larger than the free space on its disk: it can no longer be rebuilt or vacuumed. Shorten log_retention or give the machine a bigger disk."
+	case free < 1<<30:
+		return "less than a gigabyte is free on the database's disk: shorten log_retention or give the machine a bigger disk."
+	}
+	return ""
 }

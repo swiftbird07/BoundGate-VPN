@@ -899,6 +899,12 @@ type Overview struct {
 	PendingPasskeys int            `json:"pending_passkeys"`
 	Signers         int            `json:"signers"`
 	SnapshotVersion uint64         `json:"snapshot_version"`
+	// how much room the database takes and how much is left where it
+	// lives, so that a retention that no longer fits the machine is
+	// visible before the disk is full (R139)
+	DatabaseBytes uint64 `json:"database_bytes"`
+	DiskFreeBytes uint64 `json:"disk_free_bytes"`
+	DiskWarning   string `json:"disk_warning,omitempty"`
 }
 
 func (h *Handlers) adminOverview(w http.ResponseWriter, r *http.Request) {
@@ -940,5 +946,7 @@ func (h *Handlers) adminOverview(w http.ResponseWriter, r *http.Request) {
 		o.Signers = len(st.Keys)
 	}
 	o.SnapshotVersion, _ = h.d.DB.SnapshotVersion(ctx)
+	o.DatabaseBytes, o.DiskFreeBytes = h.d.DB.Size()
+	o.DiskWarning = db.SpaceWarning(o.DatabaseBytes, o.DiskFreeBytes)
 	writeJSON(w, http.StatusOK, o)
 }

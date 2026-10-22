@@ -469,6 +469,7 @@ func housekeeping(ctx context.Context, store *db.DB, cfg Config, log interface {
 }) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
+	var lastSpace time.Time
 	for {
 		if n, err := store.ExpirePending(ctx, cfg.PendingTTL); err != nil {
 			log.Error("expire pending nodes", "err", err)
@@ -510,6 +511,16 @@ func housekeeping(ctx context.Context, store *db.DB, cfg Config, log interface {
 			log.Error("fill the log columns of old events", "err", err)
 		} else if n > 0 {
 			log.Info("filled the log columns of old events", "count", n, "done", done)
+		}
+		// the retention has to fit the machine, and nobody notices when it
+		// stops fitting: on pVPN the logs had grown to 7.5 GB of a 16 GB
+		// disk before anything said so, and by then the space to delete
+		// them was gone (docs/SECURITY.md R139). Once an hour is enough to
+		// be seen without burying the rest of the log.
+		size, free := store.Size()
+		if w := db.SpaceWarning(size, free); w != "" && time.Since(lastSpace) >= time.Hour {
+			lastSpace = time.Now()
+			log.Error("the database is running out of room", "reason", w, "database_bytes", size, "free_bytes", free, "log_retention", cfg.LogRetention.String())
 		}
 		select {
 		case <-ctx.Done():

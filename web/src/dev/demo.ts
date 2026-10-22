@@ -143,7 +143,7 @@ function status(mode: string): T.AuthStatus {
 function answer(method: string, path: string, query: URLSearchParams, body: any, mode: string): unknown {
   const count = (s: string) => nodes.filter((n) => n.status === s).length;
   if (path === '/admin/auth/status') return status(mode);
-  if (path === '/admin/overview') return { nodes: { pending: count('pending'), confirmed: count('confirmed'), approved: count('approved'), revoked: count('revoked') }, active_sessions: 2, active_tunnels: 6, policies: policies.length, policies_enabled: 3, denied_last_24h: 2, pending_passkeys: 1, signers: signers.length, snapshot_version: 212 } satisfies T.Overview;
+  if (path === '/admin/overview') return { nodes: { pending: count('pending'), confirmed: count('confirmed'), approved: count('approved'), revoked: count('revoked') }, active_sessions: 2, active_tunnels: 6, policies: policies.length, policies_enabled: 3, denied_last_24h: 2, pending_passkeys: 1, signers: signers.length, snapshot_version: 212, database_bytes: 41_287_680, disk_free_bytes: 9_300_000_000 } satisfies T.Overview;
   if (path === '/admin/tags') return { defaults: ['server', 'workstation', 'laptop', 'phone', 'iot', 'production', 'staging', 'lab', 'critical', 'dmz', 'office', 'home', 'personal', 'shared'], used: [...new Set(nodes.flatMap((n) => n.tags ?? []))].sort() } satisfies T.TagOffer;
   if (path === '/admin/nodes') return query.get('state') ? nodes.filter((n) => n.status === query.get('state')) : nodes;
   const mr = path.match(/^\/admin\/nodes\/([^/]+)\/revocation$/);

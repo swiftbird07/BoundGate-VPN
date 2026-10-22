@@ -45,7 +45,11 @@
     <a class="card stat" class:attn={waiting > 0} href="/nodes"><span class="n">{waiting}</span><span class="l">nodes awaiting approval</span></a>
     <a class="card stat" class:attn={ov.pending_passkeys > 0} href="/admins"><span class="n">{ov.pending_passkeys}</span><span class="l">passkeys awaiting approval</span></a>
     <a class="card stat" class:alarm={ov.signers === 0} href="/admins"><span class="n">{ov.signers}</span><span class="l">admin signing keys</span></a>
+    {#if ov.database_bytes > 0}
+      <div class="card stat" class:alarm={!!ov.disk_warning} title={ov.disk_warning || ''}><span class="n">{bytes(ov.database_bytes)}</span><span class="l">database{#if ov.disk_free_bytes > 0}&nbsp;· {bytes(ov.disk_free_bytes)} free on disk{/if}</span></div>
+    {/if}
   </div>
+  {#if ov.disk_warning}<p class="error">{ov.disk_warning}</p>{/if}
 {/if}
 <div class="grid cols-2">
   <div class="card">
