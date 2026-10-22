@@ -16,6 +16,19 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 wait_for() { n=$1; shift; while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && return 0; n=$((n-1)); sleep 1; done; return 1; }
 st() { $D ctl -json status | jq -e "$1" >/dev/null; }
 
+# The resolver entries a BoundGate node of any kind has in the system
+# configuration, split by whether its tunnel device is still there. The same
+# rule the daemon's own sweep uses (`boundgate-node -repair`): an entry whose
+# device is gone is a leftover, one whose device exists belongs to a node that
+# is running -- the installed app, say -- and must not be touched.
+dns_keys() { printf 'list State:/Network/Service/boundgate-[^/]+/DNS\nquit\n' | scutil 2>/dev/null | sed -n 's/.*= \(State:.*\)$/\1/p'; }
+dns_split() { # dns_split stale|live
+  dns_keys | while read -r k; do
+    d=${k#State:/Network/Service/boundgate-}; d=${d%/DNS}
+    if ifconfig "$d" >/dev/null 2>&1; then [ "$1" = live ] && echo "$k"; else [ "$1" = stale ] && echo "$k"; fi
+  done
+}
+
 echo "== 0. sudo, a backup of the Mac's network state, the daemon"
 sudo -v
 # This lab's control plane is the one under ../compose/state/control. A Mac
@@ -35,14 +48,20 @@ if [ -f state/admin_keys ] && [ ! -f state/admin_trust.json ]; then
   echo "   dropping an admin key pin from before that list was signed"
   sudo rm -f state/admin_keys
 fi
+# Another BoundGate node on this Mac -- the installed app -- points the host
+# at its own hub's resolvers, with the same catch-all match domain. Which of
+# two such entries macOS asks first is configd's business, so this run could
+# not tell whose resolver answered a name. It says so instead of guessing.
+own=$(dns_split live)
+[ -z "$own" ] || fail "another BoundGate node already holds the host's resolver:
+$own
+   Take its overlay down for this test (it comes back with 'up'):
+     /Applications/BoundGate.app/Contents/MacOS/boundgatectl down"
 ./netbackup.sh backup
 echo "   (if anything looks wrong afterwards: deploy/macos/netbackup.sh diff, then restore -y)"
 BEFORE=$(./netbackup.sh routes)
 $D run > /tmp/boundgate-mac-node.log 2>&1 &
 DAEMON=$!
-
-# every resolver entry a node of ours left in the system configuration
-dns_leftovers() { printf 'list State:/Network/Service/boundgate-[^/]+/DNS\nquit\n' | scutil 2>/dev/null | sed -n 's/.*= \(State:.*\)$/\1/p'; }
 
 # What this script must never do is walk away from a Mac that cannot resolve
 # a name. While the overlay is up, this host sends every name to the hub's
@@ -65,7 +84,7 @@ finish() {
   sleep 1
   $D repair || true # journal plus a sweep of the system configuration
   bad=0
-  left=$(dns_leftovers)
+  left=$(dns_split stale)
   if [ -n "$left" ]; then
     echo "LEFTOVER: this Mac is still pointed at the tunnel's resolver:" >&2
     echo "$left" >&2
@@ -132,7 +151,10 @@ echo "== 4b. the hub's resolver: this Mac asks it for every name while the overl
 # (#14, docs/ACL.md). On macOS it is one dictionary in configd's dynamic
 # store, with the catch-all match domain; /etc/resolv.conf is not touched.
 wait_for 15 st '.dns == ["10.60.0.53"]' || fail "the node does not report the hub's resolver (status .dns)"
-wait_for 10 sh -c "scutil --dns | awk '/^resolver #1/,/^\$/' | grep -q 10.60.0.53" || fail "mDNSResponder was not pointed at the hub's resolver (scutil --dns)"
+# Which of the supplemental resolvers macOS puts first is configd's business;
+# what has to be true is that ours is in the configuration at all, and that a
+# name really goes there -- which the next check proves.
+wait_for 10 sh -c "scutil --dns | grep -q 'nameserver\[0\] : 10.60.0.53'" || fail "mDNSResponder was not given the hub's resolver (scutil --dns)"
 # a name only the lab's resolver knows, resolved by this Mac through the tunnel
 wait_for 10 sh -c 'dscacheutil -q host -a name target.lab | grep -q "^ip_address: 10.60.0.10"' || fail "target.lab was not resolved through the tunnel"
 # and everything else still resolves: the lab resolver forwards what is not its own
