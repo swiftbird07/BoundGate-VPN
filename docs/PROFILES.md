@@ -100,3 +100,8 @@ the node is up, picking a profile applies it live; while it is down, it is
 remembered for the next connection. A hub takes no profile at all — it
 advertises networks, it does not route other peers' — and the daemon says so
 instead of switching.
+
+A device that belongs to several meshes picks the network together with the
+profile ("Work · Full"): the profile is one network's, and switching the
+network is a different, bigger thing than switching the route
+([NETWORKS.md](NETWORKS.md)).

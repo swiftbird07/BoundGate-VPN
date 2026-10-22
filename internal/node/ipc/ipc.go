@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sync/atomic"
 	"time"
@@ -64,6 +65,13 @@ type Options struct {
 	Reset func(newIdentity bool) error
 	// Update, when set, answers /v1/update: release checks and installation.
 	Update *update.Service
+	// Nets, when set, lets the socket manage the daemon's networks: list
+	// them, add one, switch, remove one (docs/NETWORKS.md).
+	Nets Networker
+	// SingleNetwork says why this daemon runs one network and nothing else
+	// (a configuration file names the control plane, privilege separation).
+	// It is the reason the network endpoints give when Nets is nil.
+	SingleNetwork string
 	// Listener, when set, is the socket to serve, made by someone else: the
 	// privileged parent of a separated node, which owns the socket's place
 	// (internal/privsep). Serve takes a copy of it every time and leaves
@@ -86,6 +94,11 @@ type ResetRequest struct {
 // ErrReset is returned by Serve after a successful reset.
 var ErrReset = errors.New("ipc: node was reset")
 
+// ErrSwitch is returned by Serve when another network was chosen: the
+// daemon ends this node -- which takes its routes with it -- and starts the
+// one that is current now.
+var ErrSwitch = errors.New("ipc: another network was selected")
+
 // Serve runs the IPC server until ctx ends. The socket is created with mode
 // 0660 so only root and the socket's group can talk to the daemon.
 func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) error {
@@ -95,16 +108,17 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var wasReset atomic.Bool
-	mux := Handler(n, opt, func() {
-		wasReset.Store(true)
-		go func() { time.Sleep(100 * time.Millisecond); cancel() }()
-	})
+	var ended atomic.Value // ErrReset or ErrSwitch
+	stop := func(err error) {
+		ended.Store(err)
+		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first
+	}
+	mux := handler(n, opt, func() { stop(ErrReset) }, func() { stop(ErrSwitch) })
 	if err := serveMux(ctx, ln, socketPath, opt.Listener == nil, mux); err != nil {
 		return err
 	}
-	if wasReset.Load() {
-		return ErrReset
+	if err, ok := ended.Load().(error); ok {
+		return err
 	}
 	return nil
 }
@@ -114,7 +128,14 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 // speak one protocol to the daemon and to their extension. onReset runs after
 // a successful POST /v1/reset has been answered.
 func Handler(n *node.Node, opt Options, onReset func()) *http.ServeMux {
+	return handler(n, opt, onReset, nil)
+}
+
+// handler adds what only the daemon's own socket needs: onSwitch runs after
+// another network was chosen and the answer written.
+func handler(n *node.Node, opt Options, onReset, onSwitch func()) *http.ServeMux {
 	mux := http.NewServeMux()
+	networkRoutes(mux, n.Status, opt, onSwitch)
 	mux.HandleFunc("POST /v1/configure", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "this node already has a control plane; `boundgatectl reset` forgets it"})
 	})
@@ -388,6 +409,33 @@ func (c *Client) Up(profile string) (node.Status, error) {
 	var s node.Status
 	err := c.do(http.MethodPost, "/v1/up", UpRequest{Profile: profile}, &s)
 	return s, err
+}
+
+// Networks lists the networks this device belongs to and which one runs.
+func (c *Client) Networks() (NetworkList, error) {
+	var l NetworkList
+	err := c.do(http.MethodGet, "/v1/networks", nil, &l)
+	return l, err
+}
+
+// AddNetwork stores another network; with Select the daemon switches to it
+// as soon as the answer is out, which closes this socket for a moment.
+func (c *Client) AddNetwork(n NewNetwork) (Network, error) {
+	var out Network
+	err := c.do(http.MethodPost, "/v1/networks", n, &out)
+	return out, err
+}
+
+// SelectNetwork switches to a network, coming up in profile (empty: it
+// stays down). The daemon answers first and then restarts its socket.
+func (c *Client) SelectNetwork(id, profile string) error {
+	return c.do(http.MethodPost, "/v1/networks/"+url.PathEscape(id)+"/select", SelectRequest{Profile: profile}, nil)
+}
+
+// RemoveNetwork gives up a network and its state: the key of a network that
+// has a directory of its own goes with it.
+func (c *Client) RemoveNetwork(id string) error {
+	return c.do(http.MethodDelete, "/v1/networks/"+url.PathEscape(id), nil, nil)
 }
 
 // SetProfile changes the routing profile, also while the overlay is up: the

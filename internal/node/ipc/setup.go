@@ -64,22 +64,35 @@ func (s *Settings) Validate() error {
 // LoadSettings reads the settings file; a missing file is not an error.
 func LoadSettings(path string) (Settings, error) {
 	var s Settings
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	}
-	if err != nil {
-		return s, err
-	}
-	if err := json.Unmarshal(b, &s); err != nil {
-		return Settings{}, fmt.Errorf("%s: %w", path, err)
+	if err := readJSONFile(path, &s); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Settings{}, err
 	}
 	return s, nil
 }
 
 // SaveSettings writes the settings file (0600).
-func SaveSettings(path string, s Settings) error {
-	b, _ := json.MarshalIndent(s, "", "  ")
+func SaveSettings(path string, s Settings) error { return writeJSONFile(path, s) }
+
+// readJSONFile reads one of the daemon's small state files. A missing file
+// is reported as os.ErrNotExist for the caller to decide about.
+func readJSONFile(path string, v any) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+// writeJSONFile writes one of them: 0600, and through a temporary file so a
+// crash in the middle leaves the old content, not half of the new.
+func writeJSONFile(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -149,12 +162,13 @@ func ServeSetup(ctx context.Context, socketPath string, access Options, status n
 	defer cancel()
 	var mu sync.Mutex
 	var got Settings
-	mux := SetupHandler(status, upd, save, func(s Settings) {
+	done := func() { go func() { time.Sleep(100 * time.Millisecond); cancel() }() } // answer first, then hand over
+	mux := setupHandler(status, access, upd, save, func(s Settings) {
 		mu.Lock()
 		got = s
 		mu.Unlock()
-		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first, then hand over to the node
-	})
+		done()
+	}, done)
 	if err := serveMux(ctx, ln, socketPath, access.Listener == nil, mux); err != nil {
 		return Settings{}, err
 	}
@@ -166,8 +180,17 @@ func ServeSetup(ctx context.Context, socketPath string, access Options, status n
 // SetupHandler is the API of a node without a control plane (setup mode).
 // onConfigured runs after the settings were stored and the answer written.
 func SetupHandler(status node.Status, upd *update.Service, save func(Settings) error, onConfigured func(Settings)) *http.ServeMux {
+	return setupHandler(status, Options{}, upd, save, onConfigured, nil)
+}
+
+// setupHandler adds what the daemon's own socket needs in setup mode: the
+// network endpoints, so an app can add the first network (or, with several
+// known, pick one) without a node running. onSelected runs after another
+// network was chosen and the answer written.
+func setupHandler(status node.Status, access Options, upd *update.Service, save func(Settings) error, onConfigured func(Settings), onSelected func()) *http.ServeMux {
 	status.State = StateUnconfigured
 	mux := http.NewServeMux()
+	networkRoutes(mux, func() node.Status { return status }, access, onSelected)
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, status) })
 	mux.HandleFunc("POST /v1/configure", func(w http.ResponseWriter, r *http.Request) {
 		var s Settings

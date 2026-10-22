@@ -250,23 +250,55 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 	if upd != nil {
 		go upd.Run(ctx)
 	}
-	settingsPath := filepath.Join(cfg.StateDir, "settings.json")
+	// Several networks are for a device a person uses: a server's control
+	// plane stands in its configuration file, and a separated node may
+	// write exactly one state directory (docs/PRIVSEP.md). Both of them run
+	// the one network they are given, and the network endpoints say so.
+	var nets *networks
+	single := ""
+	switch {
+	case fromFile:
+		single = "the control plane of this node stands in its configuration file (control.addr)"
+	case sep != nil:
+		single = "this node is separated: its sandbox opens one state directory, so it holds one network (docs/PRIVSEP.md)"
+	default:
+		nets = &networks{root: cfg.StateDir}
+	}
 	for ctx.Err() == nil {
+		cur := current{
+			stateDir:     cfg.StateDir,
+			settingsPath: filepath.Join(cfg.StateDir, "settings.json"),
+			netStatePath: filepath.Join(cfg.StateDir, "netstate.json"),
+			single:       single,
+		}
 		local := ipc.Settings{ControlAddr: cfg.Control.Addr, ControlServerName: cfg.Control.ServerName, Name: cfg.Name}
-		if !fromFile {
-			s, err := ipc.LoadSettings(settingsPath)
+		switch {
+		case nets != nil:
+			n, ok, err := nets.reload()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				logs.System.Info("no network configured; waiting for `boundgatectl configure`", "socket", cfg.Socket)
+				if err := serveSetup(ctx, cfg, upd, sep, nets); err != nil {
+					return err
+				}
+				continue
+			}
+			cur.network(n, cfg.StateDir, nets)
+			local.ControlAddr, local.ControlServerName = n.ControlAddr, n.ControlServerName
+			if n.NodeName != "" {
+				local.Name = n.NodeName
+			}
+			cur.upWith = nets.takeProfile()
+		case !fromFile:
+			s, err := ipc.LoadSettings(cur.settingsPath)
 			if err != nil {
 				return err
 			}
 			if s.ControlAddr == "" {
 				logs.System.Info("no control plane configured; waiting for `boundgatectl configure`", "socket", cfg.Socket)
-				host, _ := os.Hostname()
-				access := ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers}
-				if sep != nil {
-					access.Listener = sep.socket
-				}
-				if _, err := ipc.ServeSetup(ctx, cfg.Socket, access, node.Status{NodeName: host, Enrollment: "unknown"}, upd,
-					func(s ipc.Settings) error { return ipc.SaveSettings(settingsPath, s) }); err != nil {
+				if err := serveSetup(ctx, cfg, upd, sep, nil); err != nil {
 					return err
 				}
 				continue
@@ -276,8 +308,14 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 				local.Name = s.Name
 			}
 		}
-		err := runNode(ctx, cfg, local, logs, fromFile, settingsPath, upd, sep)
-		if errors.Is(err, ipc.ErrReset) {
+		err := runNode(ctx, cfg, local, logs, fromFile, cur, upd, sep)
+		switch {
+		case errors.Is(err, ipc.ErrSwitch):
+			// the node is down and its routes with it; the next turn of the
+			// loop runs whatever network is current now
+			logs.System.Info("leaving this network", "network", cur.name)
+			continue
+		case errors.Is(err, ipc.ErrReset):
 			switch {
 			case sep != nil:
 				// the key the privileged parent holds is open; the new one
@@ -286,6 +324,8 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 				return nil
 			case fromFile:
 				logs.System.Warn("the node gave up its identity; it enrolls with the configured control plane again", "control", cfg.Control.Addr)
+			case cur.id != "":
+				logs.System.Warn("network forgotten", "network", cur.name)
 			default:
 				logs.System.Warn("control plane forgotten; back to setup mode")
 			}
@@ -296,9 +336,57 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 	return nil
 }
 
+// current is the network runNode runs: where its state lives, how it is
+// called, and -- right after a switch -- the profile it should come up in.
+type current struct {
+	stateDir     string
+	settingsPath string
+	// netStatePath is the cleanup journal, which stays one for the daemon:
+	// after a crash the next start removes the leftovers of whatever
+	// network was running (docs/SECURITY.md R143).
+	netStatePath string
+	id, name     string
+	// upWith: bring the overlay up in this profile as soon as the control
+	// plane approves. Someone who picked "Work - Full" has said enough.
+	upWith string
+	// nets is the daemon's list of networks for the socket; single says why
+	// there is none to manage.
+	nets   ipc.Networker
+	single string
+}
+
+// network points cur at one of several networks: its own state directory,
+// so key, pin, admin keys and enrollment are the network's own (R142).
+func (cur *current) network(n ipc.Network, root string, nets ipc.Networker) {
+	cur.stateDir = n.Path(root)
+	cur.settingsPath = filepath.Join(cur.stateDir, "settings.json")
+	cur.id, cur.name = n.ID, n.Name
+	cur.nets, cur.single = nets, ""
+}
+
+// serveSetup waits in setup mode: nobody has chosen a control plane yet.
+// With nets the socket can also list and add networks there, so an app sets
+// up its first network the same way it adds a second one later.
+func serveSetup(ctx context.Context, cfg config, upd *update.Service, sep *separated, nets *networks) error {
+	host, _ := os.Hostname()
+	access := ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers}
+	if sep != nil {
+		access.Listener = sep.socket
+	}
+	save := func(s ipc.Settings) error { return ipc.SaveSettings(filepath.Join(cfg.StateDir, "settings.json"), s) }
+	if nets != nil {
+		access.Nets = nets
+		// `configure` names the first network after its control plane; a
+		// client that knows about networks sends a name with it
+		save = func(s ipc.Settings) error { _, err := nets.Add("", s, true, ""); return err }
+	}
+	_, err := ipc.ServeSetup(ctx, cfg.Socket, access, node.Status{NodeName: host, Enrollment: "unknown"}, upd, save)
+	return err
+}
+
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
-func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.Streams, fromFile bool, settingsPath string, upd *update.Service, sep *separated) error {
+func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.Streams, fromFile bool, cur current, upd *update.Service, sep *separated) error {
 	var behindMux *node.BehindMux
 	if m := cfg.BehindMux; m != nil {
 		if m.ID < 1 || m.ID > 255 {
@@ -312,7 +400,10 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	}
 	nc := node.Config{
 		Name:              local.Name,
-		StateDir:          cfg.StateDir,
+		StateDir:          cur.stateDir,
+		NetStatePath:      cur.netStatePath,
+		NetworkID:         cur.id,
+		NetworkName:       cur.name,
 		KeyKind:           cfg.KeyKind,
 		TPMDevice:         cfg.TPMDevice,
 		SEKeyHelper:       cfg.SEKeyHelper,
@@ -357,6 +448,11 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 			logs.System.Info("the worker is confined", "sandbox", sep.sandbox)
 		}
 	}
+	if cur.upWith != "" {
+		// the user picked a network together with a profile: come up in it
+		// as soon as the control plane approves, without a second request
+		nc.AutoUp, nc.Profile = true, cur.upWith
+	}
 	n, err := node.New(nc)
 	if err != nil {
 		return err
@@ -377,12 +473,12 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	}()
 	running.Store(n)
 	defer running.Store(nil)
-	opt := ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers, Update: upd}
+	opt := ipc.Options{Group: cfg.SocketGroup, Users: cfg.SocketUsers, Update: upd, Nets: cur.nets, SingleNetwork: cur.single}
 	if sep != nil {
 		opt.Listener = sep.socket
 	}
-	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", cfg.AutoUp)
-	opt.Reset = resetFunc(fromFile, sep, cfg.StateDir, settingsPath)
+	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", nc.AutoUp, "network", cur.name)
+	opt.Reset = resetFunc(fromFile, sep, cur)
 	return ipc.Serve(ctx, cfg.Socket, n, opt)
 }
 
@@ -397,7 +493,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 // identity it can still give up, and that is what a new key needs. Deleting
 // the state directory by hand is not the way — under a running daemon it
 // leaves the process writing into an unlinked directory.
-func resetFunc(fromFile bool, sep *separated, stateDir, settingsPath string) func(bool) error {
+func resetFunc(fromFile bool, sep *separated, cur current) func(bool) error {
 	return func(newIdentity bool) error {
 		if fromFile && !newIdentity {
 			return errors.New("the control plane of this node stands in its configuration file (control.addr), so there is nothing to forget; `reset -new-identity` gives it a new device key for the same control plane")
@@ -410,10 +506,16 @@ func resetFunc(fromFile bool, sep *separated, stateDir, settingsPath string) fun
 			}
 			return sep.forget(newIdentity)
 		}
+		settingsPath := cur.settingsPath
 		if fromFile {
 			settingsPath = "" // there is none, and it is not ours to remove
 		}
-		return ipc.Forget(stateDir, settingsPath, newIdentity)
+		// one of several networks: forgetting its control plane means
+		// giving up that network, which is what removing it does
+		if cur.nets != nil && !newIdentity {
+			return cur.nets.Remove(cur.id)
+		}
+		return ipc.Forget(cur.stateDir, settingsPath, newIdentity)
 	}
 }
 

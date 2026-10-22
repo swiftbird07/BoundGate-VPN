@@ -7,6 +7,10 @@
 //	boundgatectl enroll [-name NAME] [-pin FINGERPRINT | -accept-new-pin]   first contact: shows the control plane's key and asks
 //	boundgatectl profiles
 //	boundgatectl profile NAME              change the routing profile, also while connected
+//	boundgatectl networks                  the networks this device belongs to, and which one runs
+//	boundgatectl network add -control HOST [-name N] [-select [-profile P]]
+//	boundgatectl network select ID [-profile NAME]   switch to another network (the overlay must be down)
+//	boundgatectl network remove ID         give up a network and its state (its device key goes with it)
 //	boundgatectl up [-profile NAME]
 //	boundgatectl down
 //	boundgatectl login [-timeout 10m]      prints the login URL, waits for the browser login
@@ -45,7 +49,7 @@ func main() {
 	socket := flag.String("socket", defSocket, "node daemon socket (or $BOUNDGATE_SOCKET)")
 	asJSON := flag.Bool("json", false, "print raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|profile NAME|up [-profile NAME]|down|login [-timeout D]|logout|flows|update [-install]|version\n"+
+		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|profile NAME|up [-profile NAME]|down|login [-timeout D]|logout|flows|networks|network add|select|remove|update [-install]|version\n"+
 			"       boundgatectl [-json] admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F|--agent-key S|--signature F|--out F]\n")
 		flag.PrintDefaults()
 	}
@@ -254,6 +258,33 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			fmt.Println(n)
 		}
 		return nil
+	case "networks":
+		list, err := c.Networks()
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return dump(list)
+		}
+		for _, n := range list.Networks {
+			mark := " "
+			if n.ID == list.Current {
+				mark = "*"
+			}
+			where := "this state directory"
+			if n.Dir != "" {
+				where = n.Dir
+			}
+			fmt.Printf("%s %-16s %-28s %-14s %s\n", mark, n.ID, n.ControlAddr, orNone(n.LastEnrollment), where)
+		}
+		if list.Single != "" {
+			fmt.Printf("\nthis daemon holds one network: %s\n", list.Single)
+			return nil
+		}
+		fmt.Println("\n* runs now. `boundgatectl network select ID [-profile NAME]` switches (the overlay must be down).")
+		return nil
+	case "network":
+		return networkCmd(c, args[1:], asJSON)
 	case "up":
 		fs := flag.NewFlagSet("up", flag.ContinueOnError)
 		prof := fs.String("profile", "", "routing profile (default: the daemon's configured profile, else everything advertised)")
@@ -362,6 +393,69 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// networkCmd is `boundgatectl network add|select|remove`: a device that
+// belongs to more than one mesh (docs/NETWORKS.md). One runs at a time.
+func networkCmd(c *ipc.Client, args []string, asJSON bool) error {
+	if len(args) == 0 {
+		return errors.New("usage: boundgatectl network add -control HOST [-name N] [-select [-profile P]] | select ID [-profile NAME] | remove ID")
+	}
+	switch args[0] {
+	case "add":
+		fs := flag.NewFlagSet("network add", flag.ContinueOnError)
+		control := fs.String("control", "", "control plane address of the new network, host[:port] (required)")
+		serverName := fs.String("server-name", "", "TLS name of its node channel (default: nodes.<host>)")
+		name := fs.String("name", "", "what to call this network (default: its address)")
+		nodeName := fs.String("node-name", "", "name of this device in that network (default: host name)")
+		sel := fs.Bool("select", false, "switch to it right away (the overlay must be down)")
+		prof := fs.String("profile", "", "routing profile to come up in with -select")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		n, err := c.AddNetwork(ipc.NewNetwork{Name: *name, ControlAddr: *control, ControlServerName: *serverName,
+			NodeName: *nodeName, Select: *sel, Profile: *prof})
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return dump(n)
+		}
+		fmt.Printf("network %s added (%s).\n", n.ID, n.ControlAddr)
+		if *sel {
+			fmt.Println("switching to it now; it has a device key of its own, so: `boundgatectl enroll`, compare the")
+			fmt.Println("control pin with your administrator's, and have the new node approved.")
+			return nil
+		}
+		fmt.Printf("`boundgatectl network select %s` switches to it (the overlay must be down).\n", n.ID)
+		return nil
+	case "select":
+		fs := flag.NewFlagSet("network select", flag.ContinueOnError)
+		prof := fs.String("profile", "", "routing profile to come up in (default: stay down)")
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return errors.New("usage: boundgatectl network select ID [-profile NAME]   (the ids: boundgatectl networks)")
+		}
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if err := c.SelectNetwork(args[1], *prof); err != nil {
+			return err
+		}
+		fmt.Printf("switching to %s. The daemon drops this network's routes first and comes back in the other one;\n", args[1])
+		fmt.Println("`boundgatectl status` says when it is there.")
+		return nil
+	case "remove":
+		if len(args) != 2 || args[1] == "" {
+			return errors.New("usage: boundgatectl network remove ID   (the ids: boundgatectl networks)")
+		}
+		if err := c.RemoveNetwork(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("network %s is gone: its pinned control plane, its enrollment and, where it had a state\n", args[1])
+		fmt.Println("directory of its own, its device key. Revoke the node in that network's admin UI.")
+		return nil
+	}
+	return fmt.Errorf("unknown: network %s (add, select, remove)", args[0])
 }
 
 func printStatus(s node.Status, asJSON bool) error {
@@ -476,6 +570,9 @@ func printStatus(s node.Status, asJSON bool) error {
 		fmt.Printf(" (the control plane does not know this key: never enrolled, or the request was rejected; run `boundgatectl enroll`)")
 	}
 	fmt.Printf("\nnode:         %s (%s, hardware-bound: %v)\nfingerprint:  %s\nsnapshot:     v%d from %s\n", s.NodeName, s.KeyKind, s.HardwareBound, s.Fingerprint, s.SnapshotVersion, s.Control)
+	if s.NetworkID != "" {
+		fmt.Printf("network:      %s (%s of several; `boundgatectl networks`)\n", s.NetworkName, s.NetworkID)
+	}
 	if s.PrivilegeSeparation != "" {
 		fmt.Printf("separation:   %s\n", s.PrivilegeSeparation)
 		fmt.Printf("sandbox:      %s\n", s.Sandbox)

@@ -264,12 +264,17 @@ func (e *Engine) startNode(s ipc.Settings) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{n: n, cancel: cancel, done: make(chan struct{})}
 	go func() { defer close(r.done); n.Run(ctx) }()
-	h := ipc.Handler(n, ipc.Options{Reset: func(newIdentity bool) error {
-		if newIdentity {
-			return errors.New("a new identity is a new key in the app's key store: the app deletes its key and starts again")
-		}
-		return ipc.Forget(e.cfg.StateDir, e.settingsPath(), false)
-	}}, func() {
+	h := ipc.Handler(n, ipc.Options{
+		// the embedded core holds one network: a packet tunnel has one
+		// state directory and one key store (issue #13 leaves the phones
+		// out of several networks on purpose)
+		SingleNetwork: "an app's packet tunnel runs the one network the app is set up for",
+		Reset: func(newIdentity bool) error {
+			if newIdentity {
+				return errors.New("a new identity is a new key in the app's key store: the app deletes its key and starts again")
+			}
+			return ipc.Forget(e.cfg.StateDir, e.settingsPath(), false)
+		}}, func() {
 		// answered: stop the node and go back to setup
 		go e.resetToSetup()
 	})

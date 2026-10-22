@@ -53,8 +53,17 @@ import (
 // Config for the daemon.
 type Config struct {
 	Name string
-	// StateDir holds device.key and device.crt.
+	// StateDir holds device.key and device.crt. With several networks it is
+	// the directory of one of them, not the daemon's state root.
 	StateDir string
+	// NetStatePath is the cleanup journal (default: StateDir/netstate.json).
+	// A daemon with several networks keeps one for all of them, in its state
+	// root, so a crash is cleaned up whichever network was running.
+	NetStatePath string
+	// NetworkID and NetworkName name the network this node serves when the
+	// daemon has several; they only appear in the status.
+	NetworkID   string
+	NetworkName string
 	// KeyKind selects the DeviceKey implementation: "softkey" (default),
 	// "tpm2" (a key created in and bound to the machine's TPM 2.0),
 	// "secure-enclave" (the same in a Mac's Secure Enclave), or "auto": keep
@@ -289,6 +298,11 @@ type Status struct {
 	// (kept in the state directory), it has not answered since this start.
 	EnrollmentStale bool   `json:"enrollment_stale,omitempty"`
 	Control         string `json:"control"`
+	// Network names the mesh this node belongs to when the daemon knows
+	// several of them (docs/NETWORKS.md). Empty with a single network, so
+	// a client that knows nothing of networks sees what it always saw.
+	NetworkID   string `json:"network_id,omitempty"`
+	NetworkName string `json:"network_name,omitempty"`
 	// ControlError is the last error of the control channel ("" = fine).
 	ControlError string `json:"control_error,omitempty"`
 	// ControlTransport: what carried the control plane's last answer, "h3"
@@ -477,7 +491,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	nc := cfg.Net
 	if nc == nil {
-		nc = netcfg.NewJournal(netcfg.New(), filepath.Join(cfg.StateDir, "netstate.json"))
+		nc = netcfg.NewJournal(netcfg.New(), journalPath(cfg))
 	}
 	n := &Node{cfg: cfg, log: cfg.Log, key: key, spki: spki, cert: cert, net: nc, holder: &registry.Holder{}, flowLog: cfg.FlowLog,
 		resetKey: resetKey, moves: make(map[*transport.ClientTunnel]context.CancelFunc)}
@@ -486,6 +500,15 @@ func New(cfg Config) (*Node, error) {
 		n.flowLog = cfg.Log
 	}
 	return n.init(enclave)
+}
+
+// journalPath is where the cleanup journal goes: what the daemon says, else
+// beside the node's state.
+func journalPath(cfg Config) string {
+	if cfg.NetStatePath != "" {
+		return cfg.NetStatePath
+	}
+	return filepath.Join(cfg.StateDir, "netstate.json")
 }
 
 // OpenDeviceKey opens the device key cfg names (KeyKind, StateDir,
@@ -585,6 +608,8 @@ func (n *Node) init(enclave bool) (*Node, error) {
 		HardwareKeyAvailable: enclave && !key.HardwareBound(),
 		Enrollment:           "unknown",
 		Control:              cfg.ControlAddr,
+		NetworkID:            cfg.NetworkID,
+		NetworkName:          cfg.NetworkName,
 		AdminKeys:            n.trust.signers().Fingerprints(),
 	}
 	n.status.AdminSetVersion = n.trust.current().Version

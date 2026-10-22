@@ -79,6 +79,11 @@ talk to the Mac's daemon or to their own extension:
 * `POST /v1/reset` forgets the control plane. `new_identity` is refused: a new
   identity is a new key in the app's key store, so the app deletes its key and
   starts again.
+* `GET /v1/networks` answers with the one network this extension runs and
+  `single`, the reason there can be no other ([NETWORKS.md](NETWORKS.md)):
+  an app's packet tunnel has one state directory and one key store. The other
+  network endpoints answer 409 with the same sentence, so a client that knows
+  about networks needs no special case for the phones.
 
 `Config`:
 
