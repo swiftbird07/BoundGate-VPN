@@ -70,6 +70,27 @@ func TestTheSweepFindsEveryResolverEntryLeftBehind(t *testing.T) {
 	}
 }
 
+// The sweep decides by the device in the key, because an entry whose device
+// still exists belongs to a node that is still running -- a lab node beside
+// the installed daemon, say. Taking that one's resolver away would break the
+// machine the repair is there to fix.
+func TestTheDeviceOfAResolverKey(t *testing.T) {
+	for key, want := range map[string]string{
+		"State:/Network/Service/boundgate-utun8/DNS":     "utun8",
+		"State:/Network/Service/boundgate-utun12/DNS":    "utun12",
+		"State:/Network/Service/boundgate-/DNS":          "",
+		"State:/Network/Service/boundgate-a/b/DNS":       "",
+		"State:/Network/Service/8A1C-ABCD/DNS":           "", // someone else's
+		"State:/Network/Service/boundgate-utun8/IPv4":    "",
+		"Setup:/Network/Service/boundgate-utun8/DNS":     "",
+		"State:/Network/Service/boundgate-utun8/DNS/sub": "",
+	} {
+		if got := darwinDNSIface(key); got != want {
+			t.Errorf("%s → %q, want %q", key, got, want)
+		}
+	}
+}
+
 // The device name becomes part of a store key. It comes from the system
 // (utunN), so anything else is a bug and is refused rather than written.
 func TestTheMacScriptRefusesAStrangeDeviceName(t *testing.T) {

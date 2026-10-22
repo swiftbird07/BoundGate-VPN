@@ -152,6 +152,20 @@ func darwinDNSKeys(out string) []string {
 	return keys
 }
 
+// darwinDNSIface is the device a resolver key was written for, or "" when the
+// key is not one of ours.
+func darwinDNSIface(key string) string {
+	rest, ok := strings.CutPrefix(key, "State:/Network/Service/boundgate-")
+	if !ok {
+		return ""
+	}
+	name, ok := strings.CutSuffix(rest, "/DNS")
+	if !ok || name == "" || strings.Contains(name, "/") {
+		return ""
+	}
+	return name
+}
+
 // darwinDNSRemoveScript removes the keys the sweep found.
 func darwinDNSRemoveScript(keys []string) string {
 	var b strings.Builder

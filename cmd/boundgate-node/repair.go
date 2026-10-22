@@ -47,6 +47,12 @@ func repairHost(cfgPath string) error {
 			fmt.Println("removed a resolver entry this host was left with:", k)
 		}
 		done += len(keys)
+		// An entry whose device is still there belongs to a node that is
+		// running: this must not take it away, or it would break the
+		// machine it is here to repair.
+		for _, k := range s.LiveDNSKeys(ctx) {
+			fmt.Println("left alone, its tunnel device is still there (end that node with `boundgatectl down`):", k)
+		}
 	}
 	if done == 0 {
 		fmt.Println("nothing to undo: this host carries no network changes of a BoundGate node")

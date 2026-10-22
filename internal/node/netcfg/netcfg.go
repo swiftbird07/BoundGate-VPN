@@ -91,8 +91,12 @@ func LinkDNS(c Configurator) (LinkDNSConfigurator, bool) {
 // its record, and while it is there the machine resolves no name at all
 // (R144). `boundgate-node -repair` is the way out that needs no daemon.
 type DNSSweeper interface {
-	// SweepDNS removes them and returns what it removed.
+	// SweepDNS removes the entries whose tunnel device is gone and returns
+	// what it removed.
 	SweepDNS(ctx context.Context) ([]string, error)
+	// LiveDNSKeys are the entries it left alone because their device is
+	// still there, so a node still owns them.
+	LiveDNSKeys(ctx context.Context) []string
 }
 
 // Sweeper returns the sweeper when this platform has one, looking behind a

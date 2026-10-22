@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os/exec"
 	"strings"
@@ -37,23 +38,57 @@ func (darwinCfg) SetLinkDNS(ctx context.Context, ifname string, servers []netip.
 	return nil
 }
 
-// SweepDNS implements DNSSweeper: it removes every resolver entry a node of
-// ours left in the system configuration, whatever device it was for and
-// whether or not a journal still knows about it. This is what gets a Mac
+// SweepDNS implements DNSSweeper: it removes the resolver entries a node of
+// ours left in the system configuration **for devices that are gone**,
+// whether or not a journal still knows about them. That is what gets a Mac
 // whose daemon died mid-teardown its names back, without a reboot.
+//
+// An entry whose tunnel device still exists belongs to a node that is very
+// probably running -- another one on this machine, a lab node beside the
+// installed daemon -- and taking its resolver away would break exactly what
+// this is meant to repair. Those are left alone and named, so the caller can
+// say that `boundgatectl down` is the way to end a node that is still there.
 func (darwinCfg) SweepDNS(ctx context.Context) ([]string, error) {
 	out, err := scutil(ctx, darwinDNSListScript)
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: asking the system configuration for leftovers: %v: %s", err, out)
 	}
-	keys := darwinDNSKeys(out)
-	if len(keys) == 0 {
+	var stale []string
+	for _, k := range darwinDNSKeys(out) {
+		ifname := darwinDNSIface(k)
+		if ifname == "" {
+			continue
+		}
+		if _, err := net.InterfaceByName(ifname); err == nil {
+			continue // the device is still there, so someone still owns this
+		}
+		stale = append(stale, k)
+	}
+	if len(stale) == 0 {
 		return nil, nil
 	}
-	if out, err := scutil(ctx, darwinDNSRemoveScript(keys)); err != nil {
+	if out, err := scutil(ctx, darwinDNSRemoveScript(stale)); err != nil {
 		return nil, fmt.Errorf("%w: %v: %s", ErrNoResolver, err, out)
 	}
-	return keys, nil
+	return stale, nil
+}
+
+// LiveDNSKeys are the resolver entries of ours whose device still exists:
+// nodes that are still running, which a repair must not touch.
+func (darwinCfg) LiveDNSKeys(ctx context.Context) []string {
+	out, err := scutil(ctx, darwinDNSListScript)
+	if err != nil {
+		return nil
+	}
+	var live []string
+	for _, k := range darwinDNSKeys(out) {
+		if ifname := darwinDNSIface(k); ifname != "" {
+			if _, err := net.InterfaceByName(ifname); err == nil {
+				live = append(live, k)
+			}
+		}
+	}
+	return live
 }
 
 // scutil runs its commands from stdin and returns what it printed.
