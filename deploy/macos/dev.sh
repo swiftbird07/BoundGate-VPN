@@ -25,9 +25,13 @@ SUDO=sudo
 [ "${NOSUDO:-0}" = 1 ] && SUDO=
 
 if [ "${BRIDGE:-1}" = 1 ]; then HUB1=15431; HUB2=15432; HUBNOTE="UDP-over-TCP bridge"; else HUB1=14431; HUB2=14432; HUBNOTE="published UDP ports"; fi
+# The state belongs to whoever runs the daemon: root, unless NOSUDO=1. So
+# the configuration is written with the same rights, or the next run fails
+# on a directory it may not write.
 config() {
-  mkdir -p "$STATE/logs"
-  sed -e "s#@HUB1@#$HUB1#g" -e "s#@HUB2@#$HUB2#g" -e "s#@HUBNOTE@#$HUBNOTE#g" -e "s#@NAME@#$NAME#g" -e "s#@STATE@#$STATE#g" -e "s#@REPO@#$REPO#g" "$REPO/deploy/macos/node.yaml.in" > "$STATE/node.yaml"
+  $SUDO mkdir -p "$STATE/logs"
+  sed -e "s#@HUB1@#$HUB1#g" -e "s#@HUB2@#$HUB2#g" -e "s#@HUBNOTE@#$HUBNOTE#g" -e "s#@NAME@#$NAME#g" -e "s#@STATE@#$STATE#g" -e "s#@REPO@#$REPO#g" "$REPO/deploy/macos/node.yaml.in" \
+    | $SUDO tee "$STATE/node.yaml" >/dev/null
 }
 need() { [ -x "$BIN/$1" ] || { echo "missing $BIN/$1: run 'make build-darwin' first" >&2; exit 1; }; }
 
@@ -52,6 +56,10 @@ case "${1:-}" in
     need boundgate-node; own_state; config
     if [ "${BRIDGE:-1}" = 1 ]; then
       need boundgate-udpbridge
+      # the bridge is an unprivileged loopback shim, but the log directory
+      # belongs to the daemon's user: hand it a file it may write
+      $SUDO touch "$STATE/logs/udpbridge.log"
+      $SUDO chown "$(id -u)" "$STATE/logs/udpbridge.log"
       "$BIN/boundgate-udpbridge" -client "127.0.0.1:15431=127.0.0.1:24431,127.0.0.1:15432=127.0.0.1:24432" > "$STATE/logs/udpbridge.log" 2>&1 &
       BRIDGE_PID=$!
       trap 'kill $BRIDGE_PID 2>/dev/null || true' EXIT INT TERM
