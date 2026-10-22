@@ -3,6 +3,7 @@
   import { auth, refreshAuth, logout } from './lib/auth.svelte';
   import { route } from './lib/router.svelte';
   import { admin } from './lib/api';
+  import { poll } from './lib/poll';
   import type { Overview } from './lib/types';
   import Toasts from './lib/components/Toasts.svelte';
   import Logo from './lib/components/Logo.svelte';
@@ -31,16 +32,18 @@
 
   async function loadCounts() {
     if (auth.status?.level !== 'full') return;
-    try { counts = await admin.overview(); } catch { /* shown on the page */ }
+    counts = await admin.overview();
   }
+  // the badges in the sidebar: the same loop as the pages use, so they stop
+  // asking while the tab is in the background and back off on errors
+  const countsPoll = poll({ run: loadCounts, every: 15000 });
 
   onMount(() => {
     try { applyTheme((localStorage.getItem('bg_theme') as typeof theme) || 'system'); } catch { /* ignore */ }
-    void refreshAuth().then(loadCounts);
-    const t = setInterval(loadCounts, 15000);
-    return () => clearInterval(t);
+    void refreshAuth();
+    return countsPoll.start();
   });
-  $effect(() => { if (auth.status?.level === 'full') void loadCounts(); });
+  $effect(() => { if (auth.status?.level === 'full') void countsPoll.refresh(); });
 
   const nav: { href: string; label: string; icon: IconName; badge?: () => number }[] = [
     { href: '/', label: 'Overview', icon: 'overview' },

@@ -7,20 +7,21 @@
   import { bytes } from '../lib/util';
   import { fail } from '../lib/toast.svelte';
   import { seenRecently } from '../lib/mesh';
-  import Icon from '../lib/components/Icon.svelte';
+  import { poll, type PollState } from '../lib/poll';
+  import Updated from '../lib/components/Updated.svelte';
 
   let ov = $state<Overview | null>(null);
   let nodes = $state<Node[]>([]);
   let tunnels = $state<Tunnel[]>([]);
   let audit = $state<LogEvent[]>([]);
-  let err = $state('');
+  let loaded = $state(false);
+  let ps = $state<PollState>({ busy: false, error: '', failures: 0 });
   async function load() {
-    try {
-      [ov, nodes, tunnels, audit] = await Promise.all([admin.overview(), admin.nodes(), admin.tunnels({ active: true, limit: 50 }), admin.logs({ stream: 'audit', limit: 8 })]);
-      err = '';
-    } catch (e: any) { err = e.message; }
+    [ov, nodes, tunnels, audit] = await Promise.all([admin.overview(), admin.nodes(), admin.tunnels({ active: true, limit: 50 }), admin.logs({ stream: 'audit', limit: 8 })]);
+    loaded = true;
   }
-  onMount(() => { void load(); const t = setInterval(load, 10000); return () => clearInterval(t); });
+  const poller = poll({ run: load, every: 10000, onState: (s) => (ps = s) });
+  onMount(() => poller.start());
   const waiting = $derived((ov?.nodes.pending ?? 0) + (ov?.nodes.confirmed ?? 0));
   const attention = $derived(nodes.filter((n) => n.status === 'pending' || n.status === 'confirmed'));
   const online = $derived(nodes.filter((n) => n.status === 'approved' && seenRecently(n)));
@@ -28,9 +29,12 @@
 
 <div class="page-head">
   <div><h1>Overview</h1><div class="sub">Live state of the overlay{#if ov}&nbsp;· snapshot v{ov.snapshot_version}{/if}</div></div>
-  <button class="btn sm" onclick={load}><Icon name="refresh" size={14} /> Refresh</button>
+  <Updated info={ps} refresh={poller.refresh} />
 </div>
-{#if err}<p class="error">{err}</p>{/if}
+{#if ps.error}<p class="error">{ps.error}</p>{/if}
+{#if !loaded}
+  <div class="card"><div class="empty"><span class="spinner"></span> Asking the control plane…</div></div>
+{:else}
 {#if ov}
   <div class="grid stats" style="margin-bottom:16px">
     <a class="card stat" href="/nodes"><span class="n">{ov.nodes.approved ?? 0}</span><span class="l">approved nodes · {online.length} seen in the last 90 s</span></a>
@@ -87,3 +91,4 @@
     </tbody></table>
   </div>
 </div>
+{/if}

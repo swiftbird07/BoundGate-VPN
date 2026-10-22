@@ -7,7 +7,8 @@
   import Badge from '../lib/components/Badge.svelte';
   import Attrs from '../lib/components/Attrs.svelte';
   import { bytes, duration } from '../lib/util';
-  import { fail } from '../lib/toast.svelte';
+  import { poll, type PollState } from '../lib/poll';
+  import Updated from '../lib/components/Updated.svelte';
 
   type Tab = 'audit' | 'flows' | 'tunnels';
   let tab = $state<Tab>((route.query.get('tab') as Tab) || 'audit');
@@ -26,23 +27,37 @@
   const streams = ['audit', 'enrollment', 'admin-auth', 'user-auth', 'tunnel', 'system', 'flow'];
   const nodeName = (id?: string) => (id ? nodes.find((n) => n.id === id)?.name ?? id.slice(0, 8) : '');
 
+  let loaded = $state(false);
+  let ps = $state<PollState>({ busy: false, error: '', failures: 0 });
   async function load() {
-    try {
-      if (!nodes.length) nodes = await admin.nodes();
-      if (tab === 'audit') events = await admin.logs({ stream, node, q: text, limit: 200 });
-      else if (tab === 'flows') events = await admin.flows({ node, decision, dst, sni, user, limit: 200 });
-      else tunnels = await admin.tunnels({ node, active: activeOnly, limit: 200 });
-    } catch (e) { fail(e); }
+    if (!nodes.length) nodes = await admin.nodes();
+    if (tab === 'audit') events = await admin.logs({ stream, node, q: text, limit: 200 });
+    else if (tab === 'flows') events = await admin.flows({ node, decision, dst, sni, user, limit: 200 });
+    else tunnels = await admin.tunnels({ node, active: activeOnly, limit: 200 });
+    loaded = true;
   }
-  onMount(() => { void load(); const t = setInterval(() => live && load(), 5000); return () => clearInterval(t); });
-  $effect(() => { tab; stream; node; text; decision; dst; sni; user; activeOnly; void load(); });
+  const poller = poll({ run: load, every: 5000, enabled: () => live, onState: (s) => (ps = s) });
+  onMount(() => poller.start());
+  // typing in a filter is one query per keystroke otherwise, and a free-text
+  // search is the most expensive query the control plane has
+  let debounce: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    tab; stream; node; text; decision; dst; sni; user; activeOnly;
+    clearTimeout(debounce);
+    debounce = setTimeout(() => void poller.refresh(), 250);
+    return () => clearTimeout(debounce);
+  });
   function setTab(t: Tab) { tab = t; navigate(`/logs?tab=${t}${node ? '&node=' + node : ''}`, true); }
 </script>
 
 <div class="page-head">
   <div><h1>Logs</h1><div class="sub">Audit trail of the control plane, flow decisions shipped by nodes, and tunnel history reported by hubs.</div></div>
-  <label class="check"><input type="checkbox" bind:checked={live} /> live</label>
+  <div class="row" style="gap:12px; align-items:center">
+    <label class="check"><input type="checkbox" bind:checked={live} /> live</label>
+    <Updated info={ps} refresh={poller.refresh} />
+  </div>
 </div>
+{#if ps.error}<p class="error">{ps.error}</p>{/if}
 <div class="tabs">
   <button class:active={tab === 'audit'} onclick={() => setTab('audit')}>Audit</button>
   <button class:active={tab === 'flows'} onclick={() => setTab('flows')}>Flows</button>
@@ -79,7 +94,7 @@
             <td>{duration(t.opened_at, t.closed_at)}</td>
             <td class="num">{bytes(t.bytes_in)}</td><td class="num">{bytes(t.bytes_out)}</td><td class="num">{t.packets_in + t.packets_out}</td>
           </tr>
-        {:else}<tr><td colspan="8" class="empty">No tunnels recorded.</td></tr>{/each}
+        {:else}<tr><td colspan="8" class="empty">{#if !loaded}<span class="spinner"></span> Asking the control plane…{:else}No tunnels recorded.{/if}</td></tr>{/each}
       </tbody>
     </table>
   {:else if tab === 'flows'}
@@ -97,7 +112,7 @@
             <td>{#if Array.isArray(a.policies)}{#each a.policies as p}<span class="chip">{p}</span> {/each}{/if}{#if Array.isArray(a.errors) && a.errors.length}<div class="error small">{a.errors.join('; ')}</div>{/if}{#if a.reason}<div class="faint small">{a.reason}</div>{/if}</td>
             <td class="num">{bytes(Number(a.bytes_in ?? 0) + Number(a.bytes_out ?? 0))}</td>
           </tr>
-        {:else}<tr><td colspan="7" class="empty">No flow records match.</td></tr>{/each}
+        {:else}<tr><td colspan="7" class="empty">{#if !loaded}<span class="spinner"></span> Asking the control plane…{:else}No flow records match.{/if}</td></tr>{/each}
       </tbody>
     </table>
   {:else}
@@ -112,7 +127,7 @@
             <td>{nodeName(e.device_id)}</td>
             <td><Attrs attrs={e.attrs} skip={['name']} /></td>
           </tr>
-        {:else}<tr><td colspan="5" class="empty">No events.</td></tr>{/each}
+        {:else}<tr><td colspan="5" class="empty">{#if !loaded}<span class="spinner"></span> Asking the control plane…{:else}No events.{/if}</td></tr>{/each}
       </tbody>
     </table>
   {/if}

@@ -11,6 +11,8 @@
   import SignCommand from '../lib/components/SignCommand.svelte';
   import { toast, fail } from '../lib/toast.svelte';
   import { when } from '../lib/util';
+  import { poll, type PollState } from '../lib/poll';
+  import Updated from '../lib/components/Updated.svelte';
 
   let nodes = $state<Node[]>([]);
   let filter = $state<'all' | 'pending' | 'confirmed' | 'approved' | 'revoked'>('all');
@@ -24,18 +26,20 @@
   let busy = $state(false);
   const allRoles: Role[] = ['endpoint', 'subnet-router', 'hub', 'exit-node'];
 
+  let loaded = $state(false);
+  let ps = $state<PollState>({ busy: false, error: '', failures: 0 });
   async function load() {
-    try {
-      nodes = await admin.nodes();
-      if (selected) selected = nodes.find((n) => n.id === selected!.id) ?? null;
-      const want = route.query.get('id');
-      if (want && !selected) selected = nodes.find((n) => n.id === want) ?? null;
-    } catch (e) { fail(e); }
+    nodes = await admin.nodes();
+    if (selected) selected = nodes.find((n) => n.id === selected!.id) ?? null;
+    const want = route.query.get('id');
+    if (want && !selected) selected = nodes.find((n) => n.id === want) ?? null;
+    loaded = true;
   }
+  const poller = poll({ run: load, every: 8000, onState: (s) => (ps = s) });
   // what a device shows at its first contact; its user compares it with this
   let controlPin = $state('');
   onMount(() => { admin.identity().then((i) => (controlPin = i.control_pin)).catch(() => {}); });
-  onMount(() => { void load(); const t = setInterval(load, 8000); return () => clearInterval(t); });
+  onMount(() => poller.start());
   const shown = $derived(nodes.filter((n) => (filter === 'all' ? n.status !== 'revoked' : n.status === filter) && (!tagFilter || (n.tags ?? []).includes(tagFilter))));
   const tagsInUse = $derived([...new Set(nodes.filter((n) => n.status !== 'revoked').flatMap((n) => n.tags ?? []))].sort());
   // the built-in tags first, then what other nodes carry; never what this node has already
@@ -84,7 +88,7 @@
       const body: Grant = { fingerprint: confirm.node.fingerprint, name: g.name, kind: g.kind, roles: g.roles, prefixes: g.prefixes.filter((p) => p.prefix.trim()), overlay_ip: g.overlay_ip || undefined, public_addr: g.public_addr.trim(), tags: g.tags, hardware_bound: confirm.node.hardware_claimed ? g.hardware : undefined };
       const r = confirm.edit ? await admin.patchNode(confirm.node.id, body) : await admin.confirm(confirm.node.id, body);
       confirm = null;
-      await load();
+      await poller.refresh();
       selected = nodes.find((n) => n.id === r.id) ?? r;
       if (r.sign_command) { signCmd = { cmd: r.sign_command, expires: r.sign_expires_at || '' }; toast('Confirmed. Now sign the binding with an admin key.', 'ok'); }
       else toast('Saved', 'ok');
@@ -96,14 +100,14 @@
   }
   async function reject(n: Node) {
     if (!window.confirm(`Reject ${n.name}? The node has to enroll again.`)) return;
-    try { await admin.reject(n.id); toast('Rejected', 'ok'); select(null); await load(); } catch (e) { fail(e); }
+    try { await admin.reject(n.id); toast('Rejected', 'ok'); select(null); await poller.refresh(); } catch (e) { fail(e); }
   }
   async function revoke(n: Node) {
     if (!window.confirm(`Revoke ${n.name}? Its tunnels close within seconds and its key can never enroll again.`)) return;
     try {
       await admin.revoke(n.id);
       toast('Revoked. Now sign the revocation with an admin key.', 'ok');
-      await load();
+      await poller.refresh();
       await signRevocation(n);
     } catch (e) { fail(e); }
   }
@@ -120,12 +124,16 @@
 
 <div class="page-head">
   <div><h1>Nodes</h1><div class="sub">Every device is approved twice: confirmed here after comparing its fingerprint, then signed with an admin key.</div></div>
-  <div class="seg">
-    {#each ['all', 'pending', 'confirmed', 'approved', 'revoked'] as f}
-      <button class:active={filter === f} onclick={() => (filter = f as typeof filter)}>{f}{#if f !== 'all'} <span class="faint">{counts[f as keyof typeof counts]}</span>{/if}</button>
-    {/each}
+  <div class="row" style="gap:12px; align-items:center">
+    <div class="seg">
+      {#each ['all', 'pending', 'confirmed', 'approved', 'revoked'] as f}
+        <button class:active={filter === f} onclick={() => (filter = f as typeof filter)}>{f}{#if f !== 'all'} <span class="faint">{counts[f as keyof typeof counts]}</span>{/if}</button>
+      {/each}
+    </div>
+    <Updated info={ps} refresh={poller.refresh} />
   </div>
 </div>
+{#if ps.error}<p class="error">{ps.error}</p>{/if}
 {#if tagsInUse.length}
   <div class="tagbar small">
     <span class="muted">Tags</span>
@@ -157,7 +165,7 @@
           <td class="num">{n.active_tunnels}</td>
         </tr>
       {:else}
-        <tr><td colspan="8" class="empty">{#if tagFilter}No {filter === 'all' ? '' : filter} nodes tagged <span class="chip tag">{tagFilter}</span>.{:else}No nodes {filter === 'all' ? '' : filter}. Enroll one with <code>boundgatectl enroll</code>.{/if}</td></tr>
+        <tr><td colspan="8" class="empty">{#if !loaded}<span class="spinner"></span> Asking the control plane…{:else if tagFilter}No {filter === 'all' ? '' : filter} nodes tagged <span class="chip tag">{tagFilter}</span>.{:else}No nodes {filter === 'all' ? '' : filter}. Enroll one with <code>boundgatectl enroll</code>.{/if}</td></tr>
       {/each}
     </tbody>
   </table>

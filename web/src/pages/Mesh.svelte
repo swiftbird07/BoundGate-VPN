@@ -7,7 +7,9 @@
   import type { Node, Session, Tunnel } from '../lib/types';
   import { activity, buildMesh, changes, fmtRate, kindOf, measureRates, step, type Mesh, type MeshEdge, type MeshNode, type NodeKind } from '../lib/mesh';
   import { ago, bytes, duration, when } from '../lib/util';
+  import { poll, type PollState } from '../lib/poll';
   import Icon from '../lib/components/Icon.svelte';
+  import Updated from '../lib/components/Updated.svelte';
 
   const HOUR = 3600e3;
   const windows = [{ label: '1 h', ms: HOUR }, { label: '6 h', ms: 6 * HOUR }, { label: '24 h', ms: 24 * HOUR }, { label: '7 d', ms: 168 * HOUR }];
@@ -59,15 +61,17 @@
   const from = $derived(now - windowMs);
 
   async function load() {
-    try {
-      const t = Date.now();
-      const [n, s, tu] = await Promise.all([admin.nodes('approved'), admin.sessions(true), admin.tunnels({ since: new Date(t - windowMs).toISOString(), limit: 5000 })]);
-      rates = measureRates(tunnels, tu, rates);
-      nodes = n; sessions = s; tunnels = tu; now = t; err = '';
-      rebuild(loaded);
-      loaded = true;
-    } catch (e: any) { err = e.message; }
+    const t = Date.now();
+    const [n, s, tu] = await Promise.all([admin.nodes('approved'), admin.sessions(true), admin.tunnels({ since: new Date(t - windowMs).toISOString(), limit: 5000 })]);
+    rates = measureRates(tunnels, tu, rates);
+    nodes = n; sessions = s; tunnels = tu; now = t;
+    rebuild(loaded);
+    loaded = true;
   }
+  // 5000 tunnels can take longer than the interval, so the loop waits for the
+  // round it started instead of starting another (lib/poll.ts)
+  let ps = $state<PollState>({ busy: false, error: '', failures: 0 });
+  const poller = poll({ run: load, every: 5000, onState: (s) => { ps = s; err = s.error; } });
 
   function rebuild(pulse: boolean) {
     const next = buildMesh(nodes.filter((n) => show[kindOf(n.roles)]), sessions, tunnels, at ?? now, now, history ? windowMs : 0, rates, mesh);
@@ -120,10 +124,9 @@
   }
 
   onMount(() => {
-    void load();
-    const poll = setInterval(load, 5000);
+    const stop = poller.start();
     let raf = requestAnimationFrame(function loop() { frame(); raf = requestAnimationFrame(loop); });
-    return () => { clearInterval(poll); cancelAnimationFrame(raf); };
+    return () => { stop(); cancelAnimationFrame(raf); };
   });
 
   // ---- pointer: drag pins a node, click selects, double click lets go ----
@@ -287,6 +290,7 @@
       <select bind:value={user} aria-label="Highlight a user's devices"><option value="">All users</option>{#each users as u}<option value={u}>{u}</option>{/each}</select>
     {/if}
     <button class="btn sm" onclick={relayout} title="Release pinned nodes and lay the graph out again"><Icon name="refresh" size={14} /> Re-layout</button>
+    <Updated info={ps} refresh={poller.refresh} />
   </div>
 </div>
 {#if err}<p class="error">{err}</p>{/if}
