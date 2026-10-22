@@ -15,8 +15,11 @@
     4. up: the Wintun adapter, its address and routes appear; sign-in if
        the hubs want one (opens the URL for you)
     5. the target behind the network answers through the tunnel
-    6. down: no adapter, no route over it, no host route left behind; the
-       routing table is what it was before
+    5b. the hub's resolvers are this machine's while the overlay is up: the
+       adapter has them, a policy rule for "." sends every name there, a name
+       only that resolver knows resolves, and other names still do
+    6. down: no adapter, no route over it, no host route and no policy rule
+       left behind; the routing table is what it was before
     7. restart of the service: it comes back, keeps its identity, and (with
        auto_up: true in node.yaml) connects again by itself
 
@@ -30,6 +33,9 @@ param(
     [int]$Port = 443,
     # the profile to connect with (default: the node's)
     [string]$NodeProfile = '',
+    # a name only the overlay's resolver knows, to prove the lookup goes
+    # through the tunnel (lab: target.lab); empty skips that one check
+    [string]$DnsName = '',
     # accept a software key (a machine without a TPM); the key check then only warns
     [switch]$AllowSoftkey,
     [string]$InstallDir = "$env:ProgramFiles\BoundGate"
@@ -137,19 +143,56 @@ try {
     $hub = @($s.hubs | Where-Object { $_.state -eq 'connected' })[0]
     Pass "tunnel counters: in $($hub.bytes_in) B, out $($hub.bytes_out) B"
 
+    Write-Host '== 5b. the hub''s resolvers are this machine''s while the overlay is up'
+    # Without this the machine resolves in its own network, the hub never
+    # sees the query, and a dynamic access list cannot match the connection
+    # that follows (#14, docs/ACL.md). The adapter's own resolvers are not
+    # enough: Windows asks the other adapters in parallel and takes whichever
+    # answers first, so the policy rule for "." is what settles it.
+    $ourRules = { Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig' -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSChildName -like 'BoundGate-*' } }
+    if (Has $s 'dns') {
+        $want = @($s.dns)
+        $rule = @(& $ourRules)
+        if ($rule.Count -ne 1) { Fail "expected one name resolution policy rule of ours, found $($rule.Count)" }
+        $ns = (Get-ItemProperty $rule[0].PSPath).GenericDNSServers
+        foreach ($d in $want) { if (($ns -split ';') -notcontains $d) { Fail "the rule for '.' names $ns, not $d" } }
+        $ifdns = @((Get-DnsClientServerAddress -InterfaceAlias $s.interface -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+        foreach ($d in $want) { if ($ifdns -notcontains $d) { Fail "the adapter does not have $d as a resolver (has: $($ifdns -join ', '))" } }
+        Pass "every name goes to $($want -join ', ')"
+        if ($DnsName) {
+            Clear-DnsClientCache
+            if (-not (Resolve-DnsName -Name $DnsName -Type A -ErrorAction SilentlyContinue)) { Fail "$DnsName did not resolve through the tunnel" }
+            Pass "$DnsName resolves through the tunnel"
+        }
+        if (-not (Resolve-DnsName -Name 'www.microsoft.com' -Type A -ErrorAction SilentlyContinue)) {
+            Fail 'other names stopped resolving while the overlay is up (does the hub''s resolver forward what is not its own?)'
+        }
+        Pass 'other names still resolve'
+    } elseif (Has $s 'dns_error') {
+        Write-Host "   (this machine keeps its own resolver: $($s.dns_error))"
+    } else {
+        Write-Host '   (the hub offers no resolvers: nothing to point anywhere)'
+    }
+
     Write-Host '== 6. down leaves nothing behind'
     $ifname = $s.interface
     & $ctl down | Out-Null
     if (-not (WaitFor 20 { param($x) $x.state -eq 'down' })) { Fail 'down did not finish' }
     Start-Sleep -Seconds 2
     if (Get-NetAdapter -Name $ifname -ErrorAction SilentlyContinue) { Fail "adapter $ifname is still there" }
+    # A rule of ours lives in the registry and would survive a reboot: left
+    # behind, every name on this machine goes into a tunnel that is gone
+    # (R144). `boundgate-node -repair` is the way back without a service.
+    $left = @(& $ourRules)
+    if ($left.Count -gt 0) { Fail "the name resolution policy rule(s) $($left.PSChildName -join ', ') are still there; undo with `"boundgate-node -repair`"" }
     $after = RouteTable
     $diff = Compare-Object -ReferenceObject $before -DifferenceObject $after
     if ($diff) {
         $diff | ForEach-Object { Write-Host "   $($_.SideIndicator) $($_.InputObject)" }
         Fail 'the routing table differs from before up (<= missing now, => new)'
     }
-    Pass 'adapter gone, routing table as before'
+    Pass 'adapter gone, no policy rule left, routing table as before'
 
     Write-Host '== 7. service restart'
     $autoUp = (Get-Content (Join-Path $env:ProgramData 'BoundGate\node.yaml') -Raw) -match '(?m)^\s*auto_up:\s*true'

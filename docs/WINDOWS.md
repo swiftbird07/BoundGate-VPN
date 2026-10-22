@@ -21,6 +21,7 @@ Status 2026-10-14:
 |---|---|
 | `cmd/boundgate-node` (`platform_windows.go`) | The service. `boundgate-node install [-config FILE]`, `uninstall`, `start`, `stop`. Under the service manager it runs until Stop or Shutdown. Started from a console it runs until Ctrl+C. |
 | `internal/node/netcfg/netcfg_windows.go` | Wintun adapter through `wireguard/tun`. Address, MTU, routes and host routes through `winipcfg` (the IP Helper API, as in WireGuard for Windows). When the default routes outside the tunnel change (another Wi-Fi, a cable), the host routes to control plane and hubs are set again on the new path and the node reconnects (R108, the same on Linux and macOS). Endpoint only: forwarding and NAT are refused. |
+| `internal/node/netcfg/dnswindows_windows.go` | The host's resolver while the overlay is up (`resolver: hub`, the default): the hub's resolvers on the Wintun adapter (`SetInterfaceDnsSettings` through `winipcfg`) **and** a name resolution policy rule for `.`, because the adapter alone does not settle it -- Windows asks the other adapters' resolvers in parallel and takes whichever answers first, which is the leak docs/ACL.md is about. `resolver: system` opts out, and a machine where it cannot be set keeps its own and says so in the status. |
 | `internal/devicekey/tpm2key` (`device_windows.go`) | The existing TPM key over TPM Base Services (`go-tpm/…/windowstpm`). |
 | `internal/node/ipc` (`protect_windows.go`) | The socket `%ProgramData%\BoundGate\node.sock` (AF_UNIX, Windows 10 1803 and later) with its own DACL. |
 | `cmd/boundgate-tray`, `internal/tray` | The tray app. |
@@ -211,7 +212,13 @@ It checks these, and writes a transcript next to itself:
 3. The node is approved and its binding verified.
 4. `up` creates the adapter, address and routes, with sign-in if asked.
 5. The target answers through the tunnel.
-6. `down` leaves no adapter, and the routing table is what it was before.
+6. The hub's resolvers are the machine's while the overlay is up: the status
+   names them, `Get-DnsClientNrptPolicy` holds the rule for `.`, a name only
+   the overlay's resolver knows resolves, and other names still do.
+7. `down` leaves no adapter, no policy rule, and the routing table is what it
+   was before. A rule of ours lives in the registry and would survive a
+   reboot, so `boundgate-node -repair` removes the rules of adapters that are
+   gone, with no service and no network (R144).
 7. After a service restart the node keeps its identity. With
    `auto_up: true` it connects again by itself.
 
@@ -225,16 +232,9 @@ host route to the hub via the hotspot's gateway.
    Then, on both: a policy with `hardware_bound`, a reboot with
    `auto_up: true`, `uninstall.ps1`, and `setup.ps1` from scratch (written
    2026-10-14, not yet run on Windows).
-2. **DNS:** the node does not set the resolver here yet. On Linux a spoke
-   points systemd-resolved at the hub's resolvers while the overlay is up
-   (`resolver: hub`, docs/ACL.md); on Windows that is `winipcfg`'s SetDNS on
-   the Wintun adapter plus an NRPT rule for `.`, so that Windows does not
-   keep asking the other interfaces. Until then the status says
-   `this platform's daemon cannot change the host's resolver yet`, and a
-   dynamic access list matches this node by server name and by address.
-3. **Stage 2:**
+2. **Stage 2:**
    * An MSI with Authenticode signatures, when there is a certificate. Until
      then SmartScreen warns (R106).
    * Self-installing updates.
-4. **Hub and subnet router on Windows:** not planned. Forwarding and NAT are
+3. **Hub and subnet router on Windows:** not planned. Forwarding and NAT are
    refused.

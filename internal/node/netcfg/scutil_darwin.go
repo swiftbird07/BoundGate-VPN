@@ -14,7 +14,8 @@ import (
 
 // ErrNoResolver says this Mac did not take the resolver setting. The node
 // keeps the system's resolver and reports it; it is not a reason to refuse
-// the overlay.
+// the overlay. Every platform that can set it has its own, with the words
+// that platform can actually be asked about.
 var ErrNoResolver = errors.New("netcfg: the system configuration did not take the resolver")
 
 // SetLinkDNS implements LinkDNSConfigurator: while the overlay is up this
