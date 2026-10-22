@@ -187,8 +187,23 @@ type FlowView struct {
 	Names         []string  `json:"resolved_names,omitempty"`
 	BytesIn       uint64    `json:"bytes_in"`
 	BytesOut      uint64    `json:"bytes_out"`
-	Opened        time.Time `json:"opened"`
-	LastSeen      time.Time `json:"last_seen"`
+	// NoReply: allowed, forwarded and nothing came back. The cause then
+	// lies outside this node's decision - a firewall on the way, a target
+	// without a route back, a routing loop - which is what one wants to
+	// know first (noReply).
+	NoReply  bool      `json:"no_reply,omitempty"`
+	Opened   time.Time `json:"opened"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+// noReply: the flow was permitted, something went out, and the other side
+// has not answered a single packet. Within the first moments that says
+// nothing - a handshake takes a round trip - so a flow younger than this
+// counts as waiting, not as unanswered.
+const replyGrace = 2 * time.Second
+
+func noReply(e flow.Entry, now time.Time) bool {
+	return e.Allowed && e.PacketsIn > 0 && e.PacketsOut == 0 && now.Sub(e.Opened) > replyGrace
 }
 
 func nodeName(snap *registry.Snapshot, id transport.DeviceID) string {
@@ -219,7 +234,8 @@ func decisionOf(e flow.Entry) string {
 func flowView(snap *registry.Snapshot, e flow.Entry) FlowView {
 	v := FlowView{ID: e.ID, Proto: acl.ProtoName(e.Proto), Src: e.Originator.String(), Dst: e.Target.String(), Local: e.Origin.Local,
 		Principal: string(e.Origin.Principal), PrincipalName: nodeName(snap, e.Origin.Principal), Decision: decisionOf(e),
-		Policies: e.Result.Policies, SNI: e.SNI, DNSName: e.DNSName, Names: e.Result.Names, BytesIn: e.BytesIn, BytesOut: e.BytesOut, Opened: e.Opened, LastSeen: e.LastSeen}
+		Policies: e.Result.Policies, SNI: e.SNI, DNSName: e.DNSName, Names: e.Result.Names, BytesIn: e.BytesIn, BytesOut: e.BytesOut,
+		NoReply: noReply(e, time.Now()), Opened: e.Opened, LastSeen: e.LastSeen}
 	if e.Result.Session != nil {
 		v.User = e.Result.Session.Username
 		if v.User == "" {
@@ -290,6 +306,12 @@ func (s *session) onFlowEvent(ev flow.Event) {
 		attrs["packets_in"] = e.PacketsIn
 		attrs["packets_out"] = e.PacketsOut
 		attrs["duration_ms"] = ev.At.Sub(e.Opened).Milliseconds()
+		if noReply(e, ev.At) {
+			// allowed, forwarded, never answered: the cause is outside this
+			// node's decision. Written as its own field so a search finds
+			// these without comparing two counters by eye.
+			attrs["no_reply"] = true
+		}
 	}
 	if ev.Reason != "" {
 		attrs["reason"] = ev.Reason

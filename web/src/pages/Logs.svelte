@@ -90,7 +90,7 @@
           {@const a = e.attrs ?? {}}
           <tr>
             <td><Time at={e.ts} /></td>
-            <td><Badge status={String(a.decision ?? e.message)} label={`${e.message}${a.reset ? ' + RST' : ''}`} /></td>
+            <td><Badge status={String(a.decision ?? e.message)} label={`${e.message}${a.reset ? ' + RST' : ''}`} />{#if a.no_reply}<div class="faint small" title="Permitted and forwarded, but the destination never answered: the cause lies outside BoundGate's decision — a firewall on the way, a target without a route back, a routing loop">no reply</div>{/if}</td>
             <td>{a.node_name ?? nodeName(e.device_id)}</td>
             <td>{#if a.principal && !a.principal_name}<span class="mono small" title="Not a node the control plane knows">{String(a.principal).slice(0, 16)}</span> <span class="faint small">unknown</span>{:else}{a.principal_name ?? ''}{/if}{#if a.principal && a.principal !== (a.reported_by ?? e.device_id)}<div class="faint small">per {a.node_name ?? nodeName(e.device_id)}</div>{/if}{#if a.username}<div class="faint small">{a.username}{#if Array.isArray(a.groups) && a.groups.length}&nbsp;· {a.groups.join(', ')}{/if}</div>{/if}</td>
             <td class="mono small">{a.src}:{a.sport} → {a.dst}:{a.dport} {a.proto}{#if a.sni}<div class="faint">sni {a.sni}</div>{/if}{#if a.dns_name}<div class="faint">dns {a.dns_name}</div>{/if}{#if a.owner_name}<div class="faint">owner {a.owner_name}</div>{/if}</td>

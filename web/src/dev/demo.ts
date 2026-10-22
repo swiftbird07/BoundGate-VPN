@@ -113,6 +113,9 @@ const flows: T.LogEvent[] = [
   flow(95, nodes[3], 'ada', '10.60.0.44:443', 'deny', { sni: 'eu.telemetry.example.com' }),
   flow(300, nodes[4], 'martin', '192.168.178.20:443', 'allow', { sni: 'nas.home', policies: ['engineering-home-lan'] }),
   flow(1900, nodes[3], 'ada', '10.60.0.44:443', 'deny', { sni: 'us.telemetry.example.com' }),
+  // permitted, forwarded, never answered: a firewall on the way, a target
+  // without a route back, a routing loop
+  flow(2400, nodes[4], 'martin', '192.168.3.2:8006', 'allow', { bytes_in: 1280, bytes_out: 0, packets_in: 1, packets_out: 0, no_reply: true, reason: 'idle' }),
 ];
 
 const passkeys: T.Passkey[] = [

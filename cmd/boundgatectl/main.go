@@ -325,7 +325,8 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			fmt.Println("no tracked flows")
 			return nil
 		}
-		fmt.Printf("%-8s %-6s %-22s %-22s %-5s %-8s %-16s %-14s %10s %10s  %s\n", "FLOW", "PROTO", "SOURCE", "DESTINATION", "DEC", "FROM", "USER", "NAME", "IN", "OUT", "POLICIES")
+		fmt.Printf("%-8s %-6s %-22s %-22s %-9s %-8s %-16s %-14s %10s %10s  %s\n", "FLOW", "PROTO", "SOURCE", "DESTINATION", "DEC", "FROM", "USER", "NAME", "IN", "OUT", "POLICIES")
+		noReply := false
 		for _, f := range fl {
 			name := f.SNI
 			if name == "" {
@@ -335,7 +336,17 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			if f.Local {
 				from = "local"
 			}
-			fmt.Printf("%-8s %-6s %-22s %-22s %-5s %-8.8s %-16.16s %-14.14s %10d %10d  %s\n", f.ID, f.Proto, f.Src, f.Dst, f.Decision, from, f.User, name, f.BytesIn, f.BytesOut, strings.Join(f.Policies, ","))
+			dec := f.Decision
+			if f.NoReply {
+				// allowed and nothing came back: the cause is outside this
+				// node, and that is worth seeing in the row itself
+				dec += "/none"
+				noReply = true
+			}
+			fmt.Printf("%-8s %-6s %-22s %-22s %-9s %-8.8s %-16.16s %-14.14s %10d %10d  %s\n", f.ID, f.Proto, f.Src, f.Dst, dec, from, f.User, name, f.BytesIn, f.BytesOut, strings.Join(f.Policies, ","))
+		}
+		if noReply {
+			fmt.Println("\nallow/none: permitted and forwarded, no answer came back - the cause lies outside this node")
 		}
 		return nil
 	default:

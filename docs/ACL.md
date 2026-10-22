@@ -367,8 +367,14 @@ event, flow, node_id, node_name, principal, principal_name, local, user,
 username, groups, session, src, sport, dst, dport, proto, sni, dns_name,
 decision (allow | deny | local), policies (names), reasons (ids), errors,
 owner, owner_name, bytes_in, bytes_out, packets_in, packets_out,
-duration_ms, reason, reset
+duration_ms, reason, reset, no_reply
 ```
+
+`no_reply` marks a closed flow that was permitted and forwarded and never
+answered a single packet (`packets_out: 0`). The decision was this node's,
+the silence was not: a firewall on the way, a destination without a route
+back to the overlay pool, or a routing loop. `boundgatectl flows` shows the
+same as `allow/none`, and the admin UI as "no reply" under the decision.
 
 Nodes ship these records in batches (every 5 s or 500 records; up to 10 000
 buffered while the control plane is unreachable) to `POST /api/v1/node/logs`.
