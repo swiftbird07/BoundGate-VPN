@@ -4,14 +4,22 @@ On Windows the node runs as a service, the same daemon as on Linux and macOS.
 The tray app is the frontend, like the Mac app for its LaunchDaemon. The
 device key lives in the TPM.
 
-Status 2026-10-14:
+Status 2026-10-22:
 
 * Service, CLI and tray build for amd64 and arm64 in the box. Everything the
   platform does not decide is tested there: the route choice for host routes,
   the tray's phases and icon, the key selection.
-* The acceptance run `deploy/windows/e2e.ps1` passed all seven steps on the
-  Proxmox VM with vTPM on 2026-09-22 (Tiny11, Windows 11 23H2). The VM has
-  been a node of the production network (`tinywin11-lab`) since then.
+* The acceptance run `deploy/windows/e2e.ps1` passed all eight steps on the
+  Proxmox VM with vTPM, first on 2026-09-22 (Tiny11, Windows 11 23H2) and
+  again on 2026-10-22 with the resolver checks of step 5b. The VM is a node of
+  the production network (`tinywin11-lab`).
+* The resolver, measured on that run: the rule
+  `BoundGate-BoundGate` holds `Name=.`, `GenericDNSServers=10.20.0.1`,
+  `ConfigOptions=8`, `Version=2`, the adapter has the same resolver, a name
+  only the overlay knows resolves (`jump-ssh.pve.lan`) and the rest of the
+  world still does. `down` leaves no rule. A rule left behind by a daemon that
+  never got to its teardown is removed by `boundgate-node -repair` with no
+  service running (R144).
 * Not yet: a regular Windows PC (Tiny11 is a stripped build), and the rest of
   "What is still open".
 
@@ -232,12 +240,11 @@ host route to the hub via the hotspot's gateway.
    Then, on both: a policy with `hardware_bound`, a reboot with
    `auto_up: true`, `uninstall.ps1`, and `setup.ps1` from scratch (written
    2026-10-14, not yet run on Windows).
-2. **The resolver on a real machine:** steps 5b and 6 above (the rule for
-   `.`, and nothing left behind after `down`) are tested in the box and
-   written into `e2e.ps1`, but have not run on Windows yet -- the VM had no
-   SSH on 2026-10-22, because sshd there starts with `admun`'s sign-in. Until
-   then that half is as proven as the Mac's was before its run: the mechanism
-   is right, the machine has not said so.
+2. **The resolver on a machine whose own network is elsewhere.** On the lab VM
+   the hub's resolver (10.20.0.1) sits in the VM's own LAN, so a rule left
+   behind there points at a resolver the machine can still reach without the
+   tunnel: the sweep was measurable, the outage it prevents was not. A machine
+   in another network makes that half visible, the way the Mac did.
 3. **Stage 2:**
    * An MSI with Authenticode signatures, when there is a certificate. Until
      then SmartScreen warns (R106).
