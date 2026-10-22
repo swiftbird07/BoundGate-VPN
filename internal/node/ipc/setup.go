@@ -194,14 +194,20 @@ func SetupHandler(status node.Status, upd *update.Service, save func(Settings) e
 }
 
 // Forget removes what ties a node to its control plane: the settings, the
-// pinned control-plane key and the admin key list; with newIdentity the
-// device key files as well. The next control plane sees a node that enrolls.
+// pinned control-plane key, the admin key list and the bindings it has seen;
+// with newIdentity the device key files as well. The next control plane sees
+// a node that enrolls. An empty settingsPath is left out: a node whose
+// control plane stands in its configuration file has no settings file, and
+// only its identity can be given up.
 func Forget(stateDir, settingsPath string, newIdentity bool) error {
-	files := []string{settingsPath, "control.pin", "admin_trust.json", "admin_keys", "enrollment.json"}
+	files := []string{settingsPath, "control.pin", "admin_trust.json", "bindings_seen.json", "admin_keys", "enrollment.json"}
 	if newIdentity {
 		files = append(files, "device.key", "device.sekey", "device.tpm", "device.crt")
 	}
 	for _, f := range files {
+		if f == "" {
+			continue // no settings file: the control plane comes from the configuration
+		}
 		if !filepath.IsAbs(f) {
 			f = filepath.Join(stateDir, f)
 		}

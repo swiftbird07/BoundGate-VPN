@@ -190,6 +190,9 @@ type separated struct {
 	// of it this machine does not have
 	sandbox    string
 	incomplete []string
+	// forget asks the privileged parent to delete the node's identity: the
+	// files are its own, not the worker's (docs/PRIVSEP.md).
+	forget func(newIdentity bool) error
 }
 
 // parseConfig reads the configuration and fills in the defaults.
@@ -267,7 +270,17 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 		}
 		err := runNode(ctx, cfg, local, logs, fromFile, settingsPath, upd, sep)
 		if errors.Is(err, ipc.ErrReset) {
-			logs.System.Warn("control plane forgotten; back to setup mode")
+			switch {
+			case sep != nil:
+				// the key the privileged parent holds is open; the new one
+				// comes with a new process, which the service manager starts
+				logs.System.Warn("the node gave up its identity; ending so the service starts again with a new key")
+				return nil
+			case fromFile:
+				logs.System.Warn("the node gave up its identity; it enrolls with the configured control plane again", "control", cfg.Control.Addr)
+			default:
+				logs.System.Warn("control plane forgotten; back to setup mode")
+			}
 			continue
 		}
 		return err
@@ -356,22 +369,39 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		opt.Listener = sep.socket
 	}
 	logs.System.Info("node ready", "socket", cfg.Socket, "control", local.ControlAddr, "auto_up", cfg.AutoUp)
-	if !fromFile {
-		// Forget the control plane: its address, its pinned key and the admin
-		// key list learned from it. The device key stays, and to the next
-		// control plane this is simply a node that enrolls - unless a new
-		// identity is asked for (from a software key to the Secure Enclave,
-		// key_kind auto): then the key files go as well.
-		opt.Reset = func(newIdentity bool) error {
-			if sep != nil && newIdentity {
-				// the key is the parent's; a new one comes with a restart of the
-				// service after the key file is gone
-				return errors.New("with privilege separation a new identity needs the service stopped and the key file removed by root (docs/PRIVSEP.md)")
-			}
-			return ipc.Forget(cfg.StateDir, settingsPath, newIdentity)
-		}
-	}
+	opt.Reset = resetFunc(fromFile, sep, cfg.StateDir, settingsPath)
 	return ipc.Serve(ctx, cfg.Socket, n, opt)
+}
+
+// resetFunc answers POST /v1/reset: forget the control plane — its address,
+// its pinned key and the admin key list learned from it — and with
+// newIdentity the device key as well, so the node comes back as a stranger
+// (a software key that becomes a TPM or Secure Enclave key, or a key that was
+// revoked).
+//
+// A node whose control plane stands in its configuration file keeps that
+// address: forgetting it would mean nothing, the file names it again. Its
+// identity it can still give up, and that is what a new key needs. Deleting
+// the state directory by hand is not the way — under a running daemon it
+// leaves the process writing into an unlinked directory.
+func resetFunc(fromFile bool, sep *separated, stateDir, settingsPath string) func(bool) error {
+	return func(newIdentity bool) error {
+		if fromFile && !newIdentity {
+			return errors.New("the control plane of this node stands in its configuration file (control.addr), so there is nothing to forget; `reset -new-identity` gives it a new device key for the same control plane")
+		}
+		if sep != nil {
+			// the pin, the trust and the key files belong to the privileged
+			// parent, in a state directory that is sticky: only it can
+			if sep.forget == nil {
+				return errors.New("this worker cannot ask its parent to give up the node's identity")
+			}
+			return sep.forget(newIdentity)
+		}
+		if fromFile {
+			settingsPath = "" // there is none, and it is not ours to remove
+		}
+		return ipc.Forget(stateDir, settingsPath, newIdentity)
+	}
 }
 
 // running is the node of the current runNode, for restartWhenReplaced.

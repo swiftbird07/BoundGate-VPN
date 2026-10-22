@@ -164,7 +164,7 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 		case "approved":
 			fmt.Printf("\nThis node is approved (overlay address %s). Use `boundgatectl up`.\n", st.OverlayIP)
 		case "revoked":
-			fmt.Println("\nThis node key was revoked. Delete the node state to create a new key and enroll again.")
+			fmt.Println("\nThis node key was revoked. `boundgatectl down && boundgatectl reset -new-identity` gives it a new key; then enroll again.")
 		}
 		return nil
 	case "configure":
@@ -190,7 +190,11 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			return err
 		}
 		if *newIdentity {
-			fmt.Println("the node forgot its control plane and its device key. Next: `boundgatectl configure -control HOST`, then enroll again; revoke the old node in the admin UI.")
+			fmt.Println("the node gave up its identity: device key, pinned control plane and enrollment are gone.")
+			fmt.Println("It opens a new key as soon as the service is back (it restarts itself where a service manager")
+			fmt.Println("runs it). Next: `boundgatectl enroll`, compare the fingerprint, and revoke the old node in the")
+			fmt.Println("admin UI. A node whose control plane is not in its configuration file needs")
+			fmt.Println("`boundgatectl configure -control HOST` first.")
 			return nil
 		}
 		fmt.Println("the node forgot its control plane (the device key is kept). Next: `boundgatectl configure -control HOST`.")

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -110,15 +111,30 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 	}
 	log.Info("privilege separation: the node runs as an unprivileged worker", "uid", uid, "gid", gid, "key_kind", key.Kind())
 
+	// A new identity ends the service instead of starting another worker:
+	// the key above is open, and the next process opens the new one.
+	var forgot atomic.Bool
+	forget := func(newIdentity bool) error {
+		if err := ipc.Forget(cfg.StateDir, "", newIdentity); err != nil {
+			return err
+		}
+		forgot.Store(newIdentity)
+		return nil
+	}
+
 	backoff := time.Second
 	for {
 		started := time.Now()
-		p := &privsep.Parent{Key: key, Net: journal, Config: raw, TUNName: tunName, WorkerUID: uid, Anchors: trusted, Log: log}
+		p := &privsep.Parent{Key: key, Net: journal, Config: raw, TUNName: tunName, WorkerUID: uid, Anchors: trusted, ForgetIdentity: forget, Log: log}
 		err := superviseWorker(ctx, p, uid, gid, socket)
 		// the worker's device went with it; the host routes and NAT rules it
 		// asked for did not
 		cleanUp(context.Background(), journal, log)
 		if ctx.Err() != nil {
+			return nil
+		}
+		if forgot.Load() {
+			log.Warn("privsep: the node gave up its identity; ending so the service starts again with a new key")
 			return nil
 		}
 		if time.Since(started) > time.Minute {
@@ -500,7 +516,7 @@ func runWorker() int {
 		return 1
 	}
 	sep := &separated{key: key, net: hostNet, anchors: trusted, socket: os.NewFile(4, "node.sock"), uid: os.Getuid(),
-		sandbox: confined.String(), incomplete: confined.Missing}
+		sandbox: confined.String(), incomplete: confined.Missing, forget: c.ForgetIdentity}
 	if err := runWith(ctx, cfg, sep); err != nil {
 		fmt.Fprintln(os.Stderr, "boundgate-node:", err)
 		return 1

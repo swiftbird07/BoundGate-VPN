@@ -35,6 +35,12 @@ key_kind: tpm2
   private blob.
 * Switching an enrolled node from `softkey` to `tpm2` is a new identity: a
   new fingerprint, a new enrollment. There is no import, on purpose.
+  Changing `key_kind` is all it takes — the daemon opens `device.tpm` and only
+  warns that the old `device.key` is still lying beside it. The state
+  directory does not have to be deleted for it, and deleting it under a
+  running daemon leaves the process writing into an unlinked directory;
+  `boundgatectl down && boundgatectl reset -new-identity` is the way to give
+  up an identity on purpose.
 
 Code: `internal/devicekey/tpm2key` (part of the TCB), on
 `github.com/google/go-tpm`. No cgo, no tpm2-tss.

@@ -46,6 +46,7 @@ const (
 	opPinControl       = "pin_control"
 	opFollowSigners    = "follow_signers"
 	opRecord           = "record"
+	opForgetIdentity   = "forget_identity"
 )
 
 // maxMessage bounds one datagram in either direction.
@@ -96,6 +97,13 @@ type followResult struct {
 
 type recordArgs struct {
 	Evidence []anchors.Evidence `json:"evidence"`
+}
+
+// forgetArgs asks the parent to delete what makes this node this node. The
+// worker cannot do it itself: the pin, the trust and the key files belong to
+// the parent, and the shared state directory is sticky.
+type forgetArgs struct {
+	NewIdentity bool `json:"new_identity"`
 }
 
 // What a chain in pieces may grow to before the parent drops it.

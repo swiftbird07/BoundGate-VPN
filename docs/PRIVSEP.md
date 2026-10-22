@@ -94,6 +94,14 @@ A separated node has its control plane in its configuration
 local socket, would let the worker choose, since the socket is the
 worker's: the parent does not start without.
 
+What such a node can still do is give up its identity:
+`boundgatectl down && boundgatectl reset -new-identity`. The worker asks the
+parent for it (`forget_identity`), because the pin, the trust and the key
+files are the parent's and the directory is sticky. The parent deletes them
+and ends the service instead of starting another worker — the key it holds is
+open, and the new one comes with the next process, which the service manager
+starts. The address stays: the configuration names it again.
+
 The parent reads what the worker sends for this (chains, bindings,
 signatures): Go's parsers for JSON and SSH signatures, which the fuzz tests
 cover. Should one of them panic, the request fails and the parent stays.

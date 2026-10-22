@@ -41,7 +41,13 @@ type Parent struct {
 	// Anchors is what the node trusts across restarts. The parent is its
 	// only writer, and changes it by its own rules (internal/anchors).
 	Anchors anchors.Anchors
-	Log     *slog.Logger
+	// ForgetIdentity, when set, deletes what belongs to this node's identity
+	// at the worker's request: the pinned control plane and the trust it
+	// learned, and with newIdentity the device key as well. Those files are
+	// the parent's, so only it can. The service ends afterwards: the key the
+	// parent holds is open, and a new one comes with a new process.
+	ForgetIdentity func(newIdentity bool) error
+	Log            *slog.Logger
 
 	mu  sync.Mutex
 	dev string
@@ -373,6 +379,20 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 		if err := p.Anchors.Record(a.Evidence); err != nil {
 			return nil, fd, p.refuse(req.Op, err.Error())
 		}
+		return nil, fd, nil
+
+	case opForgetIdentity:
+		var a forgetArgs
+		if err := decode(&a); err != nil {
+			return nil, fd, err
+		}
+		if p.ForgetIdentity == nil {
+			return nil, fd, p.refuse(req.Op, "this node does not forget its identity on request")
+		}
+		if err := p.ForgetIdentity(a.NewIdentity); err != nil {
+			return nil, fd, p.refuse(req.Op, err.Error())
+		}
+		p.Log.Warn("privsep: the node's identity was discarded at the worker's request", "new_identity", a.NewIdentity)
 		return nil, fd, nil
 	}
 	return nil, fd, p.refuse(req.Op, "unknown operation")
