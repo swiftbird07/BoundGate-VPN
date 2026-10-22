@@ -219,7 +219,7 @@ It checks these, and writes a transcript next to itself:
    was before. A rule of ours lives in the registry and would survive a
    reboot, so `boundgate-node -repair` removes the rules of adapters that are
    gone, with no service and no network (R144).
-7. After a service restart the node keeps its identity. With
+8. After a service restart the node keeps its identity. With
    `auto_up: true` it connects again by itself.
 
 By hand on a laptop: while connected, switch from Wi-Fi to a phone hotspot.
@@ -232,9 +232,15 @@ host route to the hub via the hotspot's gateway.
    Then, on both: a policy with `hardware_bound`, a reboot with
    `auto_up: true`, `uninstall.ps1`, and `setup.ps1` from scratch (written
    2026-10-14, not yet run on Windows).
-2. **Stage 2:**
+2. **The resolver on a real machine:** steps 5b and 6 above (the rule for
+   `.`, and nothing left behind after `down`) are tested in the box and
+   written into `e2e.ps1`, but have not run on Windows yet -- the VM had no
+   SSH on 2026-10-22, because sshd there starts with `admun`'s sign-in. Until
+   then that half is as proven as the Mac's was before its run: the mechanism
+   is right, the machine has not said so.
+3. **Stage 2:**
    * An MSI with Authenticode signatures, when there is a certificate. Until
      then SmartScreen warns (R106).
    * Self-installing updates.
-3. **Hub and subnet router on Windows:** not planned. Forwarding and NAT are
+4. **Hub and subnet router on Windows:** not planned. Forwarding and NAT are
    refused.
