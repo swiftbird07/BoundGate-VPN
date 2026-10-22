@@ -414,6 +414,13 @@ func (l *layout) connection(v View) {
 				l.y += 6
 				l.y += l.row(x, w, "Now", fmt.Sprintf("↓ %s/s  ↑ %s/s", Bytes(uint64(in.Rate.In)), Bytes(uint64(in.Rate.Out))), false)
 			}
+			// the routing profile can be changed while connected: the routes
+			// follow, the tunnel stays (a PC that is always connected would
+			// otherwise never see this)
+			if len(in.Profiles) > 1 {
+				l.y += 12
+				l.y += l.profiles(x, w)
+			}
 		case LoginRequired:
 			l.y += l.text(x, w, "Sign in to finish connecting", FontTitle, t.Text) + 8
 			msg := "The network wants to know who is using this PC."
@@ -807,7 +814,7 @@ func SamplePanels(now time.Time) map[string]PanelInput {
 		"pending":      {Status: &node.Status{State: node.StateDown, Enrollment: "pending", NodeName: "DESKTOP-Q8EUT8R", HardwareBound: true, Fingerprint: fp}, Now: now},
 		"ready":        {Status: &node.Status{State: node.StateDown, Enrollment: "approved", Profile: "full", NodeName: "DESKTOP-Q8EUT8R", HardwareBound: true}, Profiles: []string{"full", "lan-only"}, Now: now},
 		"login":        {Status: &node.Status{State: node.StateUp, Enrollment: "approved", LoginRequired: true, NodeName: "DESKTOP-Q8EUT8R", HardwareBound: true}, Now: now},
-		"connected":    {Status: up, Now: now, Rate: Rate{Valid: true, In: 1.2e6, Out: 48e3}},
+		"connected":    {Status: up, Profiles: []string{"full", "lan-only", "wan-only"}, Now: now, Rate: Rate{Valid: true, In: 1.2e6, Out: 48e3}},
 		"details":      {Status: up, Now: now, DetailsOpen: true},
 	}
 }

@@ -77,3 +77,17 @@ routing:
 routes in effect. A network in the profile that no hub advertises is simply
 not routed (`not routed` in the status names overlaps with the machine's own
 networks, which are refused on every profile).
+
+## Switching while connected
+
+`boundgatectl profile <name>` changes the profile of a running node. Only the
+kernel routes change: the tunnels, the overlay address and the session stay as
+they are, so nothing reconnects and no flow is interrupted that both profiles
+route. Routes the new profile drops disappear at once, which is the point of
+the command — the way back to a network is one more switch, not a reconnect.
+
+The same choice is in the Mac panel and the Windows tray under "Route": while
+the node is up, picking a profile applies it live; while it is down, it is
+remembered for the next connection. A hub takes no profile at all — it
+advertises networks, it does not route other peers' — and the daemon says so
+instead of switching.

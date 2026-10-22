@@ -64,6 +64,26 @@ func TestPanelLayout(t *testing.T) {
 	if profiles != 2 {
 		t.Fatalf("profile pills: %d", profiles)
 	}
+	// The routing profile can be changed while connected, so the pills are
+	// there too - a PC that is always connected would otherwise never show
+	// them. The current one is not clickable.
+	cp := LayoutPanel(phases()["connected"], fakeMeasure{}, ThemeOf(false))
+	profiles, clickable := 0, 0
+	for _, it := range cp.Items {
+		if !strings.HasPrefix(it.Action, ActProfile) {
+			continue
+		}
+		profiles++
+		if it.Pointer {
+			clickable++
+			if cp.HitTest(it.R.X+it.R.W/2, it.R.Y+it.R.H/2) != it.Action {
+				t.Fatalf("connected: hit test misses %s", it.Action)
+			}
+		}
+	}
+	if profiles != 3 || clickable != 2 {
+		t.Fatalf("connected: %d profile pills, %d of them clickable", profiles, clickable)
+	}
 	// busy: no actions on buttons
 	in := phases()["ready"]
 	in.Busy = "Connecting"

@@ -72,6 +72,10 @@ talk to the Mac's daemon or to their own extension:
   the control plane once, and it is stored as `settings.json`.
 * `POST /v1/enroll`, `/v1/up`, `/v1/down`, `/v1/login`,
   `GET /v1/login/{flow}`, `/v1/status`, `/v1/flows`, `/v1/profiles`.
+* `POST /v1/profile {"profile": "lan-only"}`: which networks this node routes,
+  while it is up (only the kernel routes change) or remembered for the next
+  `up`. Answers the status, 400 for an unknown profile or a hub
+  ([PROFILES.md](PROFILES.md)).
 * `POST /v1/reset` forgets the control plane. `new_identity` is refused: a new
   identity is a new key in the app's key store, so the app deletes its key and
   starts again.

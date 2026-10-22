@@ -6,6 +6,7 @@
 //	boundgatectl reset [-new-identity]     forget the control plane (keeps the device key unless -new-identity)
 //	boundgatectl enroll [-name NAME] [-pin FINGERPRINT | -accept-new-pin]   first contact: shows the control plane's key and asks
 //	boundgatectl profiles
+//	boundgatectl profile NAME              change the routing profile, also while connected
 //	boundgatectl up [-profile NAME]
 //	boundgatectl down
 //	boundgatectl login [-timeout 10m]      prints the login URL, waits for the browser login
@@ -44,7 +45,7 @@ func main() {
 	socket := flag.String("socket", defSocket, "node daemon socket (or $BOUNDGATE_SOCKET)")
 	asJSON := flag.Bool("json", false, "print raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|up [-profile NAME]|down|login [-timeout D]|logout|flows|update [-install]|version\n"+
+		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|profile NAME|up [-profile NAME]|down|login [-timeout D]|logout|flows|update [-install]|version\n"+
 			"       boundgatectl [-json] admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F|--agent-key S|--signature F|--out F]\n")
 		flag.PrintDefaults()
 	}
@@ -232,6 +233,15 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			fmt.Printf("latest:       %s  (nothing to do)\n", st.Latest)
 		}
 		return nil
+	case "profile":
+		if len(args) != 2 || args[1] == "" {
+			return errors.New("usage: boundgatectl profile NAME   (the names: boundgatectl profiles)")
+		}
+		st, err := c.SetProfile(args[1])
+		if err != nil {
+			return err
+		}
+		return printStatus(st, asJSON)
 	case "profiles":
 		names, err := c.Profiles()
 		if err != nil {

@@ -272,8 +272,16 @@ x node-a boundgatectl down >/dev/null
 x node-a boundgatectl up -profile lan-only >/dev/null || fail "up with lan-only failed"
 wait_for 15 status_is node-a '.profile == "lan-only" and ([.routes[]? | select(. == "10.60.0.0/24")] | length == 1)' || fail "lan-only does not route hub1's LAN"
 wait_for 20 reach 10.60.0.10 target || fail "hub1's LAN unreachable on lan-only"
-x node-a boundgatectl down >/dev/null
-x node-a boundgatectl up >/dev/null
+# switching while up: only the kernel routes change, the tunnels and the
+# address stay as they are (a reconnect would move .since)
+SINCE=$(x node-a boundgatectl -json status | jq -r .since)
+x node-a boundgatectl profile wan-only >/dev/null || fail "switching to wan-only while up failed"
+wait_for 10 status_is node-a '.profile == "wan-only" and ([.routes[]? | select(startswith("10.60."))] | length == 0)' || fail "the live switch did not drop hub1's LAN"
+status_is node-a "(.since == \"$SINCE\") and ([.hubs[] | select(.state == \"connected\")] | length == 2)" || fail "the live switch reconnected the tunnel"
+wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "hub1's LAN still reachable after the live switch"
+x node-a boundgatectl profile full >/dev/null || fail "switching back to full while up failed"
+wait_for 10 status_is node-a '.profile == "full"' || fail "the node did not take full while up"
+status_is node-a "(.since == \"$SINCE\")" || fail "switching back to full reconnected the tunnel"
 wait_for 20 reach 10.60.0.10 target || fail "target unreachable back on full"
 
 echo "== 6. revoke node-a while up: tunnels close, up fails, key cannot re-enroll"

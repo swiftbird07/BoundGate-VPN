@@ -131,6 +131,12 @@ remembered). Open, it shows what the daemon reports in `/v1/status`:
 | Control plane | address, protocol (`HTTP/3 (QUIC)` or `HTTP/2 (TCP fallback)`), policies and snapshot version, open and denied connections | `control`, `control_transport`, `policies`, `snapshot_version`, `flows`, `flows_denied` |
 | This Mac | device key, version | `key_kind`, `version` |
 
+A "Route" row stands above the details whenever more than one profile is
+offered, connected or not: it names the profile in effect and switches to
+another one. While the node is up the daemon only changes the kernel routes,
+the tunnel stays ([PROFILES.md](PROFILES.md)); while it is down the choice is
+remembered for the next connection.
+
 When the phase turns to "sign in required" (the user session ended, 24 h by
 default; OIDC.md) the app posts a notification "Sign-in needed", once per
 occasion, and withdraws it once a hub is connected again. It asks for the

@@ -282,6 +282,7 @@ struct ConnectionCard: View {
                         Notice(tone: .warn, text: "\(h.via ?? "The network") lets \(h.target) through only for a signed-in user.")
                     }
                     InfoRow(label: "Networks", value: networks(s))
+                    RouteRow(model: model)
                     DetailsView(status: s, hub: hub, rate: model.rate)
                 case .loginRequired:
                     Text("Sign in to finish connecting").font(.display(15)).foregroundStyle(t.text)
@@ -293,22 +294,7 @@ struct ConnectionCard: View {
                     ForEach(s.hubs ?? []) { h in InfoRow(label: h.name, value: h.error?.isEmpty == false ? h.error! : h.state) }
                 default:
                     Text("Not connected").font(.display(15)).foregroundStyle(t.text)
-                    if model.profiles.count > 1 {
-                        HStack {
-                            Text("Route").font(.body(12)).foregroundStyle(t.text2)
-                            Spacer()
-                            Button {
-                                // "" is the node's default, which is full
-                                let current = model.profile.isEmpty ? "full" : model.profile
-                                PopupMenu.show(model.profiles.map { p in .action(profileLabel(p), checked: current == p) { model.profile = p == "full" ? "" : p } })
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Text(profileLabel(model.profile.isEmpty ? "full" : model.profile))
-                                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
-                                }
-                            }.buttonStyle(BGButtonStyle())
-                        }
-                    }
+                    RouteRow(model: model)
                 }
                 ForEach(s.skippedRoutes ?? [], id: \.self) { Notice(tone: .warn, text: "Not routed: \($0)") }
                 if phase != .connected, let e = s.lastError, !e.isEmpty { Notice(tone: .bad, text: e) }
@@ -339,16 +325,6 @@ struct ConnectionCard: View {
         }
     }
 
-    /// The built-in profiles by what they do; a profile from a file by its name.
-    private func profileLabel(_ name: String) -> String {
-        switch name {
-        case "full": return "Full"
-        case "lan-only": return "LAN only"
-        case "wan-only": return "WAN only"
-        default: return name
-        }
-    }
-
     private func networks(_ s: NodeStatus) -> String {
         let r = s.routes ?? []
         if r.isEmpty { return "none" }
@@ -359,6 +335,42 @@ struct ConnectionCard: View {
 /// after a notice or the details went away it stayed as tall as before, with
 /// the panel centred in it and a gap above and below. This sets the window to
 /// the panel's height, keeping its top edge under the menu bar.
+/// What this node routes. The daemon swaps the routes under a running tunnel,
+/// so the choice is the same question whether the node is up or down.
+private struct RouteRow: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.theme) private var t
+
+    var body: some View {
+        if model.profiles.count > 1 {
+            HStack {
+                Text("Route").font(.body(12)).foregroundStyle(t.text2)
+                Spacer()
+                Button {
+                    // "" is the node's default, which is full
+                    let current = model.profile.isEmpty ? "full" : model.profile
+                    PopupMenu.show(model.profiles.map { p in .action(profileLabel(p), checked: current == p) { model.setProfile(p) } })
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(profileLabel(model.profile.isEmpty ? "full" : model.profile))
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+                    }
+                }.buttonStyle(BGButtonStyle()).disabled(model.busy != nil)
+            }
+        }
+    }
+}
+
+/// The built-in profiles by what they do; a profile from a file by its name.
+private func profileLabel(_ name: String) -> String {
+    switch name {
+    case "full": return "Full"
+    case "lan-only": return "LAN only"
+    case "wan-only": return "WAN only"
+    default: return name
+    }
+}
+
 private struct FitWindow: NSViewRepresentable {
     var height: CGFloat
     func makeNSView(context: Context) -> NSView { NSView() }

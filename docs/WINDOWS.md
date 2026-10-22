@@ -159,7 +159,9 @@ The right button opens the menu, which shows:
   address. The field lowercases what is typed (the control plane compares
   its name exactly), then the tray requests access.
 * Connect and Disconnect. A profile submenu when there is more than one
-  profile.
+  profile, by what each profile does ("LAN only", not `lan-only`). It is
+  there while the node is up as well: picking a profile then changes the
+  routes under the running tunnel ([PROFILES.md](PROFILES.md)).
 * Sign in (browser) and Sign out. When the session ends while the tray
   runs (24 h by default), a message box offers to sign in again, once per
   occasion.

@@ -32,6 +32,12 @@ public struct DaemonClient: Sendable {
     public func enroll(acceptPin: String? = nil) throws -> EnrollStatus {
         try call("POST", "/v1/enroll", body: acceptPin.map { ["accept_pin": $0] } ?? [:], timeout: 40)
     }
+    /// Change which networks are routed, also while connected: the routes
+    /// follow, the tunnels stay.
+    public func setProfile(_ name: String) throws -> NodeStatus {
+        try call("POST", "/v1/profile", body: ["profile": name], timeout: 20)
+    }
+
     public func up(profile: String?) throws -> NodeStatus {
         try call("POST", "/v1/up", body: ["profile": profile ?? ""], timeout: 45)
     }

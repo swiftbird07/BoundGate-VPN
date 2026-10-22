@@ -345,11 +345,14 @@ type statusKey struct {
 	Enrollment    string
 	LoginRequired bool
 	HubConnected  bool
-	SignIn        time.Time // a new hint is news for the app (a notification)
+	// Profile: it can change while the overlay is up (SetProfile), and an
+	// embedded node learns of it only through OnStatus
+	Profile string
+	SignIn  time.Time // a new hint is news for the app (a notification)
 }
 
 func keyOf(s *Status) statusKey {
-	k := statusKey{State: s.State, Enrollment: s.Enrollment, LoginRequired: s.LoginRequired}
+	k := statusKey{State: s.State, Enrollment: s.Enrollment, LoginRequired: s.LoginRequired, Profile: s.Profile}
 	if s.SignIn != nil {
 		k.SignIn = s.SignIn.At
 	}
@@ -1207,6 +1210,48 @@ func (n *Node) Up(ctx context.Context, profileName string) error {
 	n.status.LastClose = ""
 	n.mu.Unlock()
 	go n.watch(s)
+	return nil
+}
+
+// SetProfile changes which of the advertised networks are routed while the
+// overlay stays up: tunnels, address and session are untouched, only the
+// kernel routes are made equal to the new profile. Without a session it is
+// remembered for the next `up`.
+//
+// A hub has no routing profile: it advertises networks, it does not take
+// them.
+func (n *Node) SetProfile(name string) error {
+	prof, err := n.loadProfile(name)
+	if err != nil {
+		return err
+	}
+	n.mu.Lock()
+	s := n.sess
+	if s == nil {
+		// `up` without a profile takes the configured one; this is it now
+		n.cfg.Profile = prof.Name
+		n.mu.Unlock()
+		n.log.Info("routing profile remembered for the next connection", "profile", prof.Name)
+		return nil
+	}
+	if s.isHub {
+		n.mu.Unlock()
+		return errors.New("node: a hub has no routing profile: it advertises networks, it does not take them")
+	}
+	n.status.Profile = prof.Name
+	n.mu.Unlock()
+	m := s.spoke
+	if m == nil {
+		return errors.New("node: this node takes no routes (no hub links)")
+	}
+	// the routes are the whole change: applyRoutesLocked is declarative and
+	// installs the difference (spoke.go)
+	m.mu.Lock()
+	s.profile = prof
+	m.applyRoutesLocked()
+	m.mu.Unlock()
+	n.log.Info("routing profile changed", "profile", prof.Name, "routes", m.routes())
+	n.publishStatus()
 	return nil
 }
 

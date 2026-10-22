@@ -226,7 +226,7 @@ func (a *app) refresh() {
 			it.Hide()
 			continue
 		}
-		it.SetTitle(names[i])
+		it.SetTitle(tray.ProfileLabel(names[i]))
 		if names[i] == current {
 			it.Check()
 		} else {
@@ -337,18 +337,14 @@ func (a *app) pickProfile(i int) {
 	if a.status != nil {
 		current = a.status.Profile
 	}
-	down := a.status == nil || a.status.State == node.StateDown
 	a.mu.Unlock()
 	if name == "" || name == current {
 		return
 	}
-	a.run("Switching to "+name, func() error {
-		if !down {
-			if _, err := a.client.Down(); err != nil {
-				return err
-			}
-		}
-		_, err := a.client.Up(name)
+	// The routes follow the profile; the tunnel stays. Taking the overlay
+	// down and up for it dropped every connection through it.
+	a.run("Switching to "+tray.ProfileLabel(name), func() error {
+		_, err := a.client.SetProfile(name)
 		return err
 	})
 }

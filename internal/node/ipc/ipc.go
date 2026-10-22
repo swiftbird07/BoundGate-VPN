@@ -71,6 +71,11 @@ type Options struct {
 	Listener *os.File
 }
 
+// ProfileRequest is the body of POST /v1/profile.
+type ProfileRequest struct {
+	Profile string `json:"profile"`
+}
+
 // ResetRequest is the optional body of POST /v1/reset.
 type ResetRequest struct {
 	// NewIdentity also discards the device key: the node comes back with a
@@ -148,6 +153,18 @@ func Handler(n *node.Node, opt Options, onReset func()) *http.ServeMux {
 			fl = []node.FlowView{}
 		}
 		writeJSON(w, http.StatusOK, fl)
+	})
+	mux.HandleFunc("POST /v1/profile", func(w http.ResponseWriter, r *http.Request) {
+		var req ProfileRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid body"})
+			return
+		}
+		if err := n.SetProfile(req.Profile); err != nil {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, n.Status())
 	})
 	mux.HandleFunc("GET /v1/profiles", func(w http.ResponseWriter, r *http.Request) {
 		names, err := n.Profiles()
@@ -371,6 +388,14 @@ func (c *Client) Up(profile string) (node.Status, error) {
 	var s node.Status
 	err := c.do(http.MethodPost, "/v1/up", UpRequest{Profile: profile}, &s)
 	return s, err
+}
+
+// SetProfile changes the routing profile, also while the overlay is up: the
+// routes follow, the tunnels stay.
+func (c *Client) SetProfile(profile string) (node.Status, error) {
+	var st node.Status
+	err := c.do(http.MethodPost, "/v1/profile", ProfileRequest{Profile: profile}, &st)
+	return st, err
 }
 
 // Login starts a user login; the URL is for the user's browser.

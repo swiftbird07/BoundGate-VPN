@@ -120,6 +120,11 @@ public final class AppModel: ObservableObject {
                 self.rate = Traffic.rate(from: self.lastTraffic, to: now)
                 self.lastTraffic = now
                 if !names.isEmpty || self.status != nil { self.profiles = names }
+                // while connected the daemon owns the choice: it may have
+                // been changed from boundgatectl or another window
+                if let p = self.status?.profile, self.busy == nil {
+                    self.profile = p == "full" ? "" : p
+                }
                 if self.status != nil { self.pollUpdate() }
                 self.noticePhase()
             }
@@ -288,6 +293,15 @@ public final class AppModel: ObservableObject {
     }
     public func declinePin() { pinToConfirm = nil }
     public func disconnect() { run("Disconnecting…") { _ = try $0.down() } }
+
+    /// Choose what is routed. While connected the daemon changes the routes
+    /// at once (the tunnels stay); otherwise it is what the next Connect
+    /// takes.
+    public func setProfile(_ name: String) {
+        profile = name == "full" ? "" : name
+        guard phase == .connected || phase == .loginRequired else { return }
+        run("Switching route…") { c in _ = try c.setProfile(name) }
+    }
     public func logout() { run("Signing out…") { _ = try $0.logout() } }
 
     public func connect() {
