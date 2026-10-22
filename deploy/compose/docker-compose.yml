@@ -233,6 +233,15 @@ services:
     networks:
       internal:
         ipv4_address: 10.60.0.53
+      # also on the outside, because a resolver that only knows the lab is
+      # not what the Corefile claims to be: `internal` is cut off from
+      # everything (internal: true), and from there not even Docker's own
+      # resolver can forward, so every name but target.lab and tls.lab
+      # answered SERVFAIL. A spoke that points its host at this resolver
+      # (#14) would then have no names at all for the rest of the world --
+      # which is what the Mac run checks, and what it caught here. The
+      # protected targets stay on `internal` alone.
+      public: {}
     volumes:
       - ./config/Corefile:/Corefile:ro
     command: ["-conf", "/Corefile"]

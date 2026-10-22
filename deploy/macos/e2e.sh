@@ -1,6 +1,6 @@
 #!/bin/sh
 # M5 acceptance on the Mac host against the running compose lab:
-# enroll -> approve + sign -> up (login required) -> login -> reach the lab
+# enroll -> approve + sign -> up (the policy still closed) -> login -> reach the lab
 # target through a hub -> down restores the routing table.
 #
 # Needs: make compose-up && make build-darwin, sudo (utun, routes), and admin
@@ -105,15 +105,21 @@ echo "== 2b. the lab's policy: a device gets in on its key, an interactive node 
 # 2026-10-22.
 $S policy lab-allow-all 'permit(principal, action, resource) when { principal.has_session || principal.kind == "workload" };' >/dev/null
 
-echo "== 3. up: tunnel device and routes, but the hubs want a user login"
+echo "== 3. up: the hubs admit the device on its key, and the policy -- not the hub -- keeps the target closed until a person signs in"
+# A user session is not a condition of the tunnel (docs/OIDC.md): the device
+# gets in on its key, and whether a person is needed is what a policy says
+# (step 2b). `login_required` is the older behaviour, a hub refusing the
+# tunnel itself, and must stay off -- the same assertion as in
+# ../compose/e2e.sh step 3.
 $D ctl logout >/dev/null 2>&1 || true   # an aborted earlier run leaves its user session in the control plane
 $D ctl up >/dev/null || fail "up refused (an 'overlaps' message means another VPN on this Mac uses the lab's overlay range: disconnect it for the test, see docs/MACOS.md)"
-wait_for 20 st '.login_required == true' || fail "hubs did not ask for a login"
-if curl -sf --max-time 3 http://10.60.0.10 >/dev/null; then fail "target reachable without login"; fi
+wait_for 20 st '(.login_required | not) and ([.hubs[] | select(.state == "connected")] | length >= 1)' || fail "no hub admitted this Mac without a session"
+st '.user == null and .kind == "interactive"' || fail "this Mac has a user before the login"
+if curl -sf --max-time 3 http://10.60.0.10 >/dev/null; then fail "target reachable without a session, although the policy asks for one"; fi
 
-echo "== 4. login at the (fake) IdP, hubs admit the node"
+echo "== 4. login at the (fake) IdP: the session reaches the snapshot and the policy opens"
 $S login mac >/dev/null
-wait_for 20 st '[.hubs[] | select(.state == "connected")] | length >= 1' || fail "no hub connected after login"
+wait_for 20 st '.user.username == "martin" and ([.hubs[] | select(.state == "connected")] | length >= 1)' || fail "no session on this Mac after the login"
 ifconfig | grep -q 'inet 10\.21\.' || fail "no overlay address on a utun device"
 # netstat abbreviates (10.60/24); netbackup.sh prints full prefixes
 ./netbackup.sh routes | grep -q '^inet 10\.60\.0\.0/24 .* utun[0-9]*$' || fail "no route for the lab network through utun"
