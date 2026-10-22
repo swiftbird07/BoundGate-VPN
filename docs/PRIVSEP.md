@@ -47,6 +47,7 @@ the node as it would run alone, with two replacements:
 | address, routes | `ip addr/route` | `set_address`, `add_route`, `del_route`: only on that device, only network prefixes |
 | host routes to control plane, hubs, IdP | `ip route replace <host>` | `add_bypass`, `del_bypass`: unicast host addresses only |
 | forwarding, NAT, forward rules, reply via arrival | `sysctl`, `nft` | the same operations, only for that device, NAT only for a pool in a private or shared range (the rule for the overlay pool) |
+| the host's resolver, while the overlay is up | systemd-resolved over the system bus | `set_link_dns`: only for that device, at most eight resolver addresses, each a unicast address -- loopback among the refused, because a hub that named 127.0.0.1 would point the host at itself and hide that it resolves nothing. The worker has no bus socket and its seccomp filter no business getting one; the parent, which holds the journal, makes the call ([ACL.md](ACL.md), #14) |
 | a hub's listener on 443 | root | the one capability `CAP_NET_BIND_SERVICE` (ambient), when the parent has it |
 | to pin the control plane's key | writes `control.pin` | `pin_control`: only while no key is pinned |
 | to follow the admin key list | writes `admin_trust.json` | `follow_signers`: the parent verifies the chain itself and moves only along links signed by a key of the list it holds |
@@ -139,6 +140,10 @@ a container does.
 - route any network into the node's own device, add host routes that bypass
   it, turn on forwarding, masquerade the (private or shared) pool: what a full-tunnel
   profile or an exit node does legitimately anyway;
+- send the host's names to a resolver of its choosing while it runs, as long
+  as that is a unicast address: the same reach a full-tunnel profile has
+  anyway, and it ends when the worker does (the parent gives the resolver
+  back from its journal);
 - believe what it likes while it runs: what it holds in memory is its own.
   It ends with the worker, and the next one starts from the parent's files;
 - rewrite what is its own in the state directory: `enrollment.json` (what

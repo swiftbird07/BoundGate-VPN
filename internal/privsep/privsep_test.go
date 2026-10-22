@@ -74,7 +74,16 @@ func (f *fakeNet) AddBypass(_ context.Context, h netip.Addr) error {
 	return nil
 }
 func (f *fakeNet) DelBypass(context.Context, netip.Addr) error { return nil }
-func (f *fakeNet) EnableForwarding(context.Context) error      { return nil }
+
+func (f *fakeNet) SetLinkDNS(_ context.Context, ifname string, servers []netip.Addr) error {
+	line := "dns " + ifname
+	for _, s := range servers {
+		line += " " + s.String()
+	}
+	f.rec(line)
+	return nil
+}
+func (f *fakeNet) EnableForwarding(context.Context) error { return nil }
 func (f *fakeNet) AllowForward(context.Context, string, bool) (bool, error) {
 	return true, nil
 }
@@ -152,6 +161,13 @@ func TestTheParentAnswersOnlyWhatItsRulesAllow(t *testing.T) {
 		net.SetNAT(ctx, netip.MustParsePrefix("10.21.0.0/16"), nil, "eth0"),
 		net.SetNAT(ctx, netip.MustParsePrefix("100.0.0.0/6"), []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, "bg0"),
 		net.ReplyViaArrival(ctx, "bg0", true), // the fake host cannot
+		// the host's resolver may be pointed at what a hub offers, but only
+		// for the node's own device and only at addresses a resolver can be
+		net.SetLinkDNS(ctx, "eth0", []netip.Addr{netip.MustParseAddr("10.60.0.53")}),
+		net.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("127.0.0.1")}),
+		net.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("224.0.0.251")}),
+		net.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("0.0.0.0")}),
+		net.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("fe80::1")}),
 	} {
 		if bad == nil {
 			t.Fatal("a request against the rules went through")
@@ -163,6 +179,8 @@ func TestTheParentAnswersOnlyWhatItsRulesAllow(t *testing.T) {
 		net.AddBypass(ctx, netip.MustParseAddr("203.0.113.7")),
 		net.SetNAT(ctx, netip.MustParsePrefix("10.21.0.0/16"), []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, "bg0"),
 		net.SetNAT(ctx, netip.MustParsePrefix("100.96.0.0/16"), []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, "bg0"), // shared address space, as the rehearsal's pool
+		net.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("10.60.0.53")}),
+		net.SetLinkDNS(ctx, "bg0", nil), // and given back on the way down
 	} {
 		if err != nil {
 			t.Fatalf("an allowed request failed: %v", err)
@@ -171,7 +189,7 @@ func TestTheParentAnswersOnlyWhatItsRulesAllow(t *testing.T) {
 	fn.mu.Lock()
 	got := strings.Join(fn.calls, "; ")
 	fn.mu.Unlock()
-	if got != "create bg0; addr bg0 10.21.0.4/16; route 10.60.0.0/24 bg0; bypass 203.0.113.7; nat 10.21.0.0/16; nat 100.96.0.0/16" {
+	if got != "create bg0; addr bg0 10.21.0.4/16; route 10.60.0.0/24 bg0; bypass 203.0.113.7; nat 10.21.0.0/16; nat 100.96.0.0/16; dns bg0 10.60.0.53; dns bg0" {
 		t.Fatalf("the host saw: %s", got)
 	}
 	if _, err := c.call(ctx, "exec", nil, nil); err == nil {

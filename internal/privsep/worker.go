@@ -302,6 +302,15 @@ func (r *remoteNet) SetNAT(ctx context.Context, pool netip.Prefix, dsts []netip.
 	return err
 }
 
+// SetLinkDNS implements netcfg.LinkDNSConfigurator through the parent: the
+// worker's sandbox cannot talk to systemd-resolved (no bus socket, and the
+// seccomp filter has no business allowing it), while the parent already
+// changes routes and NAT for this device.
+func (r *remoteNet) SetLinkDNS(ctx context.Context, ifname string, servers []netip.Addr) error {
+	_, err := r.c.call(ctx, opSetLinkDNS, dnsArgs{Ifname: ifname, Servers: servers}, nil)
+	return err
+}
+
 func (r *remoteNet) ReplyViaArrival(ctx context.Context, ifname string, on bool) error {
 	_, err := r.c.call(ctx, opReplyViaArrival, switchArgs{Ifname: ifname, On: on}, nil)
 	return err

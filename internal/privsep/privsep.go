@@ -43,6 +43,7 @@ const (
 	opAllowForward     = "allow_forward"
 	opSetNAT           = "set_nat"
 	opReplyViaArrival  = "reply_via_arrival"
+	opSetLinkDNS       = "set_link_dns"
 	opPinControl       = "pin_control"
 	opFollowSigners    = "follow_signers"
 	opRecord           = "record"
@@ -152,6 +153,14 @@ type switchArgs struct {
 
 type foundResult struct {
 	Found bool `json:"found"`
+}
+
+// dnsArgs: point the host's resolver at what the hub offers, for the node's
+// own device (#14). The worker may ask for it; the parent decides whether
+// the addresses are resolvers a hub could sensibly offer.
+type dnsArgs struct {
+	Ifname  string       `json:"ifname"`
+	Servers []netip.Addr `json:"servers,omitempty"`
 }
 
 type natArgs struct {

@@ -292,6 +292,31 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 		}
 		return nil, fd, p.Net.SetNAT(ctx, a.Pool, a.Dsts, a.Ifname)
 
+	case opSetLinkDNS:
+		var a dnsArgs
+		if err := decode(&a); err != nil {
+			return nil, fd, err
+		}
+		if err := p.ownDevice(req.Op, a.Ifname); err != nil {
+			return nil, fd, err
+		}
+		l, ok := p.Net.(netcfg.LinkDNSConfigurator)
+		if !ok {
+			return nil, fd, p.refuse(req.Op, "this host cannot be pointed at other resolvers")
+		}
+		// the resolvers a hub offers: a few unicast addresses. Loopback is
+		// refused on purpose -- a hub that named 127.0.0.1 would point this
+		// host at itself, which resolves nothing and hides that it does not
+		if len(a.Servers) > 8 {
+			return nil, fd, p.refuse(req.Op, "too many resolvers", "n", len(a.Servers))
+		}
+		for _, srv := range a.Servers {
+			if !srv.IsValid() || srv.IsUnspecified() || srv.IsLoopback() || srv.IsMulticast() || srv.IsLinkLocalMulticast() || srv.IsLinkLocalUnicast() {
+				return nil, fd, p.refuse(req.Op, "not a unicast resolver address", "server", srv)
+			}
+		}
+		return nil, fd, l.SetLinkDNS(ctx, a.Ifname, a.Servers)
+
 	case opReplyViaArrival:
 		var a switchArgs
 		if err := decode(&a); err != nil {

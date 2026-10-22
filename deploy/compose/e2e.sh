@@ -208,6 +208,14 @@ if x node-a timeout 4 nslookup other.example 10.60.0.53 >/dev/null 2>&1; then fa
 # the question in the list goes through, and the answer teaches the hub
 x node-a timeout 5 nslookup target.lab 10.60.0.53 2>/dev/null | grep -q 10.60.0.10 || fail "the resolver did not answer target.lab through the tunnel"
 wait_for 10 reach 10.60.0.10 target || fail "the address the name resolved to stayed closed"
+# The hub offers that resolver to its spokes (`dns:`), so the spoke routes it
+# through the tunnel and tries to point its host at it (#14). These
+# containers have no systemd-resolved and no bus socket, so what is asserted
+# here is the honest failure: the node comes up anyway and says why -- and it
+# says it about the bus, not "this platform cannot", which is what a
+# separated node reported before the parent learned the operation.
+status_is node-a '.routes | index("10.60.0.53/32") != null' || fail "the hub's resolver got no route through the tunnel"
+status_is node-a '.dns == null and (.dns_error | test("systemd-resolved"))' || fail "the node does not say why the host kept its own resolver"
 # a server name alone does not open an address of the overlay's networks:
 # anyone could write a permitted name into a ClientHello (it does on the
 # internet, which the lab has none of; see the unit tests)
@@ -266,17 +274,21 @@ x node-a boundgatectl -json profiles | jq -e '.[0:3] == ["full","lan-only","wan-
 x node-a boundgatectl down >/dev/null
 x node-a boundgatectl up -profile wan-only >/dev/null || fail "up with wan-only failed"
 wait_for 15 status_is node-a '.profile == "wan-only" and ([.hubs[] | select(.state == "connected")] | length == 2)' || fail "node-a did not come up with wan-only"
-status_is node-a '[.routes[]? | select(startswith("10.60.") or startswith("192.168.178."))] | length == 0' || fail "wan-only routes a LAN behind a hub"
+# The LAN prefixes are out, but the resolver the hub offers keeps its host
+# route whatever the profile says (PROFILES.md): names are the hub's business
+# on every profile, otherwise a dynamic access list would see nothing on
+# wan-only.
+status_is node-a '[.routes[]? | select(startswith("10.60.") or startswith("192.168.178."))] == ["10.60.0.53/32"]' || fail "wan-only routes a LAN behind a hub (or dropped the hub's resolver)"
 wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "hub1's LAN reachable on wan-only"
 x node-a boundgatectl down >/dev/null
 x node-a boundgatectl up -profile lan-only >/dev/null || fail "up with lan-only failed"
-wait_for 15 status_is node-a '.profile == "lan-only" and ([.routes[]? | select(. == "10.60.0.0/24")] | length == 1)' || fail "lan-only does not route hub1's LAN"
+wait_for 15 status_is node-a '.profile == "lan-only" and ([.routes[]? | select(. == "10.60.0.0/24")] | length == 1) and ([.routes[]? | select(. == "10.60.0.53/32")] | length == 1)' || fail "lan-only does not route hub1's LAN (or the hub's resolver)"
 wait_for 20 reach 10.60.0.10 target || fail "hub1's LAN unreachable on lan-only"
 # switching while up: only the kernel routes change, the tunnels and the
 # address stay as they are (a reconnect would move .since)
 SINCE=$(x node-a boundgatectl -json status | jq -r .since)
 x node-a boundgatectl profile wan-only >/dev/null || fail "switching to wan-only while up failed"
-wait_for 10 status_is node-a '.profile == "wan-only" and ([.routes[]? | select(startswith("10.60."))] | length == 0)' || fail "the live switch did not drop hub1's LAN"
+wait_for 10 status_is node-a '.profile == "wan-only" and ([.routes[]? | select(startswith("10.60."))] == ["10.60.0.53/32"])' || fail "the live switch did not drop hub1's LAN"
 status_is node-a "(.since == \"$SINCE\") and ([.hubs[] | select(.state == \"connected\")] | length == 2)" || fail "the live switch reconnected the tunnel"
 wait_for 10 sh -c '! docker compose -f docker-compose.yml exec -T node-a curl -sf --max-time 2 http://10.60.0.10 >/dev/null 2>&1' || fail "hub1's LAN still reachable after the live switch"
 x node-a boundgatectl profile full >/dev/null || fail "switching back to full while up failed"
