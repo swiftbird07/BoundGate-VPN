@@ -97,6 +97,13 @@ case "$cmd" in
     run sudo pkill -f 'darwin_.*/boundgate-node'
     run pkill -f 'darwin_.*/boundgate-udpbridge'
     [ $YES = 1 ] && sleep 2
+    # What the process leaves in the system configuration does not go away
+    # with it: a resolver entry for a utun device that no longer exists sends
+    # every name into a tunnel that is gone, and macOS asks no one else. This
+    # replays the node's journal and sweeps those entries, so this script
+    # really is the way back it claims to be (R144).
+    echo "1b. undo what the node left in the system configuration (resolver, host routes, NAT)"
+    run "$REPO/deploy/macos/dev.sh" repair
     now=$(mktemp); routes > "$now"
     echo "2. routes that exist now but not in the backup (static host routes and routes on new utun devices are removed; others only shown)"
     comm -13 "$base/routes.txt" "$now" | while read -r fam dest gw flags netif; do
@@ -112,7 +119,9 @@ case "$cmd" in
       if [ "$dest" = default ] && [ "$fam" = inet ] && ! grep -q '^inet default ' "$now"; then run sudo route -n add default "$gw"
       else echo "  (missing: $fam $dest via $gw on $netif [$flags]; dynamic routes come back by themselves)"; fi
     done
-    rm -f "$now" "$REPO/deploy/macos/state/netstate.json" 2>/dev/null || true
+    # the journal is not deleted here: step 1b replays it, and an entry that
+    # is still in it is one that could not be undone yet
+    rm -f "$now" 2>/dev/null || true
     echo "4. still wrong? Wi-Fi off/on renews the default route and DNS:"
     echo "     networksetup -setairportpower en0 off && networksetup -setairportpower en0 on"
     echo "   and a reboot clears every runtime route. Saved settings were never modified; compare with: $0 diff $base"

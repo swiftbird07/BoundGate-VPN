@@ -127,3 +127,37 @@ func darwinDNSScript(ifname string, servers []netip.Addr) (string, error) {
 	b.WriteString("\nd.add SupplementalMatchDomains * \"\"\nset " + key + "\nquit\n")
 	return b.String(), nil
 }
+
+// darwinDNSListScript asks for every resolver key a node of ours ever wrote,
+// whatever the device was called. This is the sweep that needs no journal:
+// the keys are what really decides where this Mac sends its names.
+const darwinDNSListScript = "list State:/Network/Service/boundgate-[^/]+/DNS\nquit\n"
+
+// darwinDNSKeys picks the keys out of `scutil list`, which prints them as
+//
+//	subKey [0] = State:/Network/Service/boundgate-utun7/DNS
+func darwinDNSKeys(out string) []string {
+	var keys []string
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		_, after, ok := strings.Cut(sc.Text(), "= ")
+		if !ok {
+			continue
+		}
+		k := strings.TrimSpace(after)
+		if strings.HasPrefix(k, "State:/Network/Service/boundgate-") && strings.HasSuffix(k, "/DNS") {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+// darwinDNSRemoveScript removes the keys the sweep found.
+func darwinDNSRemoveScript(keys []string) string {
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString("remove " + k + "\n")
+	}
+	b.WriteString("quit\n")
+	return b.String()
+}

@@ -597,8 +597,6 @@ func (m *spokeManager) applyRoutesLocked() {
 		}
 	}
 	m.skipped = skipped
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	// The resolvers of the primary hub: every name is asked there, through
 	// the tunnel, so that the hub sees the query and a dynamic access list
 	// can match what the answer named (docs/ACL.md).
@@ -606,9 +604,19 @@ func (m *spokeManager) applyRoutesLocked() {
 	for _, a := range dns {
 		want[netip.PrefixFrom(a, a.BitLen())] = true
 	}
+	// On the way out the resolver goes first, before any route is touched:
+	// it is the one change that leaves the machine unable to resolve a name
+	// at all when it stays behind, so it must not wait behind commands that
+	// can hang (R144).
+	if len(dns) == 0 {
+		m.applyDNSLocked(dns)
+	}
 	for p := range m.installed {
 		if !want[p] {
-			if err := s.n.net.DelRoute(ctx, p, s.ifname); err != nil {
+			ctx, cancel := opCtx()
+			err := s.n.net.DelRoute(ctx, p, s.ifname)
+			cancel()
+			if err != nil {
 				s.n.log.Warn("route del", "prefix", p, "err", err)
 			}
 			delete(m.installed, p)
@@ -616,7 +624,10 @@ func (m *spokeManager) applyRoutesLocked() {
 	}
 	for p := range want {
 		if !m.installed[p] {
-			if err := s.n.net.AddRoute(ctx, p, s.ifname); err != nil {
+			ctx, cancel := opCtx()
+			err := s.n.net.AddRoute(ctx, p, s.ifname)
+			cancel()
+			if err != nil {
 				s.n.log.Warn("route add", "prefix", p, "err", err)
 				continue
 			}
@@ -627,7 +638,9 @@ func (m *spokeManager) applyRoutesLocked() {
 	// here, and a host asked to use an address it cannot reach yet may
 	// decide it is unreachable (macOS computes that when the resolver is
 	// configured)
-	m.applyDNSLocked(ctx, dns)
+	if len(dns) > 0 {
+		m.applyDNSLocked(dns)
+	}
 }
 
 // splitDefault turns 0.0.0.0/0 into two /1 routes so the host's real
@@ -665,7 +678,7 @@ func (m *spokeManager) resolversLocked() []netip.Addr {
 // network state; a daemon has to change something that belongs to the host,
 // and when it cannot, that is reported and nothing else is held up: the
 // overlay works, only names are resolved outside it.
-func (m *spokeManager) applyDNSLocked(ctx context.Context, dns []netip.Addr) {
+func (m *spokeManager) applyDNSLocked(dns []netip.Addr) {
 	s := m.s
 	m.dns, m.dnsErr = dns, ""
 	if d, ok := s.n.net.(netcfg.DNSConfigurator); ok {
@@ -679,12 +692,26 @@ func (m *spokeManager) applyDNSLocked(ctx context.Context, dns []netip.Addr) {
 		}
 		return
 	}
-	if len(dns) == 0 && !s.resolver {
-		// nothing to point anywhere and nothing to give back: a hub that
-		// offers no resolvers must not make every apply ask the bus
+	if len(dns) == 0 {
+		if !s.resolver {
+			// nothing to point anywhere and nothing to give back: a hub that
+			// offers no resolvers must not make every apply ask the bus
+			return
+		}
+		if err := giveBackResolver(s.n.log, l, s.ifname); err != nil {
+			// s.resolver stays as it is: the host is still pointed at the
+			// tunnel, teardown tries again, and the journal keeps the
+			// record for the next start
+			m.dnsErr = err.Error()
+			return
+		}
+		s.resolver = false
 		return
 	}
-	if err := l.SetLinkDNS(ctx, s.ifname, dns); err != nil {
+	ctx, cancel := opCtx()
+	err := l.SetLinkDNS(ctx, s.ifname, dns)
+	cancel()
+	if err != nil {
 		m.dns, m.dnsErr = nil, err.Error()
 		s.noLinkDNS.Do(func() {
 			s.n.log.Warn("the host keeps its own resolver: names are resolved outside the tunnel, so a dynamic access list cannot match them by name (docs/ACL.md)",
@@ -692,7 +719,7 @@ func (m *spokeManager) applyDNSLocked(ctx context.Context, dns []netip.Addr) {
 		})
 		return
 	}
-	s.resolver = len(dns) > 0
+	s.resolver = true
 }
 
 // dnsState is where names go while the overlay is up: the hub's resolvers the

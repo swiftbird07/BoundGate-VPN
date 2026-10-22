@@ -143,9 +143,17 @@ func main() {
 		return
 	}
 	cfgPath := flag.String("config", "", "configuration file (default: node.yaml next to the executable, else "+defaults.config+")")
+	repair := flag.Bool("repair", false, "undo network changes a node left on this host (the resolver first, then routes and NAT) and exit; needs root, needs no daemon")
 	flag.Parse()
 	if *cfgPath == "" {
 		*cfgPath = defaultConfigPath()
+	}
+	if *repair {
+		if err := repairHost(*cfgPath); err != nil {
+			fmt.Fprintln(os.Stderr, "boundgate-node:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if err := runMain(*cfgPath); err != nil {
 		fmt.Fprintln(os.Stderr, "boundgate-node:", err)

@@ -18,12 +18,76 @@ st() { $D ctl -json status | jq -e "$1" >/dev/null; }
 
 echo "== 0. sudo, a backup of the Mac's network state, the daemon"
 sudo -v
+# This lab's control plane is the one under ../compose/state/control. A Mac
+# state older than its certificate pinned a key that no longer exists, and its
+# device record went with the old database; enrolling again is the only way
+# back, and step 2 does exactly that. So the state goes here -- the compose lab
+# drops what has gone stale in its own step 0 for the same reason.
+CRT=../compose/state/control/control.crt
+if [ -f state/device.key ] && [ -f "$CRT" ] && [ "$CRT" -nt state/device.key ]; then
+  echo "   the state is older than this lab's control plane: starting over (new key, approved in step 2)"
+  $D clean
+fi
+# A state from before the admin key list was signed holds a plain list of admin
+# keys, and the daemon refuses to start with it. In the lab that pin goes and
+# the node pins the signed list on its first contact, as ../compose/e2e.sh does.
+if [ -f state/admin_keys ] && [ ! -f state/admin_trust.json ]; then
+  echo "   dropping an admin key pin from before that list was signed"
+  sudo rm -f state/admin_keys
+fi
 ./netbackup.sh backup
 echo "   (if anything looks wrong afterwards: deploy/macos/netbackup.sh diff, then restore -y)"
 BEFORE=$(./netbackup.sh routes)
 $D run > /tmp/boundgate-mac-node.log 2>&1 &
 DAEMON=$!
-trap '$D ctl down >/dev/null 2>&1 || true; $D ctl logout >/dev/null 2>&1 || true; sudo pkill -f "darwin_.*/boundgate-node" 2>/dev/null || true; kill $DAEMON 2>/dev/null || true' EXIT
+
+# every resolver entry a node of ours left in the system configuration
+dns_leftovers() { printf 'list State:/Network/Service/boundgate-[^/]+/DNS\nquit\n' | scutil 2>/dev/null | sed -n 's/.*= \(State:.*\)$/\1/p'; }
+
+# What this script must never do is walk away from a Mac that cannot resolve
+# a name. While the overlay is up, this host sends every name to the hub's
+# resolver through the tunnel, and macOS asks nobody else -- so an entry left
+# behind for a device that is gone is a Mac without working names, and
+# without internet in everything that judges the network by the system
+# configuration (Safari among them). It happened on 2026-10-22, and only a
+# reboot helped.
+#
+# Hence: let the teardown finish *before* the daemon is killed, then undo
+# what is left without a daemon, then prove the machine is in order -- and
+# fail the run if it was not, so this is caught here and not in a browser.
+finish() {
+  trap '' EXIT # no recursion if something in here fails
+  $D ctl down >/dev/null 2>&1 || true
+  $D ctl logout >/dev/null 2>&1 || true
+  wait_for 20 st '.state == "down"' || echo "   the daemon did not report the overlay as down" >&2
+  sudo pkill -f "darwin_.*/boundgate-node" 2>/dev/null || true
+  kill $DAEMON 2>/dev/null || true
+  sleep 1
+  $D repair || true # journal plus a sweep of the system configuration
+  bad=0
+  left=$(dns_leftovers)
+  if [ -n "$left" ]; then
+    echo "LEFTOVER: this Mac is still pointed at the tunnel's resolver:" >&2
+    echo "$left" >&2
+    for k in $left; do printf 'remove %s\nquit\n' "$k" | sudo scutil >/dev/null 2>&1 || true; done
+    echo "   removed by hand -- that the daemon and 'dev.sh repair' did not is a bug" >&2
+    bad=1
+  fi
+  dscacheutil -flushcache 2>/dev/null || true
+  if ! dscacheutil -q host -a name apple.com 2>/dev/null | grep -q ip_address; then
+    echo "THIS MAC CANNOT RESOLVE NAMES after the run. Way back: deploy/macos/netbackup.sh restore -y" >&2
+    bad=1
+  fi
+  # the journal is the node's own answer to the question: it only keeps what
+  # it could not take back
+  if sudo test -s state/netstate.json; then
+    echo "LEFTOVER: the node's journal still names changes nobody could undo:" >&2
+    sudo cat state/netstate.json >&2
+    bad=1
+  fi
+  [ $bad = 0 ] || exit 1
+}
+trap finish EXIT
 wait_for 15 $D ctl -json status || fail "daemon not reachable (see /tmp/boundgate-mac-node.log)"
 
 echo "== 1. the hubs answer over UDP through the bridge"
@@ -32,6 +96,14 @@ $BRIDGE_BIN -probe 127.0.0.1:15431 || $BRIDGE_BIN -probe 127.0.0.1:15432 || fail
 echo "== 2. enroll, then approve and sign as an interactive endpoint"
 $S approve mac
 wait_for 20 st '.enrollment == "approved" and .binding == "verified"' || fail "not approved"
+
+echo "== 2b. the lab's policy: a device gets in on its key, an interactive node needs a person"
+# Whether a sign-in is required is what a policy says, not the hub
+# (docs/OIDC.md) -- and ../compose/e2e.sh leaves the lab on a blanket permit
+# when it is done. So this run sets the lab's default policy instead of
+# inheriting whatever ran last, which is what made step 3 below fail on
+# 2026-10-22.
+$S policy lab-allow-all 'permit(principal, action, resource) when { principal.has_session || principal.kind == "workload" };' >/dev/null
 
 echo "== 3. up: tunnel device and routes, but the hubs want a user login"
 $D ctl logout >/dev/null 2>&1 || true   # an aborted earlier run leaves its user session in the control plane

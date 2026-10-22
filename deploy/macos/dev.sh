@@ -8,6 +8,7 @@
 #   deploy/macos/dev.sh ctl status     # boundgatectl against that daemon
 #   deploy/macos/dev.sh ctl enroll | up | login | down
 #   deploy/macos/dev.sh check          # routes and interfaces the node touched
+#   deploy/macos/dev.sh repair         # undo what a node left on this Mac (no daemon needed)
 #   deploy/macos/dev.sh clean          # forget the device key and state
 #
 # NOSUDO=1 runs the daemon unprivileged: enroll, status and login work, `up`
@@ -70,9 +71,20 @@ case "${1:-}" in
   ctl)
     need boundgatectl; shift
     S=
-    # the socket belongs to whoever runs the daemon (root under sudo)
-    [ -S "$STATE/node.sock" ] && [ ! -w "$STATE/node.sock" ] && S=sudo
+    # the socket belongs to whoever runs the daemon (root under sudo). An if,
+    # not a chain of tests: under `set -e` a chain whose last test is false
+    # ends the script, so `ctl down` would silently do nothing exactly when
+    # the socket is already gone.
+    if [ -S "$STATE/node.sock" ] && [ ! -w "$STATE/node.sock" ]; then S=sudo; fi
     exec $S env BOUNDGATE_SOCKET="$STATE/node.sock" "$BIN/boundgatectl" "$@" ;;
+  repair)
+    # Undo what a node left on this Mac when there is no daemon left to do
+    # it: the host's resolver first -- a Mac still pointed at a resolver
+    # inside a tunnel that is gone resolves no name at all, not even through
+    # its own resolver -- then routes, host routes and NAT.
+    need boundgate-node
+    [ -f "$STATE/node.yaml" ] || config
+    exec $SUDO "$BIN/boundgate-node" -config "$STATE/node.yaml" -repair ;;
   check)
     echo "== utun interfaces with an overlay address"; ifconfig | awk '/^utun/{i=$1} /inet 10\.21\./{print i, $0}'
     echo "== routes through utun or pinned hosts"; netstat -rn -f inet | awk 'NR<4 || /utun/ || /UGHS/ || /UHS/'

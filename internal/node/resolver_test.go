@@ -50,7 +50,7 @@ func TestTheHostsResolverFollowsTheHub(t *testing.T) {
 	hub := netip.MustParseAddr("10.20.0.1")
 
 	m.mu.Lock()
-	m.applyDNSLocked(context.Background(), []netip.Addr{hub})
+	m.applyDNSLocked([]netip.Addr{hub})
 	m.mu.Unlock()
 	if len(rec.set) != 1 || rec.set[0] != "bg0 10.20.0.1" {
 		t.Fatalf("set %v", rec.set)
@@ -64,7 +64,7 @@ func TestTheHostsResolverFollowsTheHub(t *testing.T) {
 
 	// the way down gives it back
 	m.mu.Lock()
-	m.applyDNSLocked(context.Background(), nil)
+	m.applyDNSLocked(nil)
 	m.mu.Unlock()
 	if len(rec.set) != 2 || rec.set[1] != "bg0 off" {
 		t.Fatalf("set %v", rec.set)
@@ -83,7 +83,7 @@ func TestWithoutAResolverTheNodeSaysSoAndCarriesOn(t *testing.T) {
 	rec := &resolverNet{fail: errors.New("netcfg: no systemd-resolved on the system bus")}
 	_, s, m := resolverSession(rec, "")
 	m.mu.Lock()
-	m.applyDNSLocked(context.Background(), []netip.Addr{netip.MustParseAddr("10.20.0.1")})
+	m.applyDNSLocked([]netip.Addr{netip.MustParseAddr("10.20.0.1")})
 	m.mu.Unlock()
 	if s.resolver {
 		t.Error("it thinks it changed the resolver")
@@ -104,7 +104,7 @@ func TestResolverSystemLeavesTheHostAlone(t *testing.T) {
 	m.primary = &hubLink{}
 	m.mu.Lock()
 	dns := m.resolversLocked()
-	m.applyDNSLocked(context.Background(), dns)
+	m.applyDNSLocked(dns)
 	m.mu.Unlock()
 	if len(dns) != 0 {
 		t.Fatalf("resolvers %v", dns)
@@ -123,7 +123,7 @@ func TestResolverSystemLeavesTheHostAlone(t *testing.T) {
 func TestAPlatformThatCannotSetTheResolverReportsIt(t *testing.T) {
 	_, _, m := resolverSession(nil, "")
 	m.mu.Lock()
-	m.applyDNSLocked(context.Background(), []netip.Addr{netip.MustParseAddr("10.20.0.1")})
+	m.applyDNSLocked([]netip.Addr{netip.MustParseAddr("10.20.0.1")})
 	m.mu.Unlock()
 	got, err := m.dnsState()
 	if len(got) != 0 || err == "" {
@@ -142,7 +142,7 @@ func TestLosingThePrimaryHubGivesTheResolverBack(t *testing.T) {
 	hub := netip.MustParseAddr("10.20.0.1")
 
 	m.mu.Lock()
-	m.applyDNSLocked(context.Background(), []netip.Addr{hub})
+	m.applyDNSLocked([]netip.Addr{hub})
 	m.mu.Unlock()
 	if !s.resolver {
 		t.Fatal("the resolver was not set in the first place")
@@ -153,7 +153,7 @@ func TestLosingThePrimaryHubGivesTheResolverBack(t *testing.T) {
 	m.primary = &hubLink{}
 	m.mu.Lock()
 	dns := m.resolversLocked()
-	m.applyDNSLocked(context.Background(), dns)
+	m.applyDNSLocked(dns)
 	m.mu.Unlock()
 	if len(dns) != 0 {
 		t.Fatalf("resolvers of a hub without a tunnel: %v", dns)

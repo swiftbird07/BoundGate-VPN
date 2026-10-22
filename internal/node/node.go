@@ -1964,18 +1964,42 @@ func (s *session) close(reason string) {
 // partially built session.
 func (s *session) teardown() {
 	n := s.n
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// one deadline per change, never one for all of them: see opCtx
+	del := func(p netip.Prefix) {
+		ctx, cancel := opCtx()
+		_ = n.net.DelRoute(ctx, p, s.ifname)
+		cancel()
+	}
 	s.cancel() // stops the hub listener (closes tunnels), TUN reader and hub links
 	s.flows.CloseWhere(func(*flow.Entry) bool { return true }, "overlay down")
 	if s.paths != nil {
 		s.paths.stop()
 	}
+	// The host's resolver comes first, before a single route is removed and
+	// while the device is still there. It is what the machine needs to
+	// resolve any name at all, and everything after it here can hang
+	// (R144).
+	s.mu.Lock()
+	if s.resolver {
+		// the setting lives on the link and would die with it; giving it
+		// back explicitly keeps the journal and the status honest
+		if l, ok := netcfg.LinkDNS(n.net); ok {
+			if err := giveBackResolver(n.log, l, s.ifname); err == nil {
+				s.resolver = false
+			}
+			// on failure s.resolver stays true: the host really is still
+			// pointed at the tunnel, the journal keeps its record, and
+			// the error above says how to undo it
+		} else {
+			s.resolver = false
+		}
+	}
+	s.mu.Unlock()
 	if s.spoke != nil {
 		s.spoke.stop()
 		s.spoke.mu.Lock()
 		for p := range s.spoke.installed {
-			_ = n.net.DelRoute(ctx, p, s.ifname)
+			del(p)
 		}
 		s.spoke.installed = map[netip.Prefix]bool{}
 		s.spoke.mu.Unlock()
@@ -1983,42 +2007,42 @@ func (s *session) teardown() {
 	s.mu.Lock()
 	for p := range s.peerRoute {
 		for _, q := range splitDefault(p) {
-			_ = n.net.DelRoute(ctx, q, s.ifname)
+			del(q)
 		}
 	}
 	s.peerRoute = map[netip.Prefix]int{}
 	if s.forwardAllowed {
+		ctx, cancel := opCtx()
 		_, _ = n.net.AllowForward(ctx, s.ifname, false)
+		cancel()
 		s.forwardAllowed = false
 	}
 	if s.nat {
+		ctx, cancel := opCtx()
 		_ = n.net.SetNAT(ctx, s.pool, nil, s.ifname)
+		cancel()
 		s.nat = false
 	}
 	if s.poolRoute {
-		_ = n.net.DelRoute(ctx, s.pool, s.ifname)
+		del(s.pool)
 		s.poolRoute = false
 	}
 	if s.arrival {
 		if a, ok := n.net.(netcfg.ArrivalRouter); ok {
+			ctx, cancel := opCtx()
 			_ = a.ReplyViaArrival(ctx, s.ifname, false)
+			cancel()
 		}
 		s.arrival = false
-	}
-	if s.resolver {
-		// the setting lives on the link and would die with it; giving it
-		// back explicitly keeps the journal and the status honest
-		if l, ok := netcfg.LinkDNS(n.net); ok {
-			_ = l.SetLinkDNS(ctx, s.ifname, nil)
-		}
-		s.resolver = false
 	}
 	if s.dev != nil {
 		_ = s.dev.Close()
 		s.dev = nil
 	}
 	for ip := range s.bypass {
+		ctx, cancel := opCtx()
 		_ = n.net.DelBypass(ctx, ip)
+		cancel()
 	}
 	s.bypass = map[netip.Addr]bool{}
 	s.mu.Unlock()

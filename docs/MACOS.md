@@ -82,6 +82,30 @@ kernel and configd memory only: the device and its routes disappear with the
 process, the DNS key is removed on teardown (and by the journal after a
 crash), and a reboot clears everything.
 
+The DNS key is the one that does **not** disappear with the process, and it
+is the one that matters most: while it is there this Mac sends every name to
+an address inside the tunnel and asks nobody else, so a key left behind for a
+device that is gone is a Mac that resolves nothing -- and, because macOS
+tells applications what the network can do from the system configuration and
+not from the routing table, Safari and everything else built on
+`URLSession` report no internet at all. It happened on 2026-10-22 and cost a
+reboot (R144). What makes sure it does not happen again: on the way out the
+resolver is given back before any route is touched, with a deadline of its
+own and three tries, a failure is an error and not a warning, and the journal
+keeps its record until the removal really worked. And when no daemon is left
+to do any of that:
+
+```bash
+sudo boundgate-node -repair              # the installed daemon's state
+deploy/macos/dev.sh repair               # the lab's
+```
+
+`-repair` needs no daemon and no network: it replays the journal (resolver
+first, then routes, host routes and NAT) and then asks configd itself for
+every `State:/Network/Service/boundgate-*/DNS` key it still holds and removes
+those too -- the case where a daemon was killed between making a change and
+writing it down. `netbackup.sh restore` runs it as its second step.
+
 `deploy/macos/netbackup.sh` is there so that this claim can be checked
 rather than believed:
 
@@ -99,9 +123,13 @@ kernel's cloned and link-layer entries, which change by themselves),
 service (addresses, DNS, proxies, order), forwarding sysctls, `/etc/hosts`,
 `/etc/resolver`, and copies of `preferences.plist` and
 `NetworkInterfaces.plist`. The backups are git-ignored: they describe your
-network. `e2e.sh` takes one at its start and compares the stable routes
-before and after. Last resorts, in this order: `restore -y`, Wi-Fi off and
-on (rebuilds the default route and DNS from DHCP), reboot.
+network. `e2e.sh` takes one at its start, compares the stable routes before
+and after, and before it ends checks that nothing of the node is left on the
+machine: no resolver key, an empty journal, and a name that really resolves.
+It fails the run when something is, so that a leftover is found there and not
+in a browser. Last resorts, in this order: `dev.sh repair` (or
+`boundgate-node -repair`), `restore -y`, Wi-Fi off and on (rebuilds the
+default route and DNS from DHCP), reboot.
 
 ## Hub address overrides
 

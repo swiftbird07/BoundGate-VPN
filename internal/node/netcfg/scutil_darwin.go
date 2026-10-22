@@ -37,6 +37,25 @@ func (darwinCfg) SetLinkDNS(ctx context.Context, ifname string, servers []netip.
 	return nil
 }
 
+// SweepDNS implements DNSSweeper: it removes every resolver entry a node of
+// ours left in the system configuration, whatever device it was for and
+// whether or not a journal still knows about it. This is what gets a Mac
+// whose daemon died mid-teardown its names back, without a reboot.
+func (darwinCfg) SweepDNS(ctx context.Context) ([]string, error) {
+	out, err := scutil(ctx, darwinDNSListScript)
+	if err != nil {
+		return nil, fmt.Errorf("netcfg: asking the system configuration for leftovers: %v: %s", err, out)
+	}
+	keys := darwinDNSKeys(out)
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	if out, err := scutil(ctx, darwinDNSRemoveScript(keys)); err != nil {
+		return nil, fmt.Errorf("%w: %v: %s", ErrNoResolver, err, out)
+	}
+	return keys, nil
+}
+
 // scutil runs its commands from stdin and returns what it printed.
 func scutil(ctx context.Context, script string) (string, error) {
 	cmd := exec.CommandContext(ctx, "scutil")

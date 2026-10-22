@@ -84,6 +84,28 @@ func LinkDNS(c Configurator) (LinkDNSConfigurator, bool) {
 	return l, true
 }
 
+// DNSSweeper is a configurator that can find resolver entries a node left on
+// this host and undo them without a journal to go by. On macOS such an entry
+// lives in the system configuration: it outlives the tunnel device, the
+// process and even a daemon that was killed between writing it and writing
+// its record, and while it is there the machine resolves no name at all
+// (R144). `boundgate-node -repair` is the way out that needs no daemon.
+type DNSSweeper interface {
+	// SweepDNS removes them and returns what it removed.
+	SweepDNS(ctx context.Context) ([]string, error)
+}
+
+// Sweeper returns the sweeper when this platform has one, looking behind a
+// Journal as LinkDNS does.
+func Sweeper(c Configurator) (DNSSweeper, bool) {
+	if j, ok := c.(*Journal); ok {
+		s, ok := j.Configurator.(DNSSweeper)
+		return s, ok
+	}
+	s, ok := c.(DNSSweeper)
+	return s, ok
+}
+
 // Watcher is a configurator that notices when the machine's own networks
 // change (another Wi-Fi, a cable, a VPN of someone else). Host routes to the
 // control plane and hubs point to the gateway of the network they were set

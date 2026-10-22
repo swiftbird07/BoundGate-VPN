@@ -2,11 +2,13 @@ package netcfg
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"golang.zx2c4.com/wireguard/tun"
@@ -131,9 +133,12 @@ func TestDarwinCommands(t *testing.T) {
 }
 
 // dnsCfg is a configurator that can point the host's resolver somewhere.
+// offErr makes giving it back fail, as a Mac whose scutil was cut off does.
 type dnsCfg struct {
 	fakeCfg
-	dns map[string][]netip.Addr
+	dns    map[string][]netip.Addr
+	offErr error
+	offs   int
 }
 
 func (d *dnsCfg) SetLinkDNS(_ context.Context, ifname string, servers []netip.Addr) error {
@@ -141,6 +146,10 @@ func (d *dnsCfg) SetLinkDNS(_ context.Context, ifname string, servers []netip.Ad
 		d.dns = map[string][]netip.Addr{}
 	}
 	if len(servers) == 0 {
+		d.offs++
+		if d.offErr != nil {
+			return d.offErr
+		}
 		delete(d.dns, ifname)
 		d.calls = append(d.calls, "dns-off "+ifname)
 		return nil
@@ -183,6 +192,52 @@ func TestJournalGivesTheResolverBack(t *testing.T) {
 	third := &dnsCfg{}
 	if n := NewJournal(third, path).Recover(ctx); n != 0 {
 		t.Fatalf("recovered %d entries although it cleaned up", n)
+	}
+}
+
+// The record of a removal that failed has to stay: it is the only thing that
+// ever gives this host its names back. On 2026-10-22 the journal cleared it
+// anyway and deleted itself, the Mac kept sending every name to a resolver
+// inside a tunnel that was gone, and nothing short of a reboot helped
+// (R144).
+func TestAResolverThatCouldNotBeGivenBackKeepsItsRecord(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "netstate.json")
+	stuck := &dnsCfg{offErr: errors.New("netcfg: the system configuration did not take the resolver: context deadline exceeded")}
+	j := NewJournal(stuck, path)
+	if err := j.SetLinkDNS(ctx, "utun12", []netip.Addr{netip.MustParseAddr("10.60.0.53")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.SetLinkDNS(ctx, "utun12", nil); err == nil {
+		t.Fatal("the failed removal was reported as done")
+	}
+	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "utun12") {
+		t.Fatalf("the journal forgot the resolver it could not give back: %s %v", b, err)
+	}
+
+	// recovery tries again -- three times, and keeps the record while it
+	// does not get through
+	stuck.offs = 0
+	if n := NewJournal(stuck, path).Recover(ctx); n != 1 {
+		t.Fatalf("recovered %d entries", n)
+	}
+	if stuck.offs != 3 {
+		t.Errorf("recovery tried %d times, want 3", stuck.offs)
+	}
+	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "utun12") {
+		t.Fatalf("recovery that did not get through dropped the record: %s %v", b, err)
+	}
+
+	// and when it does get through, the record goes with it
+	second := &dnsCfg{}
+	if n := NewJournal(second, path).Recover(ctx); n != 1 {
+		t.Fatalf("recovered %d entries", n)
+	}
+	if got := second.calls; len(got) != 1 || got[0] != "dns-off utun12" {
+		t.Fatalf("%v", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("the record stayed although the resolver was given back")
 	}
 }
 

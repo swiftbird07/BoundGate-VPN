@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 
@@ -59,8 +60,14 @@ func NewJournal(c Configurator, path string) *Journal {
 }
 
 // Recover undoes what a previous process left behind and returns how many
-// entries it removed. Errors of individual removals are ignored: most
-// entries are gone already.
+// entries it removed. The resolver goes first: a host still pointed at a
+// resolver inside a tunnel that is gone resolves no name at all, and on
+// macOS not even its own resolver answers any more (R144).
+//
+// What a removal says is taken seriously. One that answered -- including "no
+// such route", the usual case after the device went with the process -- is
+// done. One that never answered keeps its record, so the next start, or
+// `boundgate-node -repair`, tries again instead of forgetting it.
 func (j *Journal) Recover(ctx context.Context) int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -76,30 +83,80 @@ func (j *Journal) Recover(ctx context.Context) int {
 		_ = os.Remove(j.path)
 		return 0
 	}
-	n := 0
-	if a, ok := j.Configurator.(ArrivalRouter); ok && old.Arrival != "" {
-		_ = a.ReplyViaArrival(ctx, old.Arrival, false) // also flushes the tunnel's table
+	n, kept := 0, journalState{}
+	if l, ok := j.Configurator.(LinkDNSConfigurator); ok && old.DNS != "" {
+		if err := giveBackDNS(ctx, l, old.DNS); err != nil {
+			kept.DNS = old.DNS
+		}
 		n++
 	}
-	if l, ok := j.Configurator.(LinkDNSConfigurator); ok && old.DNS != "" {
-		_ = l.SetLinkDNS(ctx, old.DNS, nil)
+	if a, ok := j.Configurator.(ArrivalRouter); ok && old.Arrival != "" {
+		octx, cancel := opContext(ctx)
+		err := a.ReplyViaArrival(octx, old.Arrival, false) // also flushes the tunnel's table
+		if cutOff(octx, err) {
+			kept.Arrival = old.Arrival
+		}
+		cancel()
 		n++
 	}
 	for _, r := range old.Routes {
-		_ = j.Configurator.DelRoute(ctx, r.Dst, r.Iface)
+		octx, cancel := opContext(ctx)
+		if cutOff(octx, j.Configurator.DelRoute(octx, r.Dst, r.Iface)) {
+			kept.Routes = append(kept.Routes, r)
+		}
+		cancel()
 		n++
 	}
 	for _, h := range old.Bypass {
-		_ = j.Configurator.DelBypass(ctx, h)
+		octx, cancel := opContext(ctx)
+		if cutOff(octx, j.Configurator.DelBypass(octx, h)) {
+			kept.Bypass = append(kept.Bypass, h)
+		}
+		cancel()
 		n++
 	}
 	if old.NAT != "" {
-		_ = j.Configurator.SetNAT(ctx, netip.Prefix{}, nil, old.NAT)
+		octx, cancel := opContext(ctx)
+		if cutOff(octx, j.Configurator.SetNAT(octx, netip.Prefix{}, nil, old.NAT)) {
+			kept.NAT = old.NAT
+		}
+		cancel()
 		n++
 	}
-	j.st = journalState{}
-	_ = os.Remove(j.path)
+	j.st = kept
+	j.save() // removes the file when nothing is left over
 	return n
+}
+
+// opContext is how long one change to the host's network may take here. Each
+// gets its own deadline: a command that hangs -- `route delete` on a device
+// that has just gone does, for seconds -- must not eat the time of what
+// follows it, least of all the resolver.
+func opContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, 5*time.Second)
+}
+
+// cutOff says the command never answered (its deadline or the caller cut it
+// off), so whether it took effect is unknown and its record has to stay.
+func cutOff(ctx context.Context, err error) bool { return err != nil && ctx.Err() != nil }
+
+// giveBackDNS points the host back at its own resolver, with three tries of
+// their own: this is the one host change that, left behind, takes the whole
+// machine's name resolution with it.
+func giveBackDNS(ctx context.Context, l LinkDNSConfigurator, ifname string) error {
+	var err error
+	for try := 0; try < 3; try++ {
+		octx, cancel := opContext(ctx)
+		err = l.SetLinkDNS(octx, ifname, nil)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return err
 }
 
 // save writes the state; called with mu held.
@@ -139,6 +196,9 @@ func (j *Journal) DelRoute(ctx context.Context, dst netip.Prefix, ifname string)
 	err := j.Configurator.DelRoute(ctx, dst, ifname)
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if cutOff(ctx, err) {
+		return err // never answered: the route may still be there, so its record stays
+	}
 	for i, r := range j.st.Routes {
 		if r.Dst == dst && r.Iface == ifname {
 			j.st.Routes = append(j.st.Routes[:i], j.st.Routes[i+1:]...)
@@ -169,6 +229,9 @@ func (j *Journal) DelBypass(ctx context.Context, host netip.Addr) error {
 	err := j.Configurator.DelBypass(ctx, host)
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if cutOff(ctx, err) {
+		return err // never answered: the host route may still be there
+	}
 	for i, h := range j.st.Bypass {
 		if h == host {
 			j.st.Bypass = append(j.st.Bypass[:i], j.st.Bypass[i+1:]...)
@@ -208,9 +271,16 @@ func (j *Journal) SetLinkDNS(ctx context.Context, ifname string, servers []netip
 	err := l.SetLinkDNS(ctx, ifname, servers)
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if len(servers) > 0 && err == nil {
+	switch {
+	case err != nil && len(servers) == 0:
+		// The removal failed, so the host is still pointed at a resolver
+		// in the tunnel. This record is then the only way back -- and
+		// without it a machine whose daemon is gone resolves no name at
+		// all until someone reboots it (R144). Measured on 2026-10-22.
+		return err
+	case len(servers) > 0 && err == nil:
 		j.st.DNS = ifname
-	} else if len(servers) == 0 {
+	case len(servers) == 0:
 		j.st.DNS = ""
 	}
 	j.save()
@@ -225,6 +295,9 @@ func (j *Journal) ReplyViaArrival(ctx context.Context, ifname string, on bool) e
 	err := a.ReplyViaArrival(ctx, ifname, on)
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if cutOff(ctx, err) {
+		return err // never answered: the rule may still be there
+	}
 	if on && err == nil {
 		j.st.Arrival = ifname
 	} else if !on {
