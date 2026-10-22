@@ -12,6 +12,12 @@
         10.60.0.11 tls.lab
         fallthrough
     }
-    forward . /etc/resolv.conf
+    # Not /etc/resolv.conf: that is Docker's embedded resolver (127.0.0.11),
+    # and it answers one query at a time well enough while falling over under
+    # a burst -- a Mac that points *all* of its names here (#14) sends dozens
+    # a second, and every one of them came back
+    # "read udp 127.0.0.1->127.0.0.11:53: i/o timeout". Measured 2026-10-22.
+    # A real resolver upstream is also closer to what this stands in for.
+    forward . 1.1.1.1 9.9.9.9
     errors
 }

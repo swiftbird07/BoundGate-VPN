@@ -157,8 +157,12 @@ wait_for 15 st '.dns == ["10.60.0.53"]' || fail "the node does not report the hu
 wait_for 10 sh -c "scutil --dns | grep -q 'nameserver\[0\] : 10.60.0.53'" || fail "mDNSResponder was not given the hub's resolver (scutil --dns)"
 # a name only the lab's resolver knows, resolved by this Mac through the tunnel
 wait_for 10 sh -c 'dscacheutil -q host -a name target.lab | grep -q "^ip_address: 10.60.0.10"' || fail "target.lab was not resolved through the tunnel"
-# and everything else still resolves: the lab resolver forwards what is not its own
-dscacheutil -q host -a name www.apple.com | grep -q "^ip_address:" || fail "other names stopped resolving while the overlay is up"
+# and everything else still resolves: the lab resolver forwards what is not
+# its own (CoreDNS `forward .`). With the same patience as the checks above --
+# this is a cold lookup through the tunnel, the lab's resolver and its
+# upstream, right after the machine's DNS configuration changed -- and either
+# record family counts, since what matters is that an answer comes at all.
+wait_for 15 sh -c 'dscacheutil -q host -a name www.apple.com | grep -qE "^(ip_address|ipv6_address):"' || fail "other names stopped resolving while the overlay is up (does the hub's resolver forward what is not its own?)"
 
 echo "== 5. reach the target behind the hubs; the flow is decided and logged by a hub"
 wait_for 10 sh -c 'curl -sf --max-time 3 http://10.60.0.10 | grep -q "^Name: target"' || fail "target unreachable through the overlay"
