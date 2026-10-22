@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"net/http"
 	"net/url"
@@ -170,8 +171,61 @@ func (h *Handlers) AdminAuth(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "passkey required", "level": a.Level})
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), adminKey{}, a)))
+		ctx := context.WithValue(r.Context(), adminKey{}, a)
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			// a read that cannot be answered in this time is not worth a
+			// browser tab hanging on it, and the connection is needed
+			// elsewhere; the answer says what to narrow
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, adminReadTimeout)
+			defer cancel()
+		}
+		start := time.Now()
+		tw := &timedWriter{ResponseWriter: w, start: start}
+		next.ServeHTTP(tw, r.WithContext(ctx))
+		if d := time.Since(start); d > slowAdminRequest {
+			h.d.Logs.System.Warn("slow admin request", "method", r.Method, "path", r.URL.Path,
+				"query", r.URL.RawQuery, "ms", d.Milliseconds(), "status", tw.status, "actor", a.Subject)
+		}
 	})
+}
+
+// adminReadTimeout bounds an admin GET. The database is shared with every
+// node's lookup, so a query nobody waits for any more must not hold a reader.
+const adminReadTimeout = 5 * time.Second
+
+// slowAdminRequest is when an admin request is worth a log line. The UI polls
+// every few seconds, so anything slower than this is felt.
+const slowAdminRequest = 500 * time.Millisecond
+
+// timedWriter reports how long the handler took to its first byte -- which
+// for these routes is the database work -- as a Server-Timing header, where
+// the browser's network panel shows it, and keeps the status for the log.
+type timedWriter struct {
+	http.ResponseWriter
+	start  time.Time
+	status int
+}
+
+func (t *timedWriter) WriteHeader(code int) {
+	if t.status == 0 {
+		t.status = code
+		t.Header().Add("Server-Timing", fmt.Sprintf("handler;dur=%.1f", float64(time.Since(t.start).Microseconds())/1000))
+	}
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *timedWriter) Write(b []byte) (int, error) {
+	if t.status == 0 {
+		t.WriteHeader(http.StatusOK)
+	}
+	return t.ResponseWriter.Write(b)
+}
+
+func (t *timedWriter) Flush() {
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func levelOIDCAllowed(p string) bool {
@@ -861,8 +915,8 @@ func (h *Handlers) adminOverview(w http.ResponseWriter, r *http.Request) {
 	if ss, err := h.d.DB.ActiveSessions(ctx); err == nil {
 		o.ActiveSessions = len(ss)
 	}
-	if ts, err := h.d.DB.ListTunnels(ctx, db.TunnelQuery{Active: true, Limit: 5000}); err == nil {
-		o.ActiveTunnels = len(ts)
+	if n, err := h.d.DB.CountTunnels(ctx, db.TunnelQuery{Active: true}); err == nil {
+		o.ActiveTunnels = n
 	}
 	if ps, err := h.d.DB.ListPolicies(ctx); err == nil {
 		o.Policies = len(ps)
@@ -872,8 +926,8 @@ func (h *Handlers) adminOverview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if evs, err := h.d.DB.ListLogs(ctx, db.LogQuery{Stream: logging.StreamFlow, Attrs: map[string]string{"event": "deny"}, Since: time.Now().Add(-24 * time.Hour), Limit: 1000}); err == nil {
-		o.DeniedLast24h = len(evs)
+	if n, err := h.d.DB.CountLogs(ctx, db.LogQuery{Stream: logging.StreamFlow, Attrs: map[string]string{"event": "deny"}, Since: time.Now().Add(-24 * time.Hour)}); err == nil {
+		o.DeniedLast24h = n
 	}
 	if pks, err := h.d.DB.ListPasskeys(ctx, ""); err == nil {
 		for _, p := range pks {

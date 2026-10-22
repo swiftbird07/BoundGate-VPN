@@ -88,14 +88,12 @@ type TunnelQuery struct {
 	Limit  int
 }
 
-// ListTunnels returns tunnels newest first with hub and peer names.
-func (d *DB) ListTunnels(ctx context.Context, q TunnelQuery) ([]Tunnel, error) {
-	if q.Limit <= 0 || q.Limit > 5000 {
-		q.Limit = 500
-	}
-	sqlq := `SELECT t.id, t.hub_id, COALESCE(h.name, ''), t.peer_id, COALESCE(p.name, ''), t.peer_addr, t.transport, t.opened_at, t.closed_at, t.close_reason,
-		t.bytes_in, t.bytes_out, t.packets_in, t.packets_out, t.last_report_at
-		FROM tunnels t LEFT JOIN nodes h ON h.id = t.hub_id LEFT JOIN nodes p ON p.id = t.peer_id WHERE 1=1`
+// MaxTunnelLimit is the most tunnels one query returns. A larger limit is
+// clamped to it, not silently turned into the default.
+const MaxTunnelLimit = 5000
+
+func (q TunnelQuery) where() (string, []any) {
+	sqlq := ` WHERE 1=1`
 	var args []any
 	if q.Node != "" {
 		sqlq += ` AND (t.hub_id = ? OR t.peer_id = ?)`
@@ -108,9 +106,32 @@ func (d *DB) ListTunnels(ctx context.Context, q TunnelQuery) ([]Tunnel, error) {
 		sqlq += ` AND (t.closed_at IS NULL OR t.closed_at >= ?)`
 		args = append(args, q.Since.UTC().Format(timeFormat))
 	}
-	sqlq += ` ORDER BY t.opened_at DESC LIMIT ?`
+	return sqlq, args
+}
+
+// CountTunnels counts the tunnels a query matches, without reading them.
+func (d *DB) CountTunnels(ctx context.Context, q TunnelQuery) (int, error) {
+	where, args := q.where()
+	var n int
+	err := d.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM tunnels t`+where, args...).Scan(&n)
+	return n, err
+}
+
+// ListTunnels returns tunnels newest first with hub and peer names.
+func (d *DB) ListTunnels(ctx context.Context, q TunnelQuery) ([]Tunnel, error) {
+	if q.Limit <= 0 {
+		q.Limit = 500
+	}
+	if q.Limit > MaxTunnelLimit {
+		q.Limit = MaxTunnelLimit
+	}
+	where, args := q.where()
+	sqlq := `SELECT t.id, t.hub_id, COALESCE(h.name, ''), t.peer_id, COALESCE(p.name, ''), t.peer_addr, t.transport, t.opened_at, t.closed_at, t.close_reason,
+		t.bytes_in, t.bytes_out, t.packets_in, t.packets_out, t.last_report_at
+		FROM tunnels t LEFT JOIN nodes h ON h.id = t.hub_id LEFT JOIN nodes p ON p.id = t.peer_id` + where +
+		` ORDER BY t.opened_at DESC LIMIT ?`
 	args = append(args, q.Limit)
-	rows, err := d.sql.QueryContext(ctx, sqlq, args...)
+	rows, err := d.read().QueryContext(ctx, sqlq, args...)
 	if err != nil {
 		return nil, err
 	}

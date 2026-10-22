@@ -381,6 +381,11 @@ buffered while the control plane is unreachable) to `POST /api/v1/node/logs`.
 The control plane stores them in `log_events` (stream `flow`, retention
 `log_retention`) and serves them at `GET /api/v1/admin/flows` with filters
 for reporter, principal, user, decision, destination, SNI, DNS name and time.
+`event`, `decision`, `principal`, `dst` and `owner` are columns of the table
+as well as attributes, so those filters are index lookups instead of a
+`json_extract` over every row; events written before the columns existed are
+filled in by housekeeping, a batch a minute, and until then a filter reads
+their attributes as before.
 
 A record is the reporting node's word. The control plane stamps the
 reporter (`node_id`, `node_name`, `reported_by`, from the mTLS identity,

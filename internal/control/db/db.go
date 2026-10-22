@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -25,10 +26,25 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// DB wraps the SQLite connection.
+// DB wraps the SQLite connections: one writer and, beside it, a read-only
+// pool. Everything that changes the database goes through sql, which is a
+// single connection; queries that only read go through ro, which has
+// several. A node's lookup at the TLS handshake therefore no longer waits
+// behind an admin page's query or behind housekeeping.
 type DB struct {
 	sql *sql.DB
+	ro  *sql.DB
+	// logCols is the lowest log_events id whose hot attribute columns are
+	// filled (migration 0018). Rows below it still need json_extract until
+	// housekeeping has worked its way down. It only ever decreases, so a
+	// stale value costs a slower query, never a wrong answer.
+	logCols atomic.Int64
 }
+
+// readers is how many connections may read at once. WAL readers do not block
+// each other or the writer; the number only bounds how much work the admin UI
+// and the janitor can ask of the disk in parallel.
+const readers = 4
 
 // Open opens (creating if needed) the database and applies migrations.
 func Open(ctx context.Context, path string) (*DB, error) {
@@ -45,11 +61,41 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		s.Close()
 		return nil, err
 	}
+	// mode=ro keeps a mistake from becoming a write: the file is there and
+	// in WAL mode by now, so these connections only ever read it.
+	ro, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("db: open for reading: %w", err)
+	}
+	ro.SetMaxOpenConns(readers)
+	ro.SetMaxIdleConns(readers)
+	if err := ro.PingContext(ctx); err != nil {
+		ro.Close()
+		s.Close()
+		return nil, fmt.Errorf("db: open for reading: %w", err)
+	}
+	d.ro = ro
+	d.logCols.Store(d.readWatermark(ctx))
 	return d, nil
 }
 
-// Close closes the connection.
-func (d *DB) Close() error { return d.sql.Close() }
+// read is the pool for queries that only read. It falls back to the writer
+// when there is no read pool, so a DB built another way still works.
+func (d *DB) read() *sql.DB {
+	if d.ro != nil {
+		return d.ro
+	}
+	return d.sql
+}
+
+// Close closes both connections.
+func (d *DB) Close() error {
+	if d.ro != nil {
+		d.ro.Close()
+	}
+	return d.sql.Close()
+}
 
 func (d *DB) migrate(ctx context.Context) error {
 	if _, err := d.sql.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {

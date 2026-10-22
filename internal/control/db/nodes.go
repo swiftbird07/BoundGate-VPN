@@ -178,9 +178,11 @@ func (d *DB) NodeByID(ctx context.Context, id string) (Node, error) {
 	return n, err
 }
 
-// NodeBySPKI fetches one node by key hash.
+// NodeBySPKI fetches one node by key hash. This is the lookup every device
+// does at the TLS handshake, so it reads from the pool and never queues
+// behind the writer.
 func (d *DB) NodeBySPKI(ctx context.Context, h devicekey.SPKIHash) (Node, error) {
-	row := d.sql.QueryRowContext(ctx, `SELECT `+nodeCols+` FROM nodes WHERE spki_hash = ?`, h[:])
+	row := d.read().QueryRowContext(ctx, `SELECT `+nodeCols+` FROM nodes WHERE spki_hash = ?`, h[:])
 	n, err := scanNode(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrNotFound
@@ -198,7 +200,7 @@ func (d *DB) ListNodes(ctx context.Context, status string) ([]Node, error) {
 		args = append(args, status)
 	}
 	q += ` ORDER BY name, requested_at`
-	rows, err := d.sql.QueryContext(ctx, q, args...)
+	rows, err := d.read().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

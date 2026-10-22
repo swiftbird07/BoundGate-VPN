@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -30,8 +32,24 @@ func (d *DB) InsertLog(ctx context.Context, e LogEvent) {
 	if e.Attrs == nil {
 		attrs = []byte("{}")
 	}
-	_, _ = d.sql.ExecContext(ctx, `INSERT INTO log_events (ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.TS.Format(timeFormat), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs))
+	_, _ = d.sql.ExecContext(ctx, insertLogSQL, logArgs(e, attrs)...)
+}
+
+// logCols are the attributes the admin UI filters on. They are columns of
+// their own (migration 0018) so that a filter is an index lookup instead of a
+// json_extract over the table; attrs_json keeps them as well, as the record.
+var logCols = []string{"event", "decision", "principal", "dst", "owner"}
+
+const insertLogSQL = `INSERT INTO log_events (ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json, event, decision, principal, dst, owner)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+func logArgs(e LogEvent, attrs []byte) []any {
+	args := []any{e.TS.UTC().Format(timeFormat), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs)}
+	for _, k := range logCols {
+		v, _ := e.Attrs[k].(string)
+		args = append(args, nullable(v))
+	}
+	return args
 }
 
 // LogQuery filters ListLogs.
@@ -48,12 +66,24 @@ type LogQuery struct {
 	Limit  int
 }
 
-// ListLogs returns events newest first.
-func (d *DB) ListLogs(ctx context.Context, q LogQuery) ([]LogEvent, error) {
-	if q.Limit <= 0 || q.Limit > 1000 {
-		q.Limit = 200
+// MaxLogLimit is the most events one query returns. A larger limit is
+// clamped to it, not silently turned into the default.
+const MaxLogLimit = 1000
+
+// TextWindow is how far back a free-text search goes when the query names no
+// start: `message LIKE '%…%'` cannot use an index, so without a window it is
+// a scan of every event ever kept.
+const TextWindow = 24 * time.Hour
+
+// where builds the condition of a log query. mark is the backfill watermark:
+// at or above it the hot attributes are columns, below it they are still
+// inside attrs_json.
+func (q LogQuery) where(mark int64) (string, []any) {
+	hot := map[string]bool{}
+	for _, k := range logCols {
+		hot[k] = true
 	}
-	sqlq := `SELECT id, ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json FROM log_events WHERE 1=1`
+	sqlq := ` WHERE 1=1`
 	var args []any
 	if q.Stream != "" {
 		sqlq += ` AND stream = ?`
@@ -83,16 +113,59 @@ func (d *DB) ListLogs(ctx context.Context, q LogQuery) ([]LogEvent, error) {
 		if !validAttrKey(k) {
 			continue
 		}
-		sqlq += ` AND json_extract(attrs_json, '$.` + k + `') = ?`
-		args = append(args, v)
+		switch {
+		case hot[k] && mark <= 1:
+			sqlq += ` AND ` + k + ` = ?`
+			args = append(args, v)
+		case hot[k]:
+			sqlq += ` AND ((id >= ? AND ` + k + ` = ?) OR (id < ? AND json_extract(attrs_json, '$.` + k + `') = ?))`
+			args = append(args, mark, v, mark, v)
+		default:
+			sqlq += ` AND json_extract(attrs_json, '$.` + k + `') = ?`
+			args = append(args, v)
+		}
 	}
 	if q.Before > 0 {
 		sqlq += ` AND id < ?`
 		args = append(args, q.Before)
 	}
-	sqlq += ` ORDER BY id DESC LIMIT ?`
+	return sqlq, args
+}
+
+// prepare clamps the limit and gives a free-text search its time window.
+func (q LogQuery) prepare() LogQuery {
+	if q.Limit <= 0 {
+		q.Limit = 200
+	}
+	if q.Limit > MaxLogLimit {
+		q.Limit = MaxLogLimit
+	}
+	if q.Text != "" && q.Since.IsZero() {
+		until := q.Until
+		if until.IsZero() {
+			until = time.Now()
+		}
+		q.Since = until.Add(-TextWindow)
+	}
+	return q
+}
+
+// CountLogs counts the events a query matches, without reading them.
+func (d *DB) CountLogs(ctx context.Context, q LogQuery) (int, error) {
+	where, args := q.prepare().where(d.logCols.Load())
+	var n int
+	err := d.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM log_events`+where, args...).Scan(&n)
+	return n, err
+}
+
+// ListLogs returns events newest first.
+func (d *DB) ListLogs(ctx context.Context, q LogQuery) ([]LogEvent, error) {
+	q = q.prepare()
+	where, args := q.where(d.logCols.Load())
+	sqlq := `SELECT id, ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json FROM log_events` + where +
+		` ORDER BY id DESC LIMIT ?`
 	args = append(args, q.Limit)
-	rows, err := d.sql.QueryContext(ctx, sqlq, args...)
+	rows, err := d.read().QueryContext(ctx, sqlq, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +200,7 @@ func (d *DB) InsertLogs(ctx context.Context, evs []LogEvent) error {
 		if e.Attrs == nil {
 			attrs = []byte("{}")
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO log_events (ts, stream, actor, device_id, session_id, gateway_id, message, attrs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.TS.UTC().Format(timeFormat), e.Stream, e.Actor, nullable(e.DeviceID), nullable(e.SessionID), nullable(e.GatewayID), e.Message, string(attrs)); err != nil {
+		if _, err := tx.ExecContext(ctx, insertLogSQL, logArgs(e, attrs)...); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -183,4 +255,67 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// --- the hot columns of old rows -----------------------------------------
+
+// readWatermark reads the backfill mark: the lowest id whose hot columns are
+// filled. 1 means every row has them. A database without the table (an older
+// one, mid-migration) counts as filled rather than as "scan everything".
+func (d *DB) readWatermark(ctx context.Context) int64 {
+	var mark int64
+	if err := d.sql.QueryRowContext(ctx, `SELECT watermark FROM log_events_backfill WHERE id = 1`).Scan(&mark); err != nil {
+		return 1
+	}
+	return mark
+}
+
+// LogColumnsFilled reports whether every event's hot attributes are columns,
+// so a query no longer needs json_extract for the old rows.
+func (d *DB) LogColumnsFilled() bool { return d.logCols.Load() <= 1 }
+
+// backfillBatch is how many old events one call of BackfillLogColumns fills.
+// As with pruneBatch, the point is to let go of the writer between batches so
+// a node's lookup gets its turn.
+const backfillBatch = 2000
+
+// BackfillLogColumns fills the hot columns of the events that were written
+// before they existed, newest first, one batch per call. It reports how many
+// rows it filled and whether anything is left; housekeeping calls it until
+// nothing is.
+func (d *DB) BackfillLogColumns(ctx context.Context) (int64, bool, error) {
+	mark := d.logCols.Load()
+	if mark <= 1 {
+		return 0, true, nil
+	}
+	sets := make([]string, 0, len(logCols))
+	for _, k := range logCols {
+		sets = append(sets, k+` = json_extract(attrs_json, '$.`+k+`')`)
+	}
+	var filled int64
+	var lowest int64 = 1
+	_, err := d.tx(ctx, false, func(tx *sql.Tx) error {
+		var from sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT MIN(id) FROM (SELECT id FROM log_events WHERE id < ? ORDER BY id DESC LIMIT ?)`,
+			mark, backfillBatch).Scan(&from); err != nil {
+			return err
+		}
+		if from.Valid {
+			lowest = from.Int64
+			res, err := tx.ExecContext(ctx, `UPDATE log_events SET `+strings.Join(sets, ", ")+` WHERE id >= ? AND id < ?`, lowest, mark)
+			if err != nil {
+				return err
+			}
+			filled, _ = res.RowsAffected()
+		}
+		// nothing below the mark: pruning took the rest, the backfill is done
+		_, err := tx.ExecContext(ctx, `UPDATE log_events_backfill SET watermark = ? WHERE id = 1`, lowest)
+		return err
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	d.logCols.Store(lowest)
+	return filled, lowest <= 1, nil
 }

@@ -12,6 +12,14 @@ prefer HTTP/3 and fall back to TCP.
 
 Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 
+Every admin answer carries `Server-Timing: handler;dur=<ms>`, the time the
+handler took to its first byte, which for these routes is the database work; a
+request slower than 500 ms also leaves a `slow admin request` line in the
+system log with its path and query. An admin `GET` gives up after 5 s with
+503 `the database did not answer in time; narrow the time window or the
+filter`: the database is shared with every node's lookup, and a query nobody
+waits for any more must not hold a reader.
+
 ## Admin
 
 | Method | Path | Body / query | Result |
@@ -51,7 +59,7 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | GET | `/api/v1/admin/identity` | | `{control_pin, spki}`: fingerprint of the node-channel key, what a device shows and asks about at its first contact (ENROLLMENT.md) |
 | GET/PUT | `/api/v1/admin/settings/network` | `{pool, max_age_seconds?, renumber?}` | settings; PUT bumps the snapshot. The pool is an IPv4 prefix between /8 and /30 inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10 (400 otherwise); a pool that overlaps a prefix a node routes is 409 `{error, prefixes}`. A pool that leaves nodes outside: 409 `{error, outside: [{id, name, overlay_ip, status}]}`, unless `renumber: true`: every such node moves to the same host number in the new pool (10.21.3.7 → 10.25.3.7; 409 and no change if one does not fit), and approved ones go back to `confirmed`, because the overlay address is part of the signed binding: they are out of the network until signed again. Answer: `{pool, max_age_seconds, renumbered: [{id, name, from, to, needs_signature}]}` |
 | GET | `/api/v1/admin/snapshot` | `?node=<id>` | the global view, or what that node receives |
-| GET | `/api/v1/admin/logs` | `?stream=&node=&actor=&q=&from=&to=&before=&limit=` | `[LogEvent]` newest first |
+| GET | `/api/v1/admin/logs` | `?stream=&node=&actor=&q=&from=&to=&before=&limit=` | `[LogEvent]` newest first. `limit` default 200, clamped to 1000 (a larger number is capped, not ignored). `q` is a free-text search over the message and the attributes; without `from` it looks at the last 24 h, because `LIKE` cannot use an index |
 | GET | `/api/v1/admin/policies` | | `[PolicyView]` |
 | POST | `/api/v1/admin/policies` | `PolicyBody` | 201 `PolicyView`; 400 with the Cedar parser message or an unknown scope node; 409 duplicate name |
 | GET/PUT/DELETE | `/api/v1/admin/policies/{id}` | `PolicyBody` (PUT replaces everything) | `PolicyView` / 204; every change bumps the snapshot. `PolicyBody`/`PolicyView` carry `group` (a heading for the admin UI, no effect on decisions); a policy that names a list that does not exist is refused (400) |
@@ -63,8 +71,8 @@ Errors: `{"error": "..."}` with 400/401/403/404/409/429/503/500.
 | POST | `/api/v1/admin/lists/{id}/import` | the file as the body (text or a JSON array), at most 4 MiB; `?mode=add` adds instead of replacing | `ListView`; 400 with the first bad entry |
 | POST | `/api/v1/admin/lists/{id}/fetch` | | fetches the list's source now: `ListView`; 400 without a source; 502 `{error, list}` when the source cannot be read or its address is refused (loopback, link-local, metadata; private ranges unless `list_sources.allow_private`, docs/ACL.md), and the list keeps its entries. The error names a line that is not an entry by number and length, never by content |
 | POST | `/api/v1/admin/acl/evaluate` | `{node, dst, port?, proto?, sni?, dns_name?, resolved_names? (up to 8; what the node would have learned from DNS answers, see ACL.md), enforcer?, draft? {id, name, cedar}, draft_only?}` | `{allow, policies, reasons, errors?, policy_count, policy_errors?, principal, user?, groups?, owner?, owner_name?}` (dry run on live state; `draft` replaces the stored policy with the same id or is added, without being stored; `draft_only` evaluates it alone; 400 if the draft does not parse) |
-| GET | `/api/v1/admin/tunnels` | `?node=&active=1&since=&limit=` | `[Tunnel]` newest first: `id, hub_id, hub_name, peer_id, peer_name, peer_addr, opened_at, closed_at?, close_reason, bytes_in/out, packets_in/out, last_report_at` |
-| GET | `/api/v1/admin/flows` | `?node=&principal=&user=&decision=&event=&dst=&sni=&dns_name=&from=&to=&before=&limit=` | `[LogEvent]` of stream `flow` (see ACL.md for the attributes) |
+| GET | `/api/v1/admin/tunnels` | `?node=&active=1&since=&limit=` | `[Tunnel]` newest first: `id, hub_id, hub_name, peer_id, peer_name, peer_addr, opened_at, closed_at?, close_reason, bytes_in/out, packets_in/out, last_report_at`. `limit` default 500, clamped to 5000 |
+| GET | `/api/v1/admin/flows` | `?node=&principal=&user=&decision=&event=&dst=&sni=&dns_name=&from=&to=&before=&limit=` | `[LogEvent]` of stream `flow` (see ACL.md for the attributes), same limits as `/logs`. `event`, `decision`, `principal`, `dst` and the node are columns of their own, so those filters are index lookups |
 
 `PolicyBody`: `{name, description?, cedar, enabled? (default true), scope?
 [node ids; empty = all nodes]}`. `PolicyView` adds `id, created_at/by,

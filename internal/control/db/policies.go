@@ -59,7 +59,7 @@ func scanPolicy(s scanner) (Policy, error) {
 
 // ListPolicies returns every policy, by name.
 func (d *DB) ListPolicies(ctx context.Context) ([]Policy, error) {
-	rows, err := d.sql.QueryContext(ctx, `SELECT `+policyCols+` FROM policies ORDER BY name`)
+	rows, err := d.read().QueryContext(ctx, `SELECT `+policyCols+` FROM policies ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}

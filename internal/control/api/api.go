@@ -188,6 +188,11 @@ func fail(w http.ResponseWriter, err error, log *slog.Logger) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, db.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict")
+	case errors.Is(err, context.DeadlineExceeded):
+		// an admin read ran into its deadline (adminauth.go): the database
+		// is busy or the query is too wide, and both are the caller's to fix
+		log.Warn("admin read gave up", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "the database did not answer in time; narrow the time window or the filter")
 	default:
 		log.Error("request failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

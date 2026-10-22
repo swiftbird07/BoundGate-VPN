@@ -246,7 +246,7 @@ func (d *DB) CompleteLoginFlow(ctx context.Context, flowID string, s Session) (S
 
 // ActiveSessions returns unrevoked, unexpired sessions (for snapshots).
 func (d *DB) ActiveSessions(ctx context.Context) ([]Session, error) {
-	rows, err := d.sql.QueryContext(ctx, `SELECT `+sessionCols+` FROM user_sessions WHERE revoked_at IS NULL AND expires_at > ? ORDER BY issued_at`, now())
+	rows, err := d.read().QueryContext(ctx, `SELECT `+sessionCols+` FROM user_sessions WHERE revoked_at IS NULL AND expires_at > ? ORDER BY issued_at`, now())
 	if err != nil {
 		return nil, err
 	}

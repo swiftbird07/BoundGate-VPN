@@ -292,7 +292,7 @@ func (d *DB) ListPasskeys(ctx context.Context, subject string) ([]Passkey, error
 		args = append(args, subject)
 	}
 	q += ` ORDER BY created_at`
-	rows, err := d.sql.QueryContext(ctx, q, args...)
+	rows, err := d.read().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

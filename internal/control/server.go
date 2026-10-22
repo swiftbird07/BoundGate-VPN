@@ -503,6 +503,14 @@ func housekeeping(ctx context.Context, store *db.DB, cfg Config, log interface {
 		if _, err := store.PruneTunnels(ctx, cfg.LogRetention); err != nil {
 			log.Error("prune tunnels", "err", err)
 		}
+		// the events written before the hot attributes became columns get
+		// them one batch per minute, so the admin UI's filters stop reading
+		// the whole table without the start holding the writer for minutes
+		if n, done, err := store.BackfillLogColumns(ctx); err != nil {
+			log.Error("fill the log columns of old events", "err", err)
+		} else if n > 0 {
+			log.Info("filled the log columns of old events", "count", n, "done", done)
+		}
 		select {
 		case <-ctx.Done():
 			return
