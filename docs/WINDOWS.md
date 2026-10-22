@@ -215,8 +215,13 @@ host route to the hub via the hotspot's gateway.
    Then, on both: a policy with `hardware_bound`, a reboot with
    `auto_up: true`, `uninstall.ps1`, and `setup.ps1` from scratch (written
    2026-10-14, not yet run on Windows).
-2. **DNS:** like the other platforms, the node sets no DNS. A split-DNS rule
-   (NRPT) for overlay names comes with the DNS milestone.
+2. **DNS:** the node does not set the resolver here yet. On Linux a spoke
+   points systemd-resolved at the hub's resolvers while the overlay is up
+   (`resolver: hub`, docs/ACL.md); on Windows that is `winipcfg`'s SetDNS on
+   the Wintun adapter plus an NRPT rule for `.`, so that Windows does not
+   keep asking the other interfaces. Until then the status says
+   `this platform's daemon cannot change the host's resolver yet`, and a
+   dynamic access list matches this node by server name and by address.
 3. **Stage 2:**
    * An MSI with Authenticode signatures, when there is a certificate. Until
      then SmartScreen warns (R106).

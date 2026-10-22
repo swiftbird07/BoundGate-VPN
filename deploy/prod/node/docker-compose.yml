@@ -44,6 +44,12 @@ services:
       # routing profiles (docs/PROFILES.md); the path must be the one
       # profiles_dir names, which is a path inside the container
       # - ./profiles:/etc/boundgate/profiles:ro
+      # resolver: hub (docs/ACL.md): the node points systemd-resolved at the
+      # hub's resolvers, for the tunnel device only, which it asks over the
+      # host's system bus. Only uncomment it with resolver: hub -- the socket
+      # is the host's D-Bus, and this container runs as root on the host's
+      # network already.
+      # - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       - ./state:/var/lib/boundgate             # the device identity: losing it means re-enrolling
       - ./logs:/var/log/boundgate
     command: ["boundgate-node", "-config", "/etc/boundgate/node.yaml"]

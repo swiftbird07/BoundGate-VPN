@@ -148,6 +148,19 @@ only) matches a dynamic list by server name (public addresses) and by its
 address entries; the names it never saw resolved simply do not match.
 Nothing is remembered across a restart.
 
+**Which resolver the device asks is therefore part of the policy, not a
+detail of its setup.** A node that keeps asking the resolver of the network
+it sits in sends no query through the tunnel, so the hub learns no name for
+it: plain HTTP, and every other protocol without a server name, then arrives
+as a bare address and only an address entry of the list can permit it. A
+spoke daemon therefore points the host's resolver at the resolvers its
+primary hub offers while the overlay is up (`resolver: hub`, the default:
+systemd-resolved over D-Bus on Linux, for the tunnel device alone and with
+the routing domain `~.`, so `/etc/resolv.conf` is not touched). A server that
+has to keep its own resolver says `resolver: system` and lives with the
+above. `boundgatectl status` shows which resolvers are in effect, or why the
+host kept its own.
+
 ### DNS flows are decided query by query
 
 A resolver client keeps one socket for many questions, so the first question

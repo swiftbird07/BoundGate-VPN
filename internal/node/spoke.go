@@ -33,6 +33,10 @@ type spokeManager struct {
 	primary   *hubLink
 	installed map[netip.Prefix]bool
 	skipped   map[netip.Prefix]string // overlap guard: prefix -> why
+	// dns: the primary hub's resolvers the host now asks, and why it does
+	// not when it should (read by Status, like routes and skipped)
+	dns    []netip.Addr
+	dnsErr string
 }
 
 // hubLink is the state of one hub connection.
@@ -595,18 +599,14 @@ func (m *spokeManager) applyRoutesLocked() {
 	m.skipped = skipped
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// The resolvers of the primary hub, where the platform takes them (the
-	// apps): all names resolve there, through the tunnel.
-	if d, ok := s.n.net.(netcfg.DNSConfigurator); ok {
-		var dns []netip.Addr
-		if m.primary != nil && m.primary.tunnel != nil {
-			dns = m.primary.tunnel.DNS()
-		}
-		for _, a := range dns {
-			want[netip.PrefixFrom(a, a.BitLen())] = true
-		}
-		d.SetDNS(dns)
+	// The resolvers of the primary hub: every name is asked there, through
+	// the tunnel, so that the hub sees the query and a dynamic access list
+	// can match what the answer named (docs/ACL.md).
+	dns := m.resolversLocked()
+	for _, a := range dns {
+		want[netip.PrefixFrom(a, a.BitLen())] = true
 	}
+	m.applyDNSLocked(ctx, dns)
 	for p := range m.installed {
 		if !want[p] {
 			if err := s.n.net.DelRoute(ctx, p, s.ifname); err != nil {
@@ -645,6 +645,62 @@ func (m *spokeManager) skippedRoutes() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// resolversLocked are the resolvers the primary hub offers, or none when the
+// node is to keep the host's own (resolver: system).
+func (m *spokeManager) resolversLocked() []netip.Addr {
+	if m.s.n.cfg.Resolver == ResolverSystem || m.primary == nil || m.primary.tunnel == nil {
+		return nil
+	}
+	return m.primary.tunnel.DNS()
+}
+
+// applyDNSLocked points the host at those resolvers, or gives them back when
+// the list is empty. An apps' platform takes them with the rest of the
+// network state; a daemon has to change something that belongs to the host,
+// and when it cannot, that is reported and nothing else is held up: the
+// overlay works, only names are resolved outside it.
+func (m *spokeManager) applyDNSLocked(ctx context.Context, dns []netip.Addr) {
+	s := m.s
+	m.dns, m.dnsErr = dns, ""
+	if d, ok := s.n.net.(netcfg.DNSConfigurator); ok {
+		d.SetDNS(dns)
+		return
+	}
+	l, ok := netcfg.LinkDNS(s.n.net)
+	if !ok {
+		if len(dns) > 0 {
+			m.dns, m.dnsErr = nil, "this platform's daemon cannot change the host's resolver yet"
+		}
+		return
+	}
+	if len(dns) == 0 && !s.resolver {
+		// nothing to point anywhere and nothing to give back: a hub that
+		// offers no resolvers must not make every apply ask the bus
+		return
+	}
+	if err := l.SetLinkDNS(ctx, s.ifname, dns); err != nil {
+		m.dns, m.dnsErr = nil, err.Error()
+		s.noLinkDNS.Do(func() {
+			s.n.log.Warn("the host keeps its own resolver: names are resolved outside the tunnel, so a dynamic access list cannot match them by name (docs/ACL.md)",
+				"err", err, "resolvers", dns)
+		})
+		return
+	}
+	s.resolver = len(dns) > 0
+}
+
+// dnsState is where names go while the overlay is up: the hub's resolvers the
+// host was pointed at, or the reason it was not.
+func (m *spokeManager) dnsState() ([]string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.dns))
+	for _, a := range m.dns {
+		out = append(out, a.String())
+	}
+	return out, m.dnsErr
 }
 
 // routes returns the installed routes, sorted.

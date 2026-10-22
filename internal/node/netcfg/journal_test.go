@@ -129,3 +129,71 @@ func TestDarwinCommands(t *testing.T) {
 		t.Fatal("no interface accepted")
 	}
 }
+
+// dnsCfg is a configurator that can point the host's resolver somewhere.
+type dnsCfg struct {
+	fakeCfg
+	dns map[string][]netip.Addr
+}
+
+func (d *dnsCfg) SetLinkDNS(_ context.Context, ifname string, servers []netip.Addr) error {
+	if d.dns == nil {
+		d.dns = map[string][]netip.Addr{}
+	}
+	if len(servers) == 0 {
+		delete(d.dns, ifname)
+		d.calls = append(d.calls, "dns-off "+ifname)
+		return nil
+	}
+	d.dns[ifname] = servers
+	d.calls = append(d.calls, "dns "+ifname)
+	return nil
+}
+
+// A node that died with the host's resolver pointed into its tunnel gives it
+// back on the next start.
+func TestJournalGivesTheResolverBack(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "netstate.json")
+	first := &dnsCfg{}
+	j := NewJournal(first, path)
+	if _, ok := LinkDNS(j); !ok {
+		t.Fatal("LinkDNS does not see through the journal")
+	}
+	if err := j.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("10.20.0.1")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.dns["bg0"]) != 1 {
+		t.Fatalf("the resolver was not set: %+v", first.dns)
+	}
+
+	// the process dies here: a second one reads the journal
+	second := &dnsCfg{}
+	if n := NewJournal(second, path).Recover(ctx); n != 1 {
+		t.Fatalf("recovered %d entries", n)
+	}
+	if got := second.calls; len(got) != 1 || got[0] != "dns-off bg0" {
+		t.Fatalf("%v", got)
+	}
+
+	// and a node that gave it back itself leaves nothing behind
+	j = NewJournal(&dnsCfg{}, path)
+	_ = j.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("10.20.0.1")})
+	_ = j.SetLinkDNS(ctx, "bg0", nil)
+	third := &dnsCfg{}
+	if n := NewJournal(third, path).Recover(ctx); n != 0 {
+		t.Fatalf("recovered %d entries although it cleaned up", n)
+	}
+}
+
+// A platform whose daemon cannot do it says so, and LinkDNS does not claim
+// it can just because the journal takes the call.
+func TestLinkDNSOnAPlatformWithoutIt(t *testing.T) {
+	j := NewJournal(&fakeCfg{}, filepath.Join(t.TempDir(), "netstate.json"))
+	if _, ok := LinkDNS(j); ok {
+		t.Fatal("LinkDNS claims a configurator that cannot do it")
+	}
+	if err := j.SetLinkDNS(context.Background(), "bg0", []netip.Addr{netip.MustParseAddr("10.20.0.1")}); err == nil {
+		t.Fatal("no error from a configurator that cannot set the resolver")
+	}
+}

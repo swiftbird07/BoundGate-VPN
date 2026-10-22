@@ -114,6 +114,16 @@ type Config struct {
 	// peer: offering a resolver the policies then deny would break name
 	// resolution for everyone who is only allowed the internet.
 	DNS []netip.Addr
+	// Resolver decides what a spoke does with the resolvers its primary hub
+	// offers: ResolverHub (the default) points the host's resolver at them
+	// while the overlay is up, ResolverSystem leaves the host's resolver
+	// alone. Without resolvers from the hub nothing happens either way.
+	//
+	// It matters beyond convenience: a hub only learns which address a name
+	// stands for when it sees the query, so a node that resolves outside the
+	// tunnel cannot be matched by a dynamic access list by name, and plain
+	// HTTP reaches the hub as a bare address (docs/ACL.md).
+	Resolver string
 	// NoPaths: a spoke neither dials nor accepts tunnels with other spokes;
 	// everything stays on the hub path (paths.go).
 	NoPaths bool
@@ -204,6 +214,17 @@ type UserStatus struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// What a spoke does with the resolvers its hub offers (Config.Resolver).
+const (
+	// ResolverHub points the host's resolver at the hub's resolvers while
+	// the overlay is up. The default, because a name is how the policies
+	// talk about a destination.
+	ResolverHub = "hub"
+	// ResolverSystem leaves the host's resolver as it is: for a server that
+	// has to keep resolving in its own network.
+	ResolverSystem = "system"
+)
+
 // Status is what the CLI shows.
 type Status struct {
 	State     State           `json:"state"`
@@ -229,7 +250,16 @@ type Status struct {
 	// SkippedRoutes are advertised networks the node refused to route
 	// because this machine already lives in them (overlap guard).
 	SkippedRoutes []string `json:"skipped_routes,omitempty"`
-	Tunnels       int      `json:"tunnels"` // accepted tunnels (hub role)
+	// DNS are the resolvers of the primary hub that the host now asks for
+	// every name. Empty: the host's own resolver decides, either because
+	// the hub offers none, because the node is configured that way
+	// (resolver: system), or because of DNSError.
+	DNS []string `json:"dns,omitempty"`
+	// DNSError says why the hub's resolvers are not in effect although the
+	// hub offers them (no systemd-resolved, no D-Bus socket in the
+	// container, a platform whose daemon cannot do it yet).
+	DNSError string `json:"dns_error,omitempty"`
+	Tunnels  int    `json:"tunnels"` // accepted tunnels (hub role)
 	// Relay: what this hub relays between spokes right now and relayed so far.
 	Relay       *transport.RelayStats `json:"relay,omitempty"`
 	Since       time.Time             `json:"since,omitempty"`
@@ -388,6 +418,13 @@ func New(cfg Config) (*Node, error) {
 	}
 	if cfg.NoTCPFallback && cfg.Transport == "tcp" {
 		return nil, errors.New("node: transport tcp with tcp_fallback: false")
+	}
+	switch cfg.Resolver {
+	case "", ResolverHub:
+		cfg.Resolver = ResolverHub
+	case ResolverSystem:
+	default:
+		return nil, fmt.Errorf("node: resolver %q: want hub or system", cfg.Resolver)
 	}
 	if cfg.QUICRetry == 0 {
 		cfg.QUICRetry = 2 * time.Minute
@@ -894,6 +931,7 @@ func (n *Node) publishLocked() {
 	s := n.sess
 	if s == nil {
 		n.status.Interface, n.status.MTU = "", 0
+		n.status.DNS, n.status.DNSError = nil, ""
 		return
 	}
 	n.status.Interface, n.status.MTU = s.ifname, n.cfg.MTU
@@ -904,6 +942,7 @@ func (n *Node) publishLocked() {
 		}
 	}
 	n.status.Hubs, n.status.Routes, n.status.Tunnels, n.status.LoginRequired, n.status.Paths = nil, nil, 0, false, nil
+	n.status.DNS, n.status.DNSError = nil, ""
 	if s.paths != nil {
 		n.status.Paths = s.paths.status()
 	}
@@ -911,6 +950,7 @@ func (n *Node) publishLocked() {
 		n.status.Hubs = s.spoke.hubs()
 		n.status.Routes = s.spoke.routes()
 		n.status.SkippedRoutes = s.spoke.skippedRoutes()
+		n.status.DNS, n.status.DNSError = s.spoke.dnsState()
 		n.status.LoginRequired = s.spoke.loginRequired()
 	}
 	n.status.Relay = nil
@@ -1432,10 +1472,14 @@ type session struct {
 	poolRoute      bool
 	nat            bool
 	arrival        bool // reply_via_arrival is on
+	resolver       bool // the host's resolver points at the hub's
 
 	// dns: the names peers resolved, per peer (policy.go, dnsmap)
 	dns        *dnsmap.Map
 	noResolver sync.Once
+	// noLinkDNS: the host's resolver could not be pointed at the hub's,
+	// said once per session instead of at every apply
+	noLinkDNS sync.Once
 
 	since  time.Time
 	done   chan struct{}
@@ -1935,6 +1979,14 @@ func (s *session) teardown() {
 			_ = a.ReplyViaArrival(ctx, s.ifname, false)
 		}
 		s.arrival = false
+	}
+	if s.resolver {
+		// the setting lives on the link and would die with it; giving it
+		// back explicitly keeps the journal and the status honest
+		if l, ok := netcfg.LinkDNS(n.net); ok {
+			_ = l.SetLinkDNS(ctx, s.ifname, nil)
+		}
+		s.resolver = false
 	}
 	if s.dev != nil {
 		_ = s.dev.Close()

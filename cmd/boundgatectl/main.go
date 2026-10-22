@@ -407,6 +407,12 @@ func printStatus(s node.Status, asJSON bool) error {
 		if len(s.SkippedRoutes) > 0 {
 			fmt.Printf("not routed:   %s\n", strings.Join(s.SkippedRoutes, "; "))
 		}
+		if len(s.DNS) > 0 {
+			fmt.Printf("resolver:     %s (every name, through the tunnel)\n", strings.Join(s.DNS, ", "))
+		}
+		if s.DNSError != "" {
+			fmt.Printf("resolver:     this host's own; %s\n", s.DNSError)
+		}
 		if s.Tunnels > 0 {
 			fmt.Printf("tunnels:      %d\n", s.Tunnels)
 		}

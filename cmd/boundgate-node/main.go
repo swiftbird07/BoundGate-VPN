@@ -66,6 +66,14 @@ type config struct {
 	// peer, also before the sign-in and whatever the policies allow. Daemons
 	// keep the system's resolver.
 	DNS []netip.Addr `yaml:"dns"`
+	// Resolver (spoke, default hub): what to do with the resolvers the
+	// primary hub offers. `hub` points this host's resolver at them while
+	// the overlay is up (Linux: systemd-resolved, per link, with the
+	// routing domain `~.`; /etc/resolv.conf is not touched), `system`
+	// leaves the host's resolver alone. A node that resolves outside the
+	// tunnel cannot be matched by a dynamic access list by name, and plain
+	// HTTP reaches the hub as a bare address (docs/ACL.md).
+	Resolver string `yaml:"resolver"`
 	// DNSLearnFrom (enforcing node, default: dns): the resolvers whose
 	// answers this node believes. It reads the answers it forwards and
 	// remembers, per peer, which addresses a name resolved to, so that a
@@ -323,6 +331,7 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 		NoRelay:           cfg.Relay != nil && !*cfg.Relay,
 		DNS:               cfg.DNS,
 		DNSLearnFrom:      cfg.DNSLearnFrom,
+		Resolver:          cfg.Resolver,
 		NoPaths:           cfg.Paths.Disabled,
 		PathsListen:       cfg.Paths.Listen,
 		PathIdle:          cfg.Paths.Idle,

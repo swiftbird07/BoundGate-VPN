@@ -54,6 +54,36 @@ type ArrivalRouter interface {
 	ReplyViaArrival(ctx context.Context, ifname string, on bool) error
 }
 
+// LinkDNSConfigurator is a configurator that can point the host's resolver at
+// the resolvers the hub offers, for the tunnel device alone, and give it back
+// (Linux: systemd-resolved over D-Bus).
+//
+// The apps implement DNSConfigurator instead: there the platform asks for the
+// whole network state at once. A daemon has to change something that belongs
+// to the host, which is why it is a separate interface and why a node can
+// refuse it (option resolver: system).
+type LinkDNSConfigurator interface {
+	// SetLinkDNS sends every name to servers through ifname. An empty list
+	// gives the link back to the system's own configuration.
+	SetLinkDNS(ctx context.Context, ifname string, servers []netip.Addr) error
+}
+
+// LinkDNS returns the setter when this configurator can really change the
+// host's resolver. A Journal takes the call to record it, so asking the
+// Journal alone would say yes on every platform; this looks behind it.
+func LinkDNS(c Configurator) (LinkDNSConfigurator, bool) {
+	l, ok := c.(LinkDNSConfigurator)
+	if !ok {
+		return nil, false
+	}
+	if j, ok := c.(*Journal); ok {
+		if _, inner := j.Configurator.(LinkDNSConfigurator); !inner {
+			return nil, false
+		}
+	}
+	return l, true
+}
+
 // Watcher is a configurator that notices when the machine's own networks
 // change (another Wi-Fi, a cable, a VPN of someone else). Host routes to the
 // control plane and hubs point to the gateway of the network they were set

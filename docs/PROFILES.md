@@ -78,6 +78,15 @@ routes in effect. A network in the profile that no hub advertises is simply
 not routed (`not routed` in the status names overlaps with the machine's own
 networks, which are refused on every profile).
 
+## Names
+
+A profile decides which networks are routed, not where names are resolved.
+Those are two questions: a node whose profile routes nothing of the LANs can
+still be made to resolve through the hub, and it should be, because the hub
+only learns what a name stands for when it sees the query (`resolver: hub`,
+the default; [ACL.md](ACL.md)). The resolvers a hub offers are reached over
+the tunnel through a host route of their own, whatever the profile says.
+
 ## Switching while connected
 
 `boundgatectl profile <name>` changes the profile of a running node. Only the

@@ -39,6 +39,10 @@ type journalState struct {
 	NAT    string         `json:"nat_iface,omitempty"`
 	// Arrival: ReplyViaArrival is on for this device
 	Arrival string `json:"arrival_iface,omitempty"`
+	// DNS: the host's resolver points at the hub's resolvers for this
+	// device. It usually dies with the device, but not when the device
+	// outlives the process (a crash before the TUN was closed).
+	DNS string `json:"dns_iface,omitempty"`
 }
 
 // Watch passes on to the wrapped configurator when it can watch the network.
@@ -77,6 +81,10 @@ func (j *Journal) Recover(ctx context.Context) int {
 		_ = a.ReplyViaArrival(ctx, old.Arrival, false) // also flushes the tunnel's table
 		n++
 	}
+	if l, ok := j.Configurator.(LinkDNSConfigurator); ok && old.DNS != "" {
+		_ = l.SetLinkDNS(ctx, old.DNS, nil)
+		n++
+	}
 	for _, r := range old.Routes {
 		_ = j.Configurator.DelRoute(ctx, r.Dst, r.Iface)
 		n++
@@ -96,7 +104,7 @@ func (j *Journal) Recover(ctx context.Context) int {
 
 // save writes the state; called with mu held.
 func (j *Journal) save() {
-	if len(j.st.Routes) == 0 && len(j.st.Bypass) == 0 && j.st.NAT == "" && j.st.Arrival == "" {
+	if len(j.st.Routes) == 0 && len(j.st.Bypass) == 0 && j.st.NAT == "" && j.st.Arrival == "" && j.st.DNS == "" {
 		_ = os.Remove(j.path)
 		return
 	}
@@ -188,6 +196,27 @@ func (j *Journal) SetNAT(ctx context.Context, pool netip.Prefix, dsts []netip.Pr
 
 // ReplyViaArrival passes on to the wrapped configurator (ArrivalRouter) and
 // records it, so that a crashed daemon's rules are removed on the next start.
+// SetLinkDNS passes on to the wrapped configurator (LinkDNSConfigurator) and
+// records which device the host's resolver was pointed at. Journal implements
+// it on every platform so that the record is kept; netcfg.LinkDNS says
+// whether the platform underneath can really do it.
+func (j *Journal) SetLinkDNS(ctx context.Context, ifname string, servers []netip.Addr) error {
+	l, ok := j.Configurator.(LinkDNSConfigurator)
+	if !ok {
+		return errors.New("netcfg: this platform's daemon keeps the system's resolver")
+	}
+	err := l.SetLinkDNS(ctx, ifname, servers)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(servers) > 0 && err == nil {
+		j.st.DNS = ifname
+	} else if len(servers) == 0 {
+		j.st.DNS = ""
+	}
+	j.save()
+	return err
+}
+
 func (j *Journal) ReplyViaArrival(ctx context.Context, ifname string, on bool) error {
 	a, ok := j.Configurator.(ArrivalRouter)
 	if !ok {
