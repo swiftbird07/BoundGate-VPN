@@ -148,8 +148,12 @@ x node-a ping -c 2 -W 2 "$H2_IP" >/dev/null || fail "hub2 overlay ip $H2_IP unre
 # status says so under skipped_routes.
 status_is node-r '[.routes[] | select(. == "192.168.178.0/24")] | length == 0' \
   || fail "node-r routes the network it announces itself: $(x node-r boundgatectl -json status | jq -c .routes)"
-status_is node-r '[.skipped_routes[]? | select(test("192.168.178.0/24"))] | length == 1' \
-  || fail "node-r does not say why its own network is not routed: $(x node-r boundgatectl -json status | jq -c .skipped_routes)"
+# Nothing stands under skipped_routes for it here, and that is the point:
+# the hub no longer offers the router its own network at all, so there is
+# nothing to leave out. The node's half - taking its own networks out of a
+# broader advertised one, and saying so - is covered by the unit tests
+# (TestRoutesLeaveOutWhatThisNodeAnnounces); it needs a second announcer or
+# an exit node's default route, neither of which this lab has.
 # and it still takes the other networks, the halves of the default route
 # among them
 status_is node-r '[.routes[] | select(. == "10.60.0.0/24")] | length == 1' \
