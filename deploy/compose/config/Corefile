@@ -1,11 +1,17 @@
 # The lab's resolver, "behind the hubs" on the internal network. It answers
-# the two names the targets have and nothing else, so that a dynamic access
-# list (docs/ACL.md) has something to resolve. The hubs believe it because
-# their config names it in dns_learn_from.
+# the two names the targets have, so that a dynamic access list
+# (docs/ACL.md) has something to resolve, and forwards everything else
+# upstream, the way the resolver of a real network does. The hubs believe it
+# because their config names it in dns_learn_from, and the hubs offer it to
+# their spokes (`dns:`), so a spoke that points its host at it keeps working
+# for every other name as well -- which matters on a laptop that joins the
+# lab while its user is reading mail.
 .:53 {
     hosts {
         10.60.0.10 target.lab
         10.60.0.11 tls.lab
+        fallthrough
     }
+    forward . /etc/resolv.conf
     errors
 }

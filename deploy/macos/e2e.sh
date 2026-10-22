@@ -48,15 +48,29 @@ ifconfig | grep -q 'inet 10\.21\.' || fail "no overlay address on a utun device"
 st '.profile == "mac-lab"' || fail "the configured profile was not applied"
 if ./netbackup.sh routes | grep -q '^inet 192\.168\.178\.0/24 .* utun'; then fail "the home LAN prefix was routed into the overlay"; fi
 
+echo "== 4b. the hub's resolver: this Mac asks it for every name while the overlay is up"
+# Without this the Mac resolves in its own network, the hub never sees the
+# query, and a dynamic access list cannot match the connection that follows
+# (#14, docs/ACL.md). On macOS it is one dictionary in configd's dynamic
+# store, with the catch-all match domain; /etc/resolv.conf is not touched.
+wait_for 15 st '.dns == ["10.60.0.53"]' || fail "the node does not report the hub's resolver (status .dns)"
+wait_for 10 sh -c "scutil --dns | awk '/^resolver #1/,/^\$/' | grep -q 10.60.0.53" || fail "mDNSResponder was not pointed at the hub's resolver (scutil --dns)"
+# a name only the lab's resolver knows, resolved by this Mac through the tunnel
+wait_for 10 sh -c 'dscacheutil -q host -a name target.lab | grep -q "^ip_address: 10.60.0.10"' || fail "target.lab was not resolved through the tunnel"
+# and everything else still resolves: the lab resolver forwards what is not its own
+dscacheutil -q host -a name www.apple.com | grep -q "^ip_address:" || fail "other names stopped resolving while the overlay is up"
+
 echo "== 5. reach the target behind the hubs; the flow is decided and logged by a hub"
 wait_for 10 sh -c 'curl -sf --max-time 3 http://10.60.0.10 | grep -q "^Name: target"' || fail "target unreachable through the overlay"
 # by overlay address: the name in the control plane is the admin's choice, not the local host name
 OIP=$($D ctl -json status | jq -r .overlay_ip)
 wait_for 20 sh -c "$S flows 'dst=10.60.0.10&decision=allow' | grep -qF '	$OIP:'" || fail "no flow record for the Mac node ($OIP)"
 
-echo "== 6. down: device, routes and journal are gone; the routing table is what it was"
+echo "== 6. down: device, routes, resolver and journal are gone; the routing table is what it was"
 $D ctl down >/dev/null
 wait_for 10 st '.state == "down"' || fail "not down"
+wait_for 10 sh -c '! scutil --dns | grep -q 10.60.0.53' || fail "the hub's resolver is still in the system configuration after down"
+dscacheutil -q host -a name www.apple.com | grep -q "^ip_address:" || fail "names do not resolve after down"
 AFTER=$(./netbackup.sh routes)
 [ "$BEFORE" = "$AFTER" ] || { echo "$BEFORE" > /tmp/bg-routes.before; echo "$AFTER" > /tmp/bg-routes.after; fail "routing table differs (diff /tmp/bg-routes.before /tmp/bg-routes.after; repair: deploy/macos/netbackup.sh restore -y)"; }
 [ ! -e state/netstate.json ] || fail "journal not empty after down"

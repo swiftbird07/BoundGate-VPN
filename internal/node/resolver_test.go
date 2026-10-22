@@ -130,3 +130,41 @@ func TestAPlatformThatCannotSetTheResolverReportsIt(t *testing.T) {
 		t.Fatalf("status %v %q", got, err)
 	}
 }
+
+// macOS asks the resolvers it was given and does not fall back to the
+// machine's own: measured on 2026-10-22, a name took 61 s and then failed
+// while the configured resolver was dead. So losing the hub must give the
+// resolver back, or the host would keep asking an address that no longer
+// goes anywhere.
+func TestLosingThePrimaryHubGivesTheResolverBack(t *testing.T) {
+	rec := &resolverNet{}
+	_, s, m := resolverSession(rec, "")
+	hub := netip.MustParseAddr("10.20.0.1")
+
+	m.mu.Lock()
+	m.applyDNSLocked(context.Background(), []netip.Addr{hub})
+	m.mu.Unlock()
+	if !s.resolver {
+		t.Fatal("the resolver was not set in the first place")
+	}
+
+	// the hub is still in the list, but its tunnel is gone: that is what
+	// the link loop leaves behind before it dials again
+	m.primary = &hubLink{}
+	m.mu.Lock()
+	dns := m.resolversLocked()
+	m.applyDNSLocked(context.Background(), dns)
+	m.mu.Unlock()
+	if len(dns) != 0 {
+		t.Fatalf("resolvers of a hub without a tunnel: %v", dns)
+	}
+	if len(rec.set) != 2 || rec.set[1] != "bg0 off" {
+		t.Fatalf("set %v, want the resolver given back", rec.set)
+	}
+	if s.resolver {
+		t.Error("the session still thinks it owns the resolver")
+	}
+	if got, err := m.dnsState(); len(got) != 0 || err != "" {
+		t.Errorf("status %v %q", got, err)
+	}
+}

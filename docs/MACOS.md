@@ -21,7 +21,7 @@ MACOS-APP.md (M8).
 | Bypass routes | hubs, control plane and IdP stay reachable outside the tunnel: `route -n get <host>` tells gateway and interface, `route -n add -host <host> <gateway>` (or `-interface` on-link) pins them. Loopback targets need none. A host currently routed through another `utun` (a second VPN) is refused rather than pinned there |
 | Roles | endpoint only: forwarding and NAT answer "macOS nodes are endpoints only" |
 | Device key | `key_kind: secure-enclave` or `auto`: a key in the Mac's Secure Enclave ([SECURE-ENCLAVE.md](SECURE-ENCLAVE.md)); `softkey`: a software key in the state directory |
-| DNS | not yet on this platform: the Mac daemon leaves the system's resolver alone, and `boundgatectl status` says so (`this platform's daemon cannot change the host's resolver yet`). On Linux a spoke already points systemd-resolved at the hub's resolvers while the overlay is up (`resolver: hub`, the default, [ACL.md](ACL.md)); here that is a `State:/Network/Service/<id>/DNS` entry through SystemConfiguration, as WireGuard and Tailscale do. Until then a dynamic access list matches this Mac by server name and by address, not by the names it resolves |
+| DNS | while the overlay is up this Mac asks the hub's resolvers for every name (`resolver: hub`, the default; `resolver: system` opts out, [ACL.md](ACL.md)). macOS resolves in mDNSResponder, which reads configd's dynamic store and not `/etc/resolv.conf`, so the daemon writes one dictionary -- `State:/Network/Service/boundgate-<utunN>/DNS` with the hub's `ServerAddresses` and the catch-all `SupplementalMatchDomains = ""` -- and removes it again on the way down. Measured on macOS 27: with that match domain the entry becomes `resolver #1` at order 104000, ahead of the machine's own (200000); without it the dictionary is ignored, and a dictionary that also claims an interface and an address (what `vpnc-script` does) changes nothing, so nothing else is written. macOS asks these resolvers and does **not** fall back to the machine's own (measured: a name took 61 s and then failed while the configured resolver was dead), which is what a hub has to be able to rely on -- and why losing the hub gives the resolver back at once. `boundgatectl status` shows `resolver:`, or why the host kept its own |
 | Paths | installed: `/usr/local/bin`, `/usr/local/etc/boundgate/node.yaml` (or under `PREFIX`, see "Installing as a LaunchDaemon"), state `/var/db/boundgate`, socket `/var/run/boundgate/node.sock` (the CLI's default on macOS; `BOUNDGATE_SOCKET` or `-socket` override), logs `/var/log/boundgate` |
 
 ## Crash safety: the network journal
@@ -72,12 +72,15 @@ tunnel's address range (R25, R66).
 
 ## Backup and repair of the Mac's network state
 
-A node changes exactly three things on a Mac: it creates one `utun` device,
-adds routes through it, and adds bypass host routes. It does **not** touch
-DNS, proxies, network services, the firewall or anything under
-`/Library/Preferences/SystemConfiguration`. All three kinds of change live
-in kernel memory only: the device and its routes disappear with the
-process, and a reboot clears everything.
+A node changes exactly four things on a Mac: it creates one `utun` device,
+adds routes through it, adds bypass host routes, and -- unless
+`resolver: system` -- writes one DNS dictionary for its own service key into
+configd's dynamic store. It does **not** touch proxies, the saved network
+services, the firewall, `/etc/resolv.conf`, `/etc/resolver` or anything under
+`/Library/Preferences/SystemConfiguration`. All four kinds of change live in
+kernel and configd memory only: the device and its routes disappear with the
+process, the DNS key is removed on teardown (and by the journal after a
+crash), and a reboot clears everything.
 
 `deploy/macos/netbackup.sh` is there so that this claim can be checked
 rather than believed:

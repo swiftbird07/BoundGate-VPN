@@ -606,7 +606,6 @@ func (m *spokeManager) applyRoutesLocked() {
 	for _, a := range dns {
 		want[netip.PrefixFrom(a, a.BitLen())] = true
 	}
-	m.applyDNSLocked(ctx, dns)
 	for p := range m.installed {
 		if !want[p] {
 			if err := s.n.net.DelRoute(ctx, p, s.ifname); err != nil {
@@ -624,6 +623,11 @@ func (m *spokeManager) applyRoutesLocked() {
 			m.installed[p] = true
 		}
 	}
+	// after the routes, not before: a resolver gets a host route of its own
+	// here, and a host asked to use an address it cannot reach yet may
+	// decide it is unreachable (macOS computes that when the resolver is
+	// configured)
+	m.applyDNSLocked(ctx, dns)
 }
 
 // splitDefault turns 0.0.0.0/0 into two /1 routes so the host's real
