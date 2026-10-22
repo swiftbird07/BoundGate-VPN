@@ -31,9 +31,25 @@ config() {
 }
 need() { [ -x "$BIN/$1" ] || { echo "missing $BIN/$1: run 'make build-darwin' first" >&2; exit 1; }; }
 
+# The daemon needs root (utun, routes, the resolver), and a device key is only
+# read when it belongs to whoever reads it (safefile). A state directory left
+# behind by a run without root therefore stops the next one with a message in
+# the log and nothing else; say it here instead.
+own_state() {
+  [ -n "$SUDO" ] || return 0
+  for f in "$STATE/device.key" "$STATE/device.sekey" "$STATE/device.tpm"; do
+    [ -e "$f" ] || continue
+    [ "$(stat -f %u "$f")" = 0 ] && continue
+    echo "$f belongs to uid $(stat -f %u "$f"), but the daemon runs as root." >&2
+    echo "Keep this node's identity:  sudo chown -R root:wheel $STATE" >&2
+    echo "Or start over (new key, needs approval again):  $0 clean" >&2
+    exit 1
+  done
+}
+
 case "${1:-}" in
   run)
-    need boundgate-node; config
+    need boundgate-node; own_state; config
     if [ "${BRIDGE:-1}" = 1 ]; then
       need boundgate-udpbridge
       "$BIN/boundgate-udpbridge" -client "127.0.0.1:15431=127.0.0.1:24431,127.0.0.1:15432=127.0.0.1:24432" > "$STATE/logs/udpbridge.log" 2>&1 &
