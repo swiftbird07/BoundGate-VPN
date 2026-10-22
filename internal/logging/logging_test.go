@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStreamFilesRotateAtTheLimit(t *testing.T) {
@@ -47,5 +48,32 @@ func TestThrottleStdLog(t *testing.T) {
 	th.Write([]byte("next\n"))
 	if !strings.Contains(buf.String(), "suppressed") || !strings.Contains(buf.String(), "count=7") {
 		t.Fatalf("no summary: %s", buf.String())
+	}
+}
+
+// A library line can be annotated by whoever knows more: the library writes
+// plain text and knows nothing of nodes or tunnels.
+func TestExplainStdLog(t *testing.T) {
+	var buf bytes.Buffer
+	th := &throttle{l: slog.New(slog.NewTextHandler(&buf, nil)), per: time.Minute, burst: 10}
+	ExplainStdLog(func(line string) StdLogNote {
+		if !strings.Contains(line, "not allowed") {
+			return StdLogNote{}
+		}
+		return StdLogNote{Attrs: []any{"src_node", "orkus_node"}, Warn: true}
+	})
+	defer ExplainStdLog(nil)
+
+	th.Write([]byte("connect-ip: datagram source address not allowed: 10.25.0.1\n"))
+	th.Write([]byte("handling stream failed: eof\n"))
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "src_node=orkus_node") {
+		t.Errorf("the annotated line: %q", out)
+	}
+	if n := strings.Count(out, "src_node"); n != 1 {
+		t.Errorf("a line nobody explained got attributes: %q", out)
+	}
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("the other line is not an info line: %q", out)
 	}
 }

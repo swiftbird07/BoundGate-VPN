@@ -260,6 +260,7 @@ func (e *Engine) startNode(s ipc.Settings) error {
 	if err != nil {
 		return err
 	}
+	logging.ExplainStdLog(n.ExplainLibraryLine)
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{n: n, cancel: cancel, done: make(chan struct{})}
 	go func() { defer close(r.done); n.Run(ctx) }()

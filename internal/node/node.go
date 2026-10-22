@@ -1359,7 +1359,10 @@ type session struct {
 	nets atomic.Pointer[[]netip.Prefix]
 	// own is what this node announces itself (a default route left out), for
 	// the routes it must not take from a hub
-	own   atomic.Pointer[[]netip.Prefix]
+	own atomic.Pointer[[]netip.Prefix]
+	// drops summarises the packets this session refused, per peer, source
+	// and reason
+	drops *dropWindow
 	isHub bool
 
 	dev    tun.Device
@@ -1407,6 +1410,7 @@ func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *sessio
 	s.nets.Store(&nets)
 	own := ownNetworks(snap.Self)
 	s.own.Store(&own)
+	s.drops = newDropWindow(dropsPer)
 	s.flows = flow.New(flow.Timeouts{}, s.onFlowEvent)
 	s.dns = dnsmap.New(maxLearnedAddrs)
 	s.flows.SetLearner(s.learnDNS)

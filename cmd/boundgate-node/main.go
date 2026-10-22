@@ -352,6 +352,10 @@ func runNode(ctx context.Context, cfg config, local ipc.Settings, logs *logging.
 	if err != nil {
 		return err
 	}
+	// what a library writes about a refused packet says nothing by itself;
+	// the node knows whose address it was (logging.ExplainStdLog)
+	logging.ExplainStdLog(n.ExplainLibraryLine)
+	defer logging.ExplainStdLog(nil)
 	ctx, cancel := context.WithCancel(ctx)
 	runDone := make(chan struct{})
 	go func() { defer close(runDone); n.Run(ctx) }()

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,31 @@ import (
 func ThrottleStdLog(l *slog.Logger) {
 	log.SetFlags(0)
 	log.SetOutput(&throttle{l: l, per: stdPer, burst: stdBurst})
+}
+
+// StdLogNote is what BoundGate adds to a library line: the library writes
+// plain text and knows nothing of nodes, tunnels or who owns an address.
+type StdLogNote struct {
+	// Attrs are appended to the line's attributes.
+	Attrs []any
+	// Warn makes it a warning instead of an informational line.
+	Warn bool
+}
+
+var explainStdLog atomic.Pointer[func(string) StdLogNote]
+
+// ExplainStdLog sets who may annotate library log lines. connect-ip-go
+// reports a refused packet as "connect-ip: datagram source address not
+// allowed: 10.25.0.8" and that is all of it — no peer, no tunnel, no
+// destination — because it takes no logger and offers no callback (it is
+// pinned at v0.2.0, R1). The node fills in what it knows. f must not block
+// and must survive any text; nil switches it off.
+func ExplainStdLog(f func(line string) StdLogNote) {
+	if f == nil {
+		explainStdLog.Store(nil)
+		return
+	}
+	explainStdLog.Store(&f)
 }
 
 const (
@@ -47,6 +73,17 @@ func (t *throttle) Write(p []byte) (int, error) {
 	}
 	t.n++
 	t.mu.Unlock()
-	t.l.Info(strings.TrimRight(string(p), "\n"), "source", "library")
+	line := strings.TrimRight(string(p), "\n")
+	attrs := []any{"source", "library"}
+	note := StdLogNote{}
+	if f := explainStdLog.Load(); f != nil {
+		note = (*f)(line)
+		attrs = append(attrs, note.Attrs...)
+	}
+	if note.Warn {
+		t.l.Warn(line, attrs...)
+	} else {
+		t.l.Info(line, attrs...)
+	}
 	return len(p), nil
 }

@@ -172,21 +172,21 @@ func (s *session) flowSweeper() {
 
 // FlowView is a tracked flow as the CLI shows it.
 type FlowView struct {
-	ID            string    `json:"id"`
-	Proto         string    `json:"proto"`
-	Src           string    `json:"src"`
-	Dst           string    `json:"dst"`
-	Local         bool      `json:"local"`
-	Principal     string    `json:"principal,omitempty"`
-	PrincipalName string    `json:"principal_name,omitempty"`
-	User          string    `json:"user,omitempty"`
-	Decision      string    `json:"decision"`
-	Policies      []string  `json:"policies,omitempty"`
-	SNI           string    `json:"sni,omitempty"`
-	DNSName       string    `json:"dns_name,omitempty"`
-	Names         []string  `json:"resolved_names,omitempty"`
-	BytesIn       uint64    `json:"bytes_in"`
-	BytesOut      uint64    `json:"bytes_out"`
+	ID            string   `json:"id"`
+	Proto         string   `json:"proto"`
+	Src           string   `json:"src"`
+	Dst           string   `json:"dst"`
+	Local         bool     `json:"local"`
+	Principal     string   `json:"principal,omitempty"`
+	PrincipalName string   `json:"principal_name,omitempty"`
+	User          string   `json:"user,omitempty"`
+	Decision      string   `json:"decision"`
+	Policies      []string `json:"policies,omitempty"`
+	SNI           string   `json:"sni,omitempty"`
+	DNSName       string   `json:"dns_name,omitempty"`
+	Names         []string `json:"resolved_names,omitempty"`
+	BytesIn       uint64   `json:"bytes_in"`
+	BytesOut      uint64   `json:"bytes_out"`
 	// NoReply: allowed, forwarded and nothing came back. The cause then
 	// lies outside this node's decision - a firewall on the way, a target
 	// without a route back, a routing loop - which is what one wants to

@@ -136,16 +136,26 @@ func (h *hubService) Serve(ctx context.Context, t *transport.Tunnel) {
 	s.n.log.Info("peer attached", "peer", p.Name, "node", p.ID, "overlay_ip", p.OverlayIP, "prefixes", len(p.Prefixes))
 
 	buf := make([]byte, forward.Offset+forward.MaxPacket)
-	var dropped uint64
 	handle := func(n int) {
 		defer s.n.guard.catch("spoke tunnel")
 		pkt := buf[forward.Offset : forward.Offset+n]
 		hdr, ok := netparse.Parse(pkt)
-		if !ok || !allowedSource(p, s.pool, s.networks(), hdr.Src) {
-			// spoofed or malformed: never forward
-			dropped++
-			if dropped == 1 || dropped%1000 == 0 {
-				s.n.log.Warn("dropping packet with unexpected source", "tunnel", t.ID(), "src", hdr.Src, "peer", p.Name, "dropped", dropped)
+		if !ok {
+			if c, say := s.drops.add(dropKey{peer: p.ID, why: "malformed packet"}); say {
+				s.n.log.Warn("dropping a packet from a peer", "why", "malformed packet",
+					"tunnel", t.ID(), "peer", p.Name, "node", p.ID, "bytes", n, "dropped", c)
+			}
+			return
+		}
+		if !allowedSource(p, s.pool, s.networks(), hdr.Src) {
+			// this address is not this peer's: never forward it
+			if c, say := s.drops.add(dropKey{peer: p.ID, src: hdr.Src, why: "source not this peer's"}); say {
+				attrs := []any{"why", "source not this peer's", "tunnel", t.ID(), "peer", p.Name, "node", p.ID,
+					"peer_overlay_ip", p.OverlayIP, "src", hdr.Src, "dst", hdr.Dst, "proto", hdr.Proto, "dropped", c}
+				if hint := loopHint(s.n.holder.Load(), p.ID, hdr.Src); hint != "" {
+					attrs = append(attrs, "meaning", hint)
+				}
+				s.n.log.Warn("dropping a packet from a peer", attrs...)
 			}
 			return
 		}

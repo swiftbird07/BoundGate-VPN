@@ -349,7 +349,32 @@ func (s *session) fromPeer(buf []byte, peer registry.Node, back forward.PacketWr
 	defer s.n.guard.catch("path")
 	pkt := buf[forward.Offset:]
 	h, ok := netparse.Parse(pkt)
-	if !ok || !allowedSource(peer, s.pool, s.networks(), h.Src) || !s.forMe(h.Dst) {
+	if !ok {
+		if c, say := s.drops.add(dropKey{peer: peer.ID, why: "malformed packet"}); say {
+			s.n.log.Warn("dropping a packet from a peer on a path", "why", "malformed packet",
+				"peer", peer.Name, "node", peer.ID, "bytes", len(pkt), "dropped", c)
+		}
+		return
+	}
+	// A path carries what the peer may send to this node, nothing else: a
+	// spoke is not a hub. Until now both refusals were silent, which is
+	// exactly what made a routing loop hard to see (R138).
+	why := ""
+	switch {
+	case !allowedSource(peer, s.pool, s.networks(), h.Src):
+		why = "source not this peer's"
+	case !s.forMe(h.Dst):
+		why = "destination is not this node's"
+	}
+	if why != "" {
+		if c, say := s.drops.add(dropKey{peer: peer.ID, src: h.Src, why: why}); say {
+			attrs := []any{"why", why, "peer", peer.Name, "node", peer.ID, "peer_overlay_ip", peer.OverlayIP,
+				"src", h.Src, "dst", h.Dst, "proto", h.Proto, "dropped", c}
+			if hint := loopHint(s.n.holder.Load(), peer.ID, h.Src); hint != "" {
+				attrs = append(attrs, "meaning", hint)
+			}
+			s.n.log.Warn("dropping a packet from a peer on a path", attrs...)
+		}
 		return
 	}
 	switch out, _ := s.admit(h, pkt, flow.Origin{Principal: peer.ID}); out {
