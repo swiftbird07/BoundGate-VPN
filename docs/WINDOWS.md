@@ -181,9 +181,11 @@ The right button opens the menu, which shows:
   this PC has a device key of its own in every network. Removing one is
   `boundgatectl network remove ID`; the tray does not offer it, because
   giving up a key is not a menu entry to hit by accident.
-* Sign in (browser) and Sign out. When the session ends while the tray
-  runs (24 h by default), a message box offers to sign in again, once per
-  occasion.
+* Sign in (browser) and Sign out. While the browser is open the panel says
+  "Signing in…" but every button stays alive: whoever decides against signing
+  in must be able to disconnect instead, so the wait holds no lock. When the
+  session ends while the tray runs (24 h by default), a message box offers to
+  sign in again, once per occasion.
 * Request access, with a key comparison for the first contact: the same
   text as `boundgatectl enroll`, "No" is the default.
 * Repair network…, for the one situation in which nothing on the PC resolves

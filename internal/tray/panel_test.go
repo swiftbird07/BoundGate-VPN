@@ -163,3 +163,37 @@ func TestASingleNetworkStillJustPicksTheRoute(t *testing.T) {
 		}
 	}
 }
+
+// A sign-in waiting in the browser must not take the panel's buttons with it:
+// whoever decides against signing in has to be able to disconnect instead.
+// An action of ours (Busy) does grey them out -- that is a second or two.
+func TestASignInWaitingInTheBrowserLeavesTheButtonsAlive(t *testing.T) {
+	act := func(in PanelInput, want string) bool {
+		for _, it := range LayoutPanel(in, fakeMeasure{}, ThemeOf(false)).Items {
+			if it.Action == want {
+				return true
+			}
+		}
+		return false
+	}
+	in := phases()["login"]
+	in.Busy, in.Waiting = "", true
+	if !act(in, ActDisconnect) {
+		t.Error("Disconnect is dead while the browser is open")
+	}
+	if l := LayoutPanel(in, fakeMeasure{}, ThemeOf(false)); !strings.Contains(textOf(l), "Signing in") {
+		t.Error("the panel does not say that a sign-in is under way")
+	}
+	in.Busy, in.Waiting = "Disconnecting", false
+	if act(in, ActDisconnect) {
+		t.Error("a button stayed live while an action of ours was running")
+	}
+}
+
+func textOf(p Panel) string {
+	var b strings.Builder
+	for _, it := range p.Items {
+		b.WriteString(it.Text + "\n")
+	}
+	return b.String()
+}

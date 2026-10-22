@@ -489,6 +489,11 @@ func (p *panelWin) draw(hdc uintptr, use func(mdc uintptr, bgra []byte)) {
 // dark, at 100 % and 150 %, without a window: a look at the panel for whoever
 // works on it (boundgate-tray -render-panel DIR).
 func renderPanels(dir string) error {
+	// whoever renders the panel names a directory for it; making them
+	// create it first is a trap, and os.Create then fails per file
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 	p := &panelWin{}
 	p.mdc, _, _ = procCreateCompatibleDC.Call(0)
 	defer procDeleteDC.Call(p.mdc)

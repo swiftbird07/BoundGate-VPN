@@ -169,9 +169,17 @@ const (
 
 // PanelInput is everything the panel shows.
 type PanelInput struct {
-	Status   *node.Status
-	Err      error // of fetching the status
-	Busy     string
+	Status *node.Status
+	Err    error // of fetching the status
+	// Busy: an action of ours is running. It greys every button out, so it
+	// belongs to the short ones -- connecting, disconnecting, signing out.
+	Busy string
+	// Waiting: a sign-in is open in the browser. That is the user's time,
+	// not an action of ours: it shows in the panel, but it must leave the
+	// buttons alone -- somebody who decides against signing in has to be
+	// able to disconnect instead, and a button that does nothing for five
+	// minutes is a dead panel.
+	Waiting  bool
 	Profiles []string
 	// Networks: the meshes this device belongs to, when the daemon knows
 	// several (docs/NETWORKS.md). The picker then offers a profile per
@@ -182,6 +190,15 @@ type PanelInput struct {
 	DetailsOpen bool
 	Hover       string // the action under the mouse
 	Now         time.Time
+}
+
+// busyLabel is what the panel says is going on: an action of ours, or the
+// sign-in waiting in the browser. Only Busy disables the buttons.
+func (in PanelInput) busyLabel() string {
+	if in.Busy == "" && in.Waiting {
+		return "Signing in"
+	}
+	return in.Busy
 }
 
 const (
@@ -277,7 +294,7 @@ func LayoutPanel(in PanelInput, m Measurer, t Theme) Panel {
 	l.add(Item{Kind: KindTile, R: Rect{pad, l.y, 30, 30}, Fill: t.LogoGround, Stroke: t.LogoMark})
 	_, wh := m.Measure("BoundGate", FontWordmark, 0)
 	l.add(Item{Kind: KindText, R: Rect{pad + 40, l.y + (30-wh)/2, 150, wh}, Text: "BoundGate", Font: FontWordmark, Color: t.Text})
-	label, tone := pillOf(v.Phase, in.Busy, t)
+	label, tone := pillOf(v.Phase, in.busyLabel(), t)
 	pw, ph := m.Measure(label, FontPill, 0)
 	pr := Rect{panelW - pad - (pw + 18 + 13), l.y + (30-(ph+8))/2, pw + 18 + 13, ph + 8}
 	l.add(Item{Kind: KindBox, R: pr, Fill: alpha(tone, 0.13), Stroke: alpha(tone, 0.35), Radius: pr.H / 2})
@@ -346,11 +363,11 @@ func LayoutPanel(in PanelInput, m Measurer, t Theme) Panel {
 	// footer: the device, sign out, quit
 	l.y += gap
 	fy := l.y
-	name := ""
+	name, keyNote := "", ""
 	if s != nil {
 		name = s.NodeName
 		if s.HardwareBound {
-			name += " · key in the TPM"
+			keyNote = " · key in the TPM"
 		}
 	}
 	_, fh := m.Measure("Quit", FontSmall, 0)
@@ -371,7 +388,15 @@ func LayoutPanel(in PanelInput, m Measurer, t Theme) Panel {
 		l.add(Item{Kind: KindText, R: Rect{r.X + 6, fy, w + 1, fh}, Text: a.label, Font: FontSmall, Color: t.Text2})
 		x = r.X - 4
 	}
-	l.add(Item{Kind: KindText, R: Rect{pad + 2, fy, x - pad - 8, fh}, Text: name, Font: FontSmall, Color: t.Text3})
+	// The name identifies the machine, "key in the TPM" is a nicety: with
+	// three actions beside it the nicety goes, rather than the name ending
+	// in "key in t…".
+	avail := x - pad - 8
+	who := name + keyNote
+	if w, _ := m.Measure(who, FontSmall, 0); w > avail {
+		who = name
+	}
+	l.add(Item{Kind: KindText, R: Rect{pad + 2, fy, avail, fh}, Text: who, Font: FontSmall, Color: t.Text3})
 	l.y = fy + fh + pad
 	return Panel{W: panelW, H: math.Ceil(l.y), Bg: t.Bg, Items: l.items}
 }
@@ -437,7 +462,7 @@ func (l *layout) connection(v View) {
 		case LoginRequired:
 			l.y += l.text(x, w, "Sign in to finish connecting", FontTitle, t.Text) + 8
 			msg := "The network wants to know who is using this PC."
-			if in.Busy == "Signing in" {
+			if in.busyLabel() == "Signing in" {
 				msg = "Continue in your browser. This panel updates when you are done."
 			}
 			l.y += l.text(x, w, msg, FontBody, t.Text2)
@@ -523,7 +548,7 @@ func (l *layout) connection(v View) {
 		// and signing in stays at hand
 		half := (cw - 8) / 2
 		signIn := "Sign in"
-		if in.Busy == "Signing in" {
+		if in.busyLabel() == "Signing in" {
 			// short enough for half the panel: "Waiting for the browser…"
 			// was cut to "Waiting for the bro…"
 			signIn = "Signing in…"

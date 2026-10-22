@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -41,8 +42,12 @@ func main() {
 	render := flag.String("render-panel", "", "write the panel in every phase as PNG files into this directory, and exit")
 	flag.Parse()
 	if *render != "" {
+		// No window in this mode, so no message box either: a modal dialog
+		// nobody can click is what a script or an ssh session hangs on.
+		// The redirected error stream is where this belongs.
 		if err := renderPanels(*render); err != nil {
-			message("BoundGate", err.Error(), windows.MB_ICONERROR)
+			fmt.Fprintln(os.Stderr, "render-panel:", err)
+			os.Exit(1)
 		}
 		return
 	}
@@ -69,6 +74,7 @@ type app struct {
 
 	mu        sync.Mutex
 	busy      string // the action in flight
+	waiting   bool   // a sign-in is open in the browser; the buttons stay alive
 	actionErr string // the last action's failure, shown in the panel
 	status    *node.Status
 	names     []string
@@ -176,14 +182,14 @@ func (a *app) refresh() {
 	a.last, a.status, a.names, a.nets = now, st, names, nets
 	a.routes = tray.RouteChoices(st, names, nets)
 	routes := a.routes
-	busy, actionErr := a.busy, a.actionErr
+	busy, waiting, actionErr := a.busy, a.waiting, a.actionErr
 	phase := tray.PhaseOf(st, err)
-	askSignIn := a.phaseSeen && phase == tray.LoginRequired && a.lastPhase != tray.LoginRequired && busy == ""
+	askSignIn := a.phaseSeen && phase == tray.LoginRequired && a.lastPhase != tray.LoginRequired && busy == "" && !waiting
 	a.lastPhase, a.phaseSeen = phase, true
 	// a node refused a connection that a signed-in user would be let
 	// through (Status.SignIn, only while nobody is signed in): once per refusal
 	var hint string
-	if st != nil && st.SignIn != nil && !st.SignIn.At.Equal(a.lastHint) && busy == "" {
+	if st != nil && st.SignIn != nil && !st.SignIn.At.Equal(a.lastHint) && busy == "" && !waiting {
 		a.lastHint = st.SignIn.At
 		hint = tray.SignInHintText(st.SignIn)
 	}
@@ -203,7 +209,7 @@ func (a *app) refresh() {
 			}
 		}()
 	}
-	a.panel.update(tray.PanelInput{Status: st, Err: err, Busy: busy, Profiles: names, Networks: nets, Rate: rate, ActionError: actionErr})
+	a.panel.update(tray.PanelInput{Status: st, Err: err, Busy: busy, Waiting: waiting, Profiles: names, Networks: nets, Rate: rate, ActionError: actionErr})
 
 	v := tray.Describe(st, err)
 	light := taskbarLight()
@@ -229,7 +235,7 @@ func (a *app) refresh() {
 	idle := busy == ""
 	show(a.connect, v.CanUp, idle)
 	show(a.disconnect, v.CanDown, idle)
-	show(a.signIn, v.CanLogin, idle)
+	show(a.signIn, v.CanLogin, idle && !waiting)
 	show(a.signOut, v.CanLogout, idle)
 	show(a.enroll, v.CanEnroll, idle)
 	show(a.setup, v.CanSetup, idle)
@@ -396,6 +402,12 @@ func (a *app) pickRoute(i int) {
 // login opens the control plane's sign-in page in the browser and waits for
 // the result, like `boundgatectl login`.
 func (a *app) login() {
+	a.mu.Lock()
+	waiting := a.waiting
+	a.mu.Unlock()
+	if waiting { // one browser window is enough
+		return
+	}
 	a.run("Signing in", func() error {
 		start, err := a.client.Login()
 		if err != nil {
@@ -408,25 +420,57 @@ func (a *app) login() {
 		if err := openBrowser(u.String()); err != nil {
 			return fmt.Errorf("open the browser: %w", err)
 		}
-		deadline := time.Now().Add(5 * time.Minute)
-		for time.Now().Before(deadline) {
-			st, err := a.client.LoginWait(start.FlowID, 25*time.Second)
-			if err != nil {
-				return err
-			}
-			switch st.Status {
-			case "pending":
-				continue
-			case "failed":
-				if st.Error != "" {
-					return errors.New(st.Error)
-				}
-				return errors.New("the sign-in failed")
-			}
-			return nil
-		}
-		return errors.New("the sign-in took too long")
+		// The browser is open; the rest is the user's time and must not hold
+		// the one-action lock -- somebody who decides against signing in has
+		// to be able to disconnect instead.
+		go a.awaitLogin(start.FlowID)
+		return nil
 	})
+}
+
+// awaitLogin follows the sign-in flow while the user is in the browser. It
+// shows in the panel ("Signing in…", Waiting) but leaves every button alive,
+// and it gives up as soon as the user has taken the tunnel down instead.
+func (a *app) awaitLogin(flow string) {
+	a.mu.Lock()
+	a.waiting = true
+	a.mu.Unlock()
+	var fail string
+	defer func() {
+		a.mu.Lock()
+		a.waiting = false
+		if fail != "" {
+			a.actionErr = "Signing in: " + fail
+		}
+		a.mu.Unlock()
+		a.refresh()
+	}()
+	deadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(deadline) {
+		st, err := a.client.LoginWait(flow, 25*time.Second)
+		if err != nil {
+			fail = err.Error()
+			return
+		}
+		switch st.Status {
+		case "pending":
+			// the user may have disconnected meanwhile: then the flow is
+			// nobody's business any more
+			if s, err := a.client.Status(); err == nil && s.State == node.StateDown {
+				return
+			}
+			continue
+		case "failed":
+			fail = "the sign-in failed"
+			if st.Error != "" {
+				fail = st.Error
+			}
+			return
+		}
+		a.refresh()
+		return
+	}
+	fail = "the sign-in took too long"
 }
 
 // setUp asks for the control plane's address, stores it (the service
