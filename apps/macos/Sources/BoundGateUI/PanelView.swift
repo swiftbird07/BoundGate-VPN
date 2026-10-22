@@ -17,7 +17,7 @@ public struct PanelView: View {
             } else if let u = model.update, u.available, let latest = u.latest { UpdateCard(model: model, update: u, latest: latest) }
             KeyWarningView(model: model)
             content
-            if let n = model.updateNote { Notice(tone: .info, text: n) }
+            if let n = model.note { Notice(tone: .info, text: n) }
             if let e = model.actionError { Notice(tone: .bad, text: e) }
             footer
         }
@@ -105,6 +105,11 @@ public struct PanelView: View {
             items.append(.action("Remove background service") { model.uninstallService() })
         }
         if model.status != nil { items.append(.action("Check for Updates…") { model.checkForUpdates() }) }
+        // The way back when a run ended badly and this Mac resolves no names:
+        // the daemon gives the resolver back and re-applies what should be
+        // there (R144). Reachable without a terminal, because whoever needs it
+        // may not have a working network to look anything up with.
+        if model.status != nil { items.append(.action("Repair network") { model.repairNetwork() }) }
         items.append(.action("Quit BoundGate") { NSApp.terminate(nil) })
         PopupMenu.show(items)
     }
@@ -346,7 +351,9 @@ struct ConnectionCard: View {
                     Text("Not connected").font(.display(15)).foregroundStyle(t.text)
                     RouteRow(model: model)
                 }
-                ForEach(s.skippedRoutes ?? [], id: \.self) { Notice(tone: .warn, text: "Not routed: \($0)") }
+                // not a fault: a network the node reaches by itself stays out
+                // of the tunnel on purpose, so this is blue, not amber
+                ForEach(s.skippedRoutes ?? [], id: \.self) { Notice(tone: .info, text: "Not routed: \($0)") }
                 if phase != .connected, let e = s.lastError, !e.isEmpty { Notice(tone: .bad, text: e) }
                 if let e = s.bindingError, !e.isEmpty { Notice(tone: .bad, text: "This Mac's approval does not verify: \(e)") }
                 if let e = s.controlError, !e.isEmpty { Notice(tone: .warn, text: "Control plane: \(e)") }
@@ -356,7 +363,7 @@ struct ConnectionCard: View {
                 Button("Connect") { model.connect() }.buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
             case .loginRequired:
                 HStack(spacing: 8) {
-                    Button(model.loginInProgress ? "Waiting for the browser…" : "Sign in") { model.signIn() }
+                    Button(model.loginInProgress ? "Signing in…" : "Sign in") { model.signIn() }
                         .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress)
                     Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true)).disabled(model.busy != nil)
                 }
@@ -365,7 +372,7 @@ struct ConnectionCard: View {
                 // asks for one; what needs a person is the policies' to say.
                 // Signing in stays the user's choice, always at hand.
                 HStack(spacing: 8) {
-                    Button(model.loginInProgress ? "Waiting for the browser…" : "Sign in") { model.signIn() }
+                    Button(model.loginInProgress ? "Signing in…" : "Sign in") { model.signIn() }
                         .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress)
                     Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true)).disabled(model.busy != nil)
                 }

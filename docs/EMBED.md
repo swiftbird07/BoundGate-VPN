@@ -76,6 +76,11 @@ talk to the Mac's daemon or to their own extension:
   while it is up (only the kernel routes change) or remembered for the next
   `up`. Answers the status, 400 for an unknown profile or a hub
   ([PROFILES.md](PROFILES.md)).
+* `POST /v1/repair`: the way back for a host that was left pointed at a
+  resolver in a tunnel that is gone, or lost routes it should have. Answers
+  what it did (`undone`, `removed`, `left_alone`, `reapplied`, `summary`), so
+  a frontend can show one sentence. `boundgate-node -repair` is the same
+  without a daemon (R144).
 * `POST /v1/reset` forgets the control plane. `new_identity` is refused: a new
   identity is a new key in the app's key store, so the app deletes its key and
   starts again.

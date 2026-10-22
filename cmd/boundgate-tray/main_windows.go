@@ -63,7 +63,7 @@ type app struct {
 	connect, disconnect, signIn, signOut *systray.MenuItem
 	enroll, setup, profileMenu           *systray.MenuItem
 	addNet                               *systray.MenuItem
-	details, copyFP                      *systray.MenuItem
+	details, copyFP, repair              *systray.MenuItem
 	profiles                             [maxProfiles]*systray.MenuItem
 	detailLines                          [maxDetails]*systray.MenuItem
 
@@ -120,6 +120,7 @@ func (a *app) ready() {
 	a.details.AddSeparator()
 	a.copyFP = a.details.AddSubMenuItem("Copy fingerprint", "The device fingerprint your administrator compares")
 	systray.AddSeparator()
+	a.repair = systray.AddMenuItem("Repair network…", "Give this PC its resolver and routes back after a run that ended badly")
 	quit := systray.AddMenuItem("Quit BoundGate tray", "The service keeps running; the tunnel stays as it is")
 
 	go a.onClick(a.connect.ClickedCh, func() { a.up("") })
@@ -130,6 +131,7 @@ func (a *app) ready() {
 	go a.onClick(a.setup.ClickedCh, a.setUp)
 	go a.onClick(a.addNet.ClickedCh, a.addNetwork)
 	go a.onClick(a.copyFP.ClickedCh, a.copyFingerprint)
+	go a.onClick(a.repair.ClickedCh, a.repairNetwork)
 	go a.onClick(quit.ClickedCh, systray.Quit)
 
 	go func() {
@@ -325,6 +327,8 @@ func (a *app) dispatch(act string) {
 		a.login()
 	case act == tray.ActSignOut:
 		a.run("Signing out", func() error { _, err := a.client.Logout(); return err })
+	case act == tray.ActRepair:
+		a.repairNetwork()
 	case act == tray.ActSetUp:
 		a.setUp()
 	case act == tray.ActEnroll:
@@ -517,6 +521,27 @@ func (a *app) copyFingerprint() {
 	if err := setClipboard(fp); err != nil {
 		message("Copy fingerprint", err.Error(), windows.MB_ICONERROR)
 	}
+}
+
+// repairNetwork is the way back for whoever is looking at a PC that resolves
+// no names any more: the service takes back what a run that is gone left on
+// this machine -- the policy rule for "." above all, which outlives a reboot
+// -- and applies again what a running node should have (R144). It says what
+// it did, because "nothing to repair" is an answer too. Without a service
+// there is still `boundgate-node -repair` in a shell.
+func (a *app) repairNetwork() {
+	a.run("Repairing", func() error {
+		rep, err := a.client.Repair()
+		if err != nil {
+			return err
+		}
+		text := rep.Summary
+		for _, k := range rep.LeftAlone {
+			text += "\n\nLeft alone, its tunnel device is still there:\n" + k
+		}
+		message("Repair network", text, windows.MB_ICONINFORMATION)
+		return nil
+	})
 }
 
 func message(title, text string, flags uint32) int32 {

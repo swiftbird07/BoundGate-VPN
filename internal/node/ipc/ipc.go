@@ -237,6 +237,20 @@ func handler(n *node.Node, opt Options, onReset, onSwitch func()) *http.ServeMux
 		n.Down("down by user")
 		writeJSON(w, http.StatusOK, n.Status())
 	})
+	// The way back for a host that is pointed at a resolver in a tunnel that
+	// is gone, or has lost routes it should have. `boundgate-node -repair`
+	// does it without a daemon; this is the same thing through the one that
+	// runs, so the tray and the Mac app can offer it (R144).
+	mux.HandleFunc("POST /v1/repair", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		rep, err := n.Repair(ctx)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, rep)
+	})
 	mux.HandleFunc("POST /v1/login", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 		defer cancel()
@@ -485,4 +499,12 @@ func (c *Client) Down() (node.Status, error) {
 	var s node.Status
 	err := c.do(http.MethodPost, "/v1/down", nil, &s)
 	return s, err
+}
+
+// Repair asks the daemon to undo what a run that is gone left on this host's
+// network, and to apply what a running node should have.
+func (c *Client) Repair() (node.RepairReport, error) {
+	var rep node.RepairReport
+	err := c.do(http.MethodPost, "/v1/repair", nil, &rep)
+	return rep, err
 }

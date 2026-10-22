@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 )
 
@@ -21,6 +22,9 @@ import (
 // is rebooted (docs/SECURITY.md R144). So this runs without a daemon, takes
 // the journal if there is one, and sweeps the host's own configuration as
 // well in case the daemon was killed before it could write the record.
+//
+// With a daemon running there is no need for a shell at all: `boundgatectl
+// repair`, the tray and the Mac app ask it to do the same thing.
 func repairHost(cfgPath string) error {
 	stateDir := defaults.stateDir
 	if b, err := os.ReadFile(cfgPath); err == nil {
@@ -32,32 +36,26 @@ func repairHost(cfgPath string) error {
 	defer cancel()
 	// the journal of the daemon, wherever its state is; with several
 	// networks it is one for all of them, in the root of the state
-	j := netcfg.NewJournal(netcfg.New(), filepath.Join(stateDir, "netstate.json"))
-	done := 0
-	if n := j.Recover(ctx); n > 0 {
-		fmt.Printf("undid %d network change(s) an earlier run recorded in %s\n", n, filepath.Join(stateDir, "netstate.json"))
-		done += n
+	path := filepath.Join(stateDir, "netstate.json")
+	rep, err := node.RepairHost(ctx, netcfg.NewJournal(netcfg.New(), path))
+	if rep.Undone > 0 {
+		fmt.Printf("undid %d network change(s) an earlier run recorded in %s\n", rep.Undone, path)
 	}
-	if s, ok := netcfg.Sweeper(j); ok {
-		keys, err := s.SweepDNS(ctx)
-		if err != nil {
-			return fmt.Errorf("the host's resolver could not be given back: %w", err)
-		}
-		for _, k := range keys {
-			fmt.Println("removed a resolver entry this host was left with:", k)
-		}
-		done += len(keys)
-		// An entry whose device is still there belongs to a node that is
-		// running: this must not take it away, or it would break the
-		// machine it is here to repair.
-		for _, k := range s.LiveDNSKeys(ctx) {
-			fmt.Println("left alone, its tunnel device is still there (end that node with `boundgatectl down`):", k)
-		}
+	for _, k := range rep.Removed {
+		fmt.Println("removed a resolver entry this host was left with:", k)
 	}
-	if done == 0 {
-		fmt.Println("nothing to undo: this host carries no network changes of a BoundGate node")
-		return nil
+	// An entry whose device is still there belongs to a node that is
+	// running: a repair must not take it away, or it would break the
+	// machine it is here to repair.
+	for _, k := range rep.LeftAlone {
+		fmt.Println("left alone, its tunnel device is still there (end that node with `boundgatectl down`):", k)
 	}
-	fmt.Println("done. A node that is running now has its routes back on the next check (`boundgatectl status`).")
+	if err != nil {
+		return err
+	}
+	fmt.Println(rep.Summary)
+	if rep.Undone > 0 || len(rep.Removed) > 0 {
+		fmt.Println("A node that is running now has its routes back on the next check (`boundgatectl status`).")
+	}
 	return nil
 }

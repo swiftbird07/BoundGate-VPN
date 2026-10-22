@@ -203,7 +203,7 @@ struct MobileConnectionCard: View {
                     Text("Not connected").font(.display(16)).foregroundStyle(t.text)
                     if case .unavailable(let why) = model.vpn { Notice(tone: .warn, text: why) }
                 }
-                ForEach(s.skippedRoutes ?? [], id: \.self) { Notice(tone: .warn, text: "Not routed: \($0)") }
+                ForEach(s.skippedRoutes ?? [], id: \.self) { Notice(tone: .info, text: "Not routed: \($0)") }
                 if phase != .connected, let e = s.lastError, !e.isEmpty { Notice(tone: .bad, text: e) }
                 if let e = s.bindingError, !e.isEmpty { Notice(tone: .bad, text: "This device's approval does not verify: \(e)") }
                 if let e = s.controlError, !e.isEmpty { Notice(tone: .warn, text: "Control plane: \(e)") }
@@ -212,13 +212,13 @@ struct MobileConnectionCard: View {
             case .ready:
                 Button("Connect") { model.connect() }.buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.busy != nil)
             case .loginRequired:
-                Button(model.loginInProgress ? "Waiting for the browser…" : "Sign in") { model.signIn() }
+                Button(model.loginInProgress ? "Signing in…" : "Sign in") { model.signIn() }
                     .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress || model.busy != nil)
                 Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true))
             case .connected where s.user == nil:
                 // nothing asks for a session any more (the policies decide what
                 // needs a person): signing in stays at hand
-                Button(model.loginInProgress ? "Waiting for the browser…" : "Sign in") { model.signIn() }
+                Button(model.loginInProgress ? "Signing in…" : "Sign in") { model.signIn() }
                     .buttonStyle(BGButtonStyle(kind: .primary, large: true)).disabled(model.loginInProgress || model.busy != nil)
                 Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true))
             default:

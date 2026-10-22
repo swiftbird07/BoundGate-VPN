@@ -13,6 +13,7 @@
 //	boundgatectl network remove ID         give up a network and its state (its device key goes with it)
 //	boundgatectl up [-profile NAME]
 //	boundgatectl down
+//	boundgatectl repair                    undo what a run that is gone left on this host (resolver, routes); `boundgate-node -repair` does it without a daemon
 //	boundgatectl login [-timeout 10m]      prints the login URL, waits for the browser login
 //	boundgatectl logout
 //	boundgatectl update [-install]         look for a newer release; -install puts it in place (app installs)
@@ -49,7 +50,7 @@ func main() {
 	socket := flag.String("socket", defSocket, "node daemon socket (or $BOUNDGATE_SOCKET)")
 	asJSON := flag.Bool("json", false, "print raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|profile NAME|up [-profile NAME]|down|login [-timeout D]|logout|flows|networks|network add|select|remove|update [-install]|version\n"+
+		fmt.Fprintf(os.Stderr, "usage: boundgatectl [-socket PATH] [-json] status|identity|configure -control HOST|reset|enroll [-name NAME]|profiles|profile NAME|up [-profile NAME]|down|repair|login [-timeout D]|logout|flows|networks|network add|select|remove|update [-install]|version\n"+
 			"       boundgatectl [-json] admin sign --control URL --node ID --fingerprint FP --token T [--cacert F] [--key F|--agent-key S|--signature F|--out F]\n")
 		flag.PrintDefaults()
 	}
@@ -302,6 +303,22 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			return err
 		}
 		return printStatus(s, asJSON)
+	case "repair":
+		rep, err := c.Repair()
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		for _, k := range rep.Removed {
+			fmt.Println("gave back a resolver entry this host was left with:", k)
+		}
+		for _, k := range rep.LeftAlone {
+			fmt.Println("left alone, its tunnel device is still there:", k)
+		}
+		fmt.Println(rep.Summary)
+		return nil
 	case "login":
 		fs := flag.NewFlagSet("login", flag.ContinueOnError)
 		timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for the browser login")

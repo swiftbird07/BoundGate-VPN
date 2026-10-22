@@ -62,8 +62,12 @@ an individual developer account is sufficient.
    confirms and signs (ENROLLMENT.md); the window updates by itself.
 6. **Connect**. Interactive nodes need a user: the app opens the browser for
    the single sign-on and carries on when you are done. `Sign out`,
-   `Forget this control plane…` and `Remove background service` are behind
-   the gear.
+   `Forget this control plane…`, `Repair network` and `Remove background
+   service` are behind the gear. *Repair network* is for the one situation in
+   which looking anything up is impossible: a run that ended badly left this
+   Mac pointed at a resolver in a tunnel that is gone. It gives the resolver
+   back, puts the routes of a running node back, and says in one line what it
+   did -- also when that is "nothing to repair" (R144, MACOS.md).
 
 Warnings of the daemon appear where they matter: a network that was not
 routed because this Mac already lives in it (overlap guard), a refused

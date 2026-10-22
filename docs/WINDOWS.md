@@ -186,6 +186,12 @@ The right button opens the menu, which shows:
   occasion.
 * Request access, with a key comparison for the first contact: the same
   text as `boundgatectl enroll`, "No" is the default.
+* Repair network…, for the one situation in which nothing on the PC resolves
+  a name any more: a run that ended badly left the policy rule for `.`
+  pointing into a tunnel that is gone, and that rule outlives a reboot. The
+  service takes it back and applies again what a running node should have;
+  the answer says what it did. The panel has it in its footer as *Repair*,
+  and `boundgate-node -repair` does it with no service at all (R144).
 * Details, closed until opened: address, hubs with protocol and bytes, the
   current rate, control plane and its protocol, adapter and MTU, key kind,
   fingerprint, version. Also "Copy fingerprint".

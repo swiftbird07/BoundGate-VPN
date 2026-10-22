@@ -214,8 +214,9 @@ public final class AppModel: ObservableObject {
 
     /// Result of the daemon's last release check; nil with a daemon that has no updater.
     @Published public var update: UpdateStatus?
-    /// A manual check that found nothing says so once.
-    @Published public var updateNote: String?
+    /// A one-off message from something the user asked for: a check that found
+    /// no newer release, a repair saying what it did.
+    @Published public var note: String?
     private var lastUpdatePoll = Date.distantPast
 
     /// The daemon checks in the background; the app reads its verdict now and then.
@@ -233,7 +234,7 @@ public final class AppModel: ObservableObject {
 
     public func checkForUpdates() {
         guard busy == nil else { return }
-        busy = "Looking for updates…"; actionError = nil; updateNote = nil
+        busy = "Looking for updates…"; actionError = nil; note = nil
         let client = self.client
         Task.detached {
             let result = Result { try client.update(check: true) }
@@ -243,9 +244,36 @@ public final class AppModel: ObservableObject {
                 case .success(let u):
                     self.update = u
                     if let e = u.error, !e.isEmpty { self.actionError = e }
-                    else if !u.available { self.updateNote = "BoundGate \(u.current) is the latest release." }
+                    else if !u.available { self.note = "BoundGate \(u.current) is the latest release." }
                 case .failure(let e): self.actionError = e.localizedDescription
                 }
+            }
+        }
+    }
+
+    /// The way back for whoever is looking at a Mac that resolves no names
+    /// because a run ended badly: the daemon takes back what is left over and
+    /// applies again what a running node should have (R144). It says what it
+    /// did, because "nothing to repair" is an answer too. Without a daemon
+    /// there is `sudo boundgate-node -repair`.
+    public func repairNetwork() {
+        guard busy == nil else { return }
+        busy = "Repairing…"; actionError = nil; note = nil
+        let client = self.client
+        Task.detached {
+            let result = Result { try client.repair() }
+            await MainActor.run {
+                self.busy = nil
+                switch result {
+                case .success(let r):
+                    var text = r.summary
+                    if let left = r.leftAlone, !left.isEmpty {
+                        text += " Left alone, its tunnel device is still there: \(left.joined(separator: ", "))."
+                    }
+                    self.note = text
+                case .failure(let e): self.actionError = e.localizedDescription
+                }
+                self.refresh()
             }
         }
     }

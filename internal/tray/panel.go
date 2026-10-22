@@ -162,6 +162,7 @@ const (
 	ActCopyFP     = "copyfp"
 	ActDetails    = "details"
 	ActQuit       = "quit"
+	ActRepair     = "repair"
 	ActProfile    = "profile:" // + the profile's name
 	ActNetwork    = "network:" // + "<network id>|<profile>"
 )
@@ -354,8 +355,14 @@ func LayoutPanel(in PanelInput, m Measurer, t Theme) Panel {
 	}
 	_, fh := m.Measure("Quit", FontSmall, 0)
 	x := panelW - pad
-	for _, a := range []struct{ label, act string }{{"Quit", ActQuit}, {"Sign out", ActSignOut}} {
+	// "Repair" belongs where someone who needs it will look: this panel is
+	// all a user whose PC resolves no names can still open, and a policy
+	// rule left behind outlives a reboot (R144).
+	for _, a := range []struct{ label, act string }{{"Quit", ActQuit}, {"Sign out", ActSignOut}, {"Repair", ActRepair}} {
 		if a.act == ActSignOut && !v.CanLogout {
+			continue
+		}
+		if a.act == ActRepair && s == nil {
 			continue
 		}
 		w, _ := m.Measure(a.label, FontSmall, 0)
@@ -451,9 +458,11 @@ func (l *layout) connection(v View) {
 				l.y += l.profiles(x, w)
 			}
 		}
+		// A network the node reaches by itself is kept out of the tunnel on
+		// purpose (the overlap guard), so this tells, it does not warn.
 		for _, r := range s.SkippedRoutes {
 			l.y += 10
-			l.y += l.notice(x, w, t.Warn, "Not routed: "+r)
+			l.y += l.notice(x, w, t.Info, "Not routed: "+r)
 		}
 		if v.Phase != Connected && s.LastError != "" {
 			l.y += 10
@@ -515,7 +524,9 @@ func (l *layout) connection(v View) {
 		half := (cw - 8) / 2
 		signIn := "Sign in"
 		if in.Busy == "Signing in" {
-			signIn = "Waiting for the browser…"
+			// short enough for half the panel: "Waiting for the browser…"
+			// was cut to "Waiting for the bro…"
+			signIn = "Signing in…"
 		}
 		l.button(pad, half, signIn, ActSignIn, true, true)
 		l.y += l.button(pad+half+8, half, "Disconnect", ActDisconnect, false, true)

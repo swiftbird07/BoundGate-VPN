@@ -92,8 +92,12 @@ not from the routing table, Safari and everything else built on
 reboot (R144). What makes sure it does not happen again: on the way out the
 resolver is given back before any route is touched, with a deadline of its
 own and three tries, a failure is an error and not a warning, and the journal
-keeps its record until the removal really worked. And when no daemon is left
-to do any of that:
+keeps its record until the removal really worked. And the way back is where
+somebody in that situation will look for it, not only in a shell: the app's
+gear menu has **Repair network**, and `boundgatectl repair` is the same thing
+-- the daemon gives back what a run that is gone left behind and applies again
+what a running node should have (`POST /v1/repair`). With no daemon left to
+ask:
 
 ```bash
 sudo boundgate-node -repair              # the installed daemon's state

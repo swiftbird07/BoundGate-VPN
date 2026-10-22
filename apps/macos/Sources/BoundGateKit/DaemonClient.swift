@@ -64,6 +64,11 @@ public struct DaemonClient: Sendable {
         try call("POST", "/v1/up", body: ["profile": profile ?? ""], timeout: 45)
     }
     public func down() throws -> NodeStatus { try call("POST", "/v1/down", timeout: 30) }
+    /// The way back for a Mac that resolves no names because a run ended
+    /// badly: the daemon undoes what is left over and re-applies what a
+    /// running node should have. `boundgate-node -repair` does it without a
+    /// daemon at all.
+    public func repair() throws -> RepairReport { try call("POST", "/v1/repair", timeout: 70) }
     public func login() throws -> LoginStart { try call("POST", "/v1/login", timeout: 30) }
     public func loginWait(flow: String) throws -> LoginResult { try call("GET", "/v1/login/\(flow)?wait=25s", timeout: 40) }
     public func logout() throws -> NodeStatus { try call("POST", "/v1/logout", timeout: 40) }

@@ -222,6 +222,19 @@ public struct UpdateStatus: Codable, Sendable, Equatable {
     public var installed: String?
 }
 
+/// What a repair did (POST /v1/repair): the daemon gives this host back what
+/// a run that is gone took with it -- the resolver above all -- and applies
+/// again what a node that is running should have (R144).
+public struct RepairReport: Codable, Sendable, Equatable {
+    public var undone: Int
+    public var removed: [String]?
+    /// entries of a node that is still running: they were left alone
+    public var leftAlone: [String]?
+    public var reapplied: Bool?
+    /// one sentence, ready to show
+    public var summary: String
+}
+
 struct ErrorBody: Codable {
     var error: String
     /// set when enrolling needs the user to accept this control plane key first
