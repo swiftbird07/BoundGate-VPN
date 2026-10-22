@@ -226,21 +226,45 @@ func validAttrKey(k string) bool {
 // does not hold the connection for minutes.
 const pruneBatch = 5000
 
-// PruneLogs deletes events older than maxAge, oldest first, pruneBatch at a time.
+// pruneMaxBatches is how many of those batches one call deletes. A backlog is
+// worked off over the next minutes instead of in one run, because deleting
+// without a pause outruns the checkpoint that folds the write-ahead log back
+// into the database: measured on pVPN on 2026-10-22, the first run after the
+// retention was shortened wrote 1.6 GB of log in 50 s and filled the disk,
+// where the whole database was 7.5 GB. 100 000 events a minute is far more
+// than the fleet produces, so in normal operation nothing is capped at all.
+const pruneMaxBatches = 20
+
+// PruneLogs deletes events older than maxAge, oldest first, pruneBatch at a
+// time and at most pruneMaxBatches per call. After every batch the log is
+// folded back into the database; housekeeping calls this once a minute, so a
+// backlog shrinks by up to 100 000 events a minute.
 func (d *DB) PruneLogs(ctx context.Context, maxAge time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-maxAge).Format(timeFormat)
 	var total int64
-	for {
+	for i := 0; i < pruneMaxBatches; i++ {
 		res, err := d.sql.ExecContext(ctx, `DELETE FROM log_events WHERE id IN (SELECT id FROM log_events WHERE ts < ? ORDER BY ts LIMIT ?)`, cutoff, pruneBatch)
 		if err != nil {
 			return total, err
 		}
 		n, err := res.RowsAffected()
 		total += n
+		d.checkpoint(ctx)
 		if err != nil || n < pruneBatch {
 			return total, err
 		}
 	}
+	return total, nil
+}
+
+// checkpoint folds the write-ahead log back into the database and truncates
+// the file. SQLite does this on its own once the log passes a threshold, but
+// that checkpoint is passive: it gives up as soon as it would have to wait,
+// and a run of deletes writes pages faster than they are written back, so
+// the log grows without bound. Errors are not the caller's business -- the
+// data is committed either way, only the log file stays longer.
+func (d *DB) checkpoint(ctx context.Context) {
+	_, _ = d.sql.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 }
 
 func nullable(s string) any {
@@ -316,6 +340,9 @@ func (d *DB) BackfillLogColumns(ctx context.Context) (int64, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
+	// the same reason as in PruneLogs: an update of this many rows must not
+	// be left lying in the write-ahead log
+	d.checkpoint(ctx)
 	d.logCols.Store(lowest)
 	return filled, lowest <= 1, nil
 }

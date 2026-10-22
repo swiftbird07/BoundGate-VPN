@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -186,4 +188,51 @@ func TestTheLookupIsAnsweredWhileTheWriterIsBusy(t *testing.T) {
 	}
 	stop()
 	<-done
+}
+
+// A retention that was shortened on a database with weeks of events must not
+// be one unbounded run: it is capped per call, and the write-ahead log is
+// folded back after every batch instead of growing until the disk is full.
+func TestPruneLogsIsCappedPerCallAndKeepsTheLogSmall(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "control.db")
+	d, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+
+	const extra = 7
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	evs := make([]LogEvent, 0, pruneBatch*pruneMaxBatches+extra)
+	for i := 0; i < pruneBatch*pruneMaxBatches+extra; i++ {
+		evs = append(evs, LogEvent{TS: old, Stream: "flow", Message: "open"})
+	}
+	if err := d.InsertLogs(ctx, evs); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := d.PruneLogs(ctx, time.Hour)
+	if err != nil || n != pruneBatch*pruneMaxBatches {
+		t.Fatalf("first run deleted %d (want %d): %v", n, pruneBatch*pruneMaxBatches, err)
+	}
+	if wal := size(path + "-wal"); wal > 8<<20 {
+		t.Fatalf("the write-ahead log grew to %d bytes; the checkpoint between batches is missing", wal)
+	}
+	if n, err = d.PruneLogs(ctx, time.Hour); err != nil || n != extra {
+		t.Fatalf("second run deleted %d (want %d): %v", n, extra, err)
+	}
+	var left int
+	if err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM log_events`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d events left: %v", left, err)
+	}
+}
+
+func size(p string) int64 {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }
