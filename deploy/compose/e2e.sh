@@ -515,9 +515,17 @@ SIDES="$(path_of node-a node-r side) $(path_of node-r node-a side)"
 [ "$SIDES" = "dialed accepted" ] || [ "$SIDES" = "accepted dialed" ] || fail "exactly one of the two dials: $SIDES"
 [ "$(x node-a boundgatectl -json status | jq '[.paths[]? | select(.peer == "node-r")] | length')" = 1 ] || fail "more than one path between node-a and node-r"
 B0=$(path_of node-a node-r bytes_in)
-x node-a curl -sf --max-time 10 -o /dev/null 'http://192.168.178.10/data?size=300&unit=kb' || fail "download from the LAN behind node-r"
+# The Orkus case (#16): the host behind a subnet router never gets the ICMP
+# that tells it what fits a relayed path -- here node-r drops it on the way
+# into its LAN. TCP has to work all the same, because both ends were told a
+# segment size that fits the relay from the first SYN on.
+x node-r nft add table ip lab_pmtu
+x node-r nft 'add chain ip lab_pmtu forward_icmp { type filter hook forward priority -10; policy accept; }'
+x node-r nft add rule ip lab_pmtu forward_icmp icmp type destination-unreachable icmp code frag-needed counter drop
+x node-a curl -sf --max-time 10 -o /dev/null 'http://192.168.178.10/data?size=300&unit=kb' || fail "download from the LAN behind node-r, which never sees the ICMP about the relay's size"
+x node-r nft delete table ip lab_pmtu
 B1=$(path_of node-a node-r bytes_in)
-[ $((B1 - B0)) -ge 300000 ] || fail "the download did not take the path ($B0 -> $B1); packets larger than the relayed path must be answered with the size that fits"
+[ $((B1 - B0)) -ge 300000 ] || fail "the download did not take the path ($B0 -> $B1); a TCP segment must fit the relayed path from the first SYN on"
 status_is "$RHUB" '.relay.dialers >= 1 and .relay.packets > 100' || fail "$RHUB does not count what it relays"
 # the hub only sees ciphertext, so the receiving node is the one that decides
 policy no-lan 'forbid(principal, action, resource) when { resource.ip.isInRange(ip("192.168.178.0/24")) };'

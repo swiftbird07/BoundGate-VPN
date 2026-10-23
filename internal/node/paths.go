@@ -47,6 +47,11 @@ type pathManager struct {
 type candidates struct {
 	byIP     map[netip.Addr]*candidate
 	prefixes []candPrefix // longest first
+	// spokes: every peer a path may be opened with, whichever side dials,
+	// by overlay address and announced networks. TCP with them is told the
+	// relay's segment size from its first SYN on (relayed).
+	spokeIPs  map[netip.Addr]bool
+	spokeNets []netip.Prefix
 }
 
 type candPrefix struct {
@@ -116,11 +121,20 @@ func newPathManager(s *session) *pathManager {
 // and the networks it announces. Default routes are left to the hub path: an
 // exit node is chosen by the profile, not by who answers first.
 func (pm *pathManager) rebuild(snap *registry.Snapshot) {
-	c := &candidates{byIP: make(map[netip.Addr]*candidate)}
+	c := &candidates{byIP: make(map[netip.Addr]*candidate), spokeIPs: make(map[netip.Addr]bool)}
 	old := pm.cand.Load()
 	if snap != nil {
 		for _, p := range snap.Peers {
-			if p.IsHub() || registry.HasRole(p.Roles, registry.RoleHub) || !dials(snap.Self, p) {
+			if p.IsHub() || registry.HasRole(p.Roles, registry.RoleHub) {
+				continue
+			}
+			c.spokeIPs[p.OverlayIP] = true
+			for _, pf := range p.Prefixes {
+				if pf.Prefix.Bits() > 0 {
+					c.spokeNets = append(c.spokeNets, pf.Prefix.Masked())
+				}
+			}
+			if !dials(snap.Self, p) {
 				continue
 			}
 			cd := &candidate{id: p.ID}
@@ -151,6 +165,25 @@ func dials(self, peer registry.Node) bool {
 		return peer.PublicAddr != ""
 	}
 	return self.ID < peer.ID
+}
+
+// mayRelay says whether traffic with addr can end up on a path, and so on a
+// relayed one: addr is a spoke's overlay address or in a network one
+// announces. Called for TCP SYNs only (admit).
+func (pm *pathManager) mayRelay(addr netip.Addr) bool {
+	c := pm.cand.Load()
+	if c == nil {
+		return false
+	}
+	if c.spokeIPs[addr] {
+		return true
+	}
+	for _, p := range c.spokeNets {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // noPath is called by the packet path for a destination no tunnel owns. It

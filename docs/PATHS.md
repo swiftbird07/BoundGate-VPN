@@ -133,10 +133,24 @@ the enforcement point (TCB.md rule 6), whichever side dialed:
 A relayed connection stays at QUIC's minimum packet size and does not probe
 for more: the datagrams of the carrying hub connection are only certain to hold
 that. IP packets above 1100 bytes are therefore not sent into a relayed path
-but answered with ICMP "fragmentation needed, MTU 1100", so TCP and everything
-else that does path MTU discovery adapts within one round trip (a 300 KB
-download is part of the lab test). Direct paths discover their MTU like a hub
-tunnel.
+but answered with ICMP "fragmentation needed, MTU 1100", so everything that
+does path MTU discovery can adapt within one round trip. Direct paths
+discover their MTU like a hub tunnel.
+
+TCP does not depend on that answer. Behind a subnet router it goes to a host
+in a LAN this network does not run, through that router's own firewall and
+NAT, and it may never arrive: at the Orkus site it did not, and every answer
+larger than a header hung while small requests went through (#16). So a spoke
+that takes part in paths tells every TCP connection with another spoke, or
+with a network one announces, a segment size of 1060 (1040 for IPv6) from the
+first SYN on, in both directions. That covers the connections that start on
+the hub path and move onto a path later: the first packets to a peer go over
+the hub and start the path, and a relayed path forms again every time one of
+the two reconnects. One end of the path doing it is enough. Traffic with the
+hub's networks and through an exit keeps the tunnel's 1240. The lab test
+drops the ICMP on the subnet router's way into its LAN and still downloads
+300 KB over the relayed path. A spoke with `paths: { disabled: true }` never
+moves onto a path and keeps 1240.
 
 ## Seeing it
 

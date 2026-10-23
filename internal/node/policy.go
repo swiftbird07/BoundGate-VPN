@@ -34,17 +34,38 @@ func (s *session) admit(h netparse.Header, pkt []byte, origin flow.Origin) (flow
 		// TCP connections are told the segment size that fits the tunnel, so
 		// they work with a peer whose own MTU is larger (an older client)
 		// and with servers that send without the DF bit.
-		netparse.ClampMSS(h, pkt, s.mss(h.Version))
+		netparse.ClampMSS(h, pkt, s.mss(h, origin))
 	}
 	return out, e
 }
 
-// mss is the largest TCP segment that fits a tunnel packet of this node.
-func (s *session) mss(version int) uint16 {
-	if version == 6 {
-		return uint16(s.n.cfg.MTU - 60)
+// mss is the largest TCP segment a connection may be told for this packet:
+// what fits a tunnel packet of this node, and less with another spoke.
+//
+// Traffic with a spoke may move onto a path at any moment -- the first
+// packets go over the hub and start it, and a relayed path forms again
+// every time one of the two reconnects -- and a relayed path carries only
+// transport.RelayPathMTU. Packets above that are answered with ICMP
+// "fragmentation needed", but behind a subnet router that answer goes to a
+// host in a LAN this node does not run, and there it may never arrive: every
+// large answer then hangs (#16). So the segment size is the relay's from the
+// first SYN on. One end doing so is enough, both directions are told: the
+// SYN going out and the one coming in pass here.
+func (s *session) mss(h netparse.Header, origin flow.Origin) uint16 {
+	mtu := s.n.cfg.MTU
+	if h.TCPFlags&netparse.TCPSyn != 0 && s.paths != nil {
+		other := h.Src
+		if origin.Local {
+			other = h.Dst
+		}
+		if s.paths.mayRelay(other) {
+			mtu = min(mtu, transport.RelayPathMTU)
+		}
 	}
-	return uint16(s.n.cfg.MTU - 40)
+	if h.Version == 6 {
+		return uint16(mtu - 60)
+	}
+	return uint16(mtu - 40)
 }
 
 // decide is the flow table's Decider. Fail closed: no engine, a stale
