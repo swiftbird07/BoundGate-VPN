@@ -1,7 +1,10 @@
 package api
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -38,6 +41,51 @@ const (
 // batch every 5 s and drains what it buffered during an outage (at most 5
 // batches) at once.
 const ShipBatchesPerMinute = 30
+
+// NodeFlowLog is which of the flow decisions that nodes report the control
+// plane writes to its own flow log as well (`log_node_flows`).
+//
+// Every node writes its decisions to its own log, but whatever collects logs
+// for a SIEM collects them on the machines it runs on. A spoke that decides
+// at the far end of a path -- a subnet router in someone else's network --
+// has no such collector, and its denies existed only in the database behind
+// the admin UI (#17). The control plane's own log is collected wherever it
+// runs, so it is the one place that holds the decisions of every node. A
+// node's records keep its name (`node_name`, `reported_by`) and get the
+// principal's and owner's names from the registry; `component: control`
+// tells them apart from the same records in a hub's own log.
+type NodeFlowLog string
+
+const (
+	// NodeFlowsDeny writes the refusals: few, and the ones that matter.
+	NodeFlowsDeny NodeFlowLog = "deny"
+	// NodeFlowsAll writes every open, deny and close.
+	NodeFlowsAll NodeFlowLog = "all"
+	// NodeFlowsOff writes none of them.
+	NodeFlowsOff NodeFlowLog = "off"
+)
+
+// ParseNodeFlowLog reads the setting; empty is the default, deny.
+func ParseNodeFlowLog(s string) (NodeFlowLog, error) {
+	switch NodeFlowLog(s) {
+	case "":
+		return NodeFlowsDeny, nil
+	case NodeFlowsDeny, NodeFlowsAll, NodeFlowsOff:
+		return NodeFlowLog(s), nil
+	}
+	return "", fmt.Errorf("log_node_flows: %q is not deny, all or off", s)
+}
+
+// logs says whether a reported event of this kind goes to the flow log.
+func (m NodeFlowLog) logs(event string) bool {
+	switch m {
+	case NodeFlowsAll:
+		return true
+	case NodeFlowsOff:
+		return false
+	}
+	return event == "deny" // the default, also for a zero value
+}
 
 // nodeShipLogs stores flow records and tunnel reports of an approved node.
 // The reporter is authenticated by mTLS; its id overrides whatever the
@@ -127,6 +175,9 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 				h.signIn.note(p, hint)
 			}
 			rows = append(rows, db.LogEvent{TS: ev.TS, Stream: ShipStreamFlow, Actor: "node", DeviceID: self.ID, SessionID: sess, Message: clip(ev.Message, 64), Attrs: ev.Attrs})
+			if h.d.NodeFlows.logs(ev.Message) && h.d.Logs != nil && h.d.Logs.Flow != nil {
+				logNodeFlow(h.d.Logs.Flow, ev, sess)
+			}
 			accepted++
 		case ShipStreamTunnel:
 			if ev.Message == "reset" {
@@ -173,6 +224,29 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	h.d.DB.TouchNode(r.Context(), self.ID)
 	writeJSON(w, http.StatusOK, map[string]int{"accepted": accepted, "rejected": rejected})
+}
+
+// logNodeFlow writes one reported decision the way the node wrote it --
+// "flow deny" and the node's fields -- with the time the node saw it, the
+// session only when it is the principal's, and the names the registry gives.
+func logNodeFlow(l *slog.Logger, ev ShippedEvent, sess string) {
+	keys := make([]string, 0, len(ev.Attrs))
+	for k := range ev.Attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	args := make([]any, 0, 2*len(keys)+4)
+	args = append(args, "event_time", ev.TS.UTC().Format(time.RFC3339Nano))
+	for _, k := range keys {
+		if k == "session" {
+			continue
+		}
+		args = append(args, k, ev.Attrs[k])
+	}
+	if sess != "" {
+		args = append(args, "session", sess)
+	}
+	l.Info("flow "+clip(ev.Message, 64), args...)
 }
 
 func tunnelReport(hubID string, ev ShippedEvent) (db.TunnelReport, bool) {

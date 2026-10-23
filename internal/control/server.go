@@ -88,7 +88,10 @@ type Config struct {
 	BootstrapTokenFile string
 	PendingTTL         time.Duration
 	LogRetention       time.Duration
-	Logs               *logging.Streams
+	// LogNodeFlows is which flow decisions reported by nodes also go to this
+	// control plane's flow log (api.NodeFlowLog; zero: deny).
+	LogNodeFlows api.NodeFlowLog
+	Logs         *logging.Streams
 	// OIDC configures user logins; an empty issuer disables them.
 	OIDC oidc.Config
 	// Admin configures browser logins; RPID defaults to ServerName.
@@ -262,7 +265,7 @@ func Run(ctx context.Context, cfg Config) error {
 		spa = web.Handler()
 	}
 	h, err := api.NewWithError(api.Deps{DB: store, Snap: src, Logs: cfg.Logs, PendingTTL: cfg.PendingTTL, ControlSPKI: nodeSPKI, OIDC: idp, Admin: cfg.Admin, SPA: spa,
-		ListSources: listsource.Options{AllowPrivate: cfg.ListSources.AllowPrivate}})
+		ListSources: listsource.Options{AllowPrivate: cfg.ListSources.AllowPrivate}, NodeFlows: cfg.LogNodeFlows})
 	if err != nil {
 		return err
 	}

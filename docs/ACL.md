@@ -410,6 +410,26 @@ page shows each record under **Reported by**, and a principal other than
 the reporter as "per <reporter>". One node may ship 30 batches a minute
 (then 429; the node keeps its buffer and tries again).
 
+**The control plane's own flow log.** Whatever collects logs for a SIEM
+collects them where it runs, usually next to the control plane and the hubs.
+A spoke that decides at the far end of a path (PATHS.md), a subnet router in
+someone else's network for instance, has no collector, and its records
+existed only in the database. So the control plane also writes the records
+it accepts to its own `flow.jsonl` and stdout, as the node wrote them
+(`flow deny` and the node's fields, the node's time as `event_time`), with the
+names from its registry and `component: control`. `log_node_flows` chooses
+which:
+
+| `log_node_flows` | written |
+|---|---|
+| `deny` (default) | the refusals: few, and the ones that matter |
+| `all` | every `open`, `deny` and `close`: as much as all nodes log together |
+| `off` | none; the database only |
+
+A hub's own records then appear twice in a SIEM that collects both: once
+with `component: node` from the hub, once with `component: control`. Filter
+on one of them, or take the control plane's alone, which holds every node.
+
 Hubs ship **tunnel events** on the same route: `reset` when the hub comes
 up (closes whatever the control plane still lists for it), `open` when a
 peer attaches, `update` with byte counters every 30 s, `close` with the reason (`closed by

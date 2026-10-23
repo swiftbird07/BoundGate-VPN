@@ -40,6 +40,7 @@ type config struct {
 	LogRetention       string   `yaml:"log_retention"`
 	LogDir             string   `yaml:"log_dir"`
 	LogStdout          bool     `yaml:"log_stdout"`
+	LogNodeFlows       string   `yaml:"log_node_flows"` // deny (default), all, off
 	OIDC               struct {
 		Issuer           string   `yaml:"issuer"`
 		ClientID         string   `yaml:"client_id"`
@@ -161,6 +162,10 @@ func run(cfgPath string, args []string) error {
 			return fmt.Errorf("config: log_retention: %w", err)
 		}
 	}
+	nodeFlows, err := api.ParseNodeFlowLog(cfg.LogNodeFlows)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 	oc := oidc.Config{Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
 		RedirectURL: cfg.OIDC.RedirectURL, Scopes: cfg.OIDC.Scopes, GroupsClaim: cfg.OIDC.GroupsClaim}
 	if cfg.OIDC.ClientSecretFile != "" {
@@ -211,6 +216,7 @@ func run(cfgPath string, args []string) error {
 		BootstrapTokenFile: cfg.BootstrapTokenFile,
 		PendingTTL:         pendingTTL,
 		LogRetention:       retention,
+		LogNodeFlows:       nodeFlows,
 		Logs:               logs,
 		OIDC:               oc,
 		Admin:              adminCfg,

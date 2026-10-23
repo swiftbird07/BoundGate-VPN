@@ -3,11 +3,15 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/api"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/db"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/control/snapshot"
 )
 
 // A flow record is what the reporting node says about others. The control
@@ -142,5 +146,70 @@ func TestASignInHintReachesItsDeviceOnce(t *testing.T) {
 	}
 	if code, _ := beat(phone); code != http.StatusNoContent {
 		t.Fatal("a deny without the flag became a hint")
+	}
+}
+
+// A flow decision a node reports also goes to the control plane's own flow
+// log, where whatever collects logs for a SIEM finds it: a spoke at the far
+// end of a path has no collector of its own (#17). By default the denies
+// only; `all` writes every record, `off` none. Names are the registry's, as
+// in the database.
+func TestReportedFlowsReachTheControlPlanesFlowLog(t *testing.T) {
+	for _, tc := range []struct {
+		mode api.NodeFlowLog
+		want []string
+	}{
+		{"", []string{"flow deny"}},
+		{api.NodeFlowsAll, []string{"flow open", "flow deny", "flow close"}},
+		{api.NodeFlowsOff, nil},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			e := newEnv(t)
+			e.handlers = api.New(api.Deps{DB: e.store, Snap: snapshot.New(e.store), Logs: e.logs, NodeFlows: tc.mode})
+			e.admin.Config.Handler = e.handlers.AdminMux()
+			e.node.Config.Handler = e.handlers.NodeMux()
+			e.registerSigner()
+			router, laptop := e.device("orkus"), e.device("laptop")
+			rid := e.enroll(router, `{"name":"orkus","roles":["subnet-router"]}`).NodeID
+			lid := e.enroll(laptop, `{"name":"laptop","roles":["endpoint"]}`).NodeID
+			e.approve(rid, `{"kind":"workload","roles":["subnet-router"]}`)
+			e.approve(lid, `{"roles":["endpoint"]}`)
+
+			batch := `{"events":[
+				{"stream":"flow","message":"open","attrs":{"flow":"f1","principal":"` + lid + `","dst":"192.168.3.20:443"}},
+				{"stream":"flow","message":"deny","ts":"2026-10-23T06:00:00Z","attrs":{"flow":"f2","principal":"` + lid + `","principal_name":"forged","dst":"192.168.3.20:22","reason":"no permit"}},
+				{"stream":"flow","message":"close","attrs":{"flow":"f1","principal":"` + lid + `"}},
+				{"stream":"tunnel","message":"reset"}]}`
+			if code, b := e.nodeCall(router, "POST", "/api/v1/node/logs", batch); code != http.StatusOK {
+				t.Fatalf("ship: %d %s", code, b)
+			}
+			raw, err := os.ReadFile(filepath.Join(filepath.Dir(e.dbPath), "logs", "flow.jsonl"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				if line == "" {
+					continue
+				}
+				var rec map[string]any
+				if err := json.Unmarshal([]byte(line), &rec); err != nil {
+					t.Fatalf("%q: %v", line, err)
+				}
+				got = append(got, rec["msg"].(string))
+				if rec["node_name"] != "orkus" || rec["reported_by"] != rid || rec["principal_name"] != "laptop" {
+					t.Fatalf("not the registry's names: %s", line)
+				}
+				if rec["msg"] == "flow deny" && (rec["event_time"] != "2026-10-23T06:00:00Z" || rec["reason"] != "no permit" || rec["dst"] != "192.168.3.20:22") {
+					t.Fatalf("the node's fields did not come through: %s", line)
+				}
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("flow log %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if _, err := api.ParseNodeFlowLog("denies"); err == nil {
+		t.Fatal("an unknown setting was taken")
 	}
 }

@@ -24,6 +24,7 @@ pending_ttl: 24h
 log_retention: 2160h
 log_dir: /var/log/boundgate
 log_stdout: true
+log_node_flows: deny               # flow records of all nodes in this log too: deny, all, off (docs/ACL.md, Logs)
 oidc:                              # Authentik: docs/OIDC.md
   issuer: https://auth.example.com/application/o/boundgate/
   client_id: boundgate

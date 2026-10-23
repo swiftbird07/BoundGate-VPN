@@ -52,6 +52,9 @@ type Deps struct {
 	SPA http.Handler
 	// ListSources fences what a list source may reach ("Fetch now").
 	ListSources listsource.Options
+	// NodeFlows is which flow decisions the nodes report this control plane
+	// also writes to its own flow log (nodelogs.go).
+	NodeFlows NodeFlowLog
 }
 
 // Handlers holds the muxes.
