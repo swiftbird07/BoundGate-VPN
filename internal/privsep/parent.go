@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"runtime/debug"
 	"sync"
@@ -41,12 +42,15 @@ type Parent struct {
 	// Anchors is what the node trusts across restarts. The parent is its
 	// only writer, and changes it by its own rules (internal/anchors).
 	Anchors anchors.Anchors
-	// ForgetIdentity, when set, deletes what belongs to this node's identity
-	// at the worker's request: the pinned control plane and the trust it
-	// learned, and with newIdentity the device key as well. Those files are
-	// the parent's, so only it can. The service ends afterwards: the key the
-	// parent holds is open, and a new one comes with a new process.
-	ForgetIdentity func(newIdentity bool) error
+	// ForgetIdentity, when set, deletes the node's identity at the worker's
+	// request: the device key and its enrollment, nothing else. The pinned
+	// control plane, the admin key list and the binding history stay: they
+	// belong to the control plane the configuration names, which a new key
+	// does not change, and a worker that could have them deleted could
+	// have its own pinned next (R132). Those files are the parent's, so only
+	// it can. The parent answers nothing after it, and the service ends: the
+	// key the parent holds is open, and a new one comes with a new process.
+	ForgetIdentity func() error
 	Log            *slog.Logger
 
 	mu  sync.Mutex
@@ -54,6 +58,32 @@ type Parent struct {
 	// a chain of admin key lists that is still arriving
 	chain      []binding.SignedSet
 	chainBytes int
+	// forgot: the identity is gone, and so is every reason to answer this
+	// worker again
+	forgot bool
+
+	endOnce sync.Once
+	ended   chan struct{}
+}
+
+// Ended is closed once the parent has given up the node's identity at the
+// worker's request: the worker is to be ended then, not waited for -- a
+// worker that asked for that gets no second request answered, least of all
+// a pin.
+func (p *Parent) Ended() <-chan struct{} {
+	p.endOnce.Do(func() { p.ended = make(chan struct{}) })
+	return p.ended
+}
+
+func (p *Parent) end() {
+	p.Ended()
+	p.mu.Lock()
+	already := p.forgot
+	p.forgot = true
+	p.mu.Unlock()
+	if !already {
+		close(p.ended)
+	}
 }
 
 // maxInFlight bounds the requests the parent works on at once: signatures
@@ -104,13 +134,24 @@ func (p *Parent) Serve(ctx context.Context, conn *net.UnixConn) error {
 			if fd >= 0 {
 				oob = unix.UnixRights(fd)
 			}
-			_, _, _ = conn.WriteMsgUnix(b, oob, nil)
+			// a worker that stops reading would otherwise hold every
+			// responder here, and with them Serve: it is ended instead
+			_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if _, _, err := conn.WriteMsgUnix(b, oob, nil); err != nil && ctx.Err() == nil {
+				p.Log.Error("privsep: the worker does not take its answers; ending it", "op", req.Op, "err", err)
+				_ = conn.Close() // ends the read above, and with it the worker
+			}
 			if fd >= 0 {
 				_ = unix.Close(fd)
 			}
 		}()
 	}
 }
+
+// writeTimeout is how long an answer to the worker may wait for room in the
+// socket. The worker reads its end in a loop of its own; one that does not
+// is wedged or hostile.
+const writeTimeout = 10 * time.Second
 
 // answer is handle, and an error instead of the end of the service should
 // handling what the worker sent ever panic: the parent reads bytes the
@@ -147,6 +188,12 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	p.mu.Lock()
+	forgot := p.forgot
+	p.mu.Unlock()
+	if forgot {
+		return nil, fd, p.refuse(req.Op, "the node's identity is gone; this worker is ended, not answered")
+	}
 	switch req.Op {
 	case opHello:
 		der, err := x509.MarshalPKIXPublicKey(p.Key.Public())
@@ -204,7 +251,9 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 			return nil, fd, err
 		}
 		var dupErr error
-		if err := sc.Control(func(raw uintptr) { fd, dupErr = unix.Dup(int(raw)) }); err != nil {
+		// close-on-exec, so that no ip or nft the parent runs meanwhile
+		// inherits the device
+		if err := sc.Control(func(raw uintptr) { fd, dupErr = unix.FcntlInt(raw, unix.F_DUPFD_CLOEXEC, 0) }); err != nil {
 			return nil, -1, err
 		}
 		if dupErr != nil {
@@ -220,8 +269,14 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 		if err := p.ownDevice(req.Op, a.Ifname); err != nil {
 			return nil, fd, err
 		}
-		if !a.Addr.IsValid() || a.MTU < 576 || a.MTU > 65535 {
-			return nil, fd, p.refuse(req.Op, "invalid address or MTU", "addr", a.Addr, "mtu", a.MTU)
+		if a.MTU < 576 || a.MTU > 65535 {
+			return nil, fd, p.refuse(req.Op, "MTU out of range", "mtu", a.MTU)
+		}
+		// an overlay address: some unicast address with a real prefix. An
+		// address is also an entry in the local table, which wins over every
+		// route, so loopback, multicast and "everything" are not for a TUN
+		if ip := a.Addr.Addr(); !a.Addr.IsValid() || a.Addr.Bits() == 0 || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return nil, fd, p.refuse(req.Op, "not a unicast address with a prefix", "addr", a.Addr)
 		}
 		return nil, fd, p.Net.SetAddress(ctx, a.Ifname, a.Addr, a.MTU)
 
@@ -253,6 +308,12 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 		}
 		if req.Op == opAddBypass {
 			return nil, fd, p.Net.AddBypass(ctx, h)
+		}
+		// `ip route del <host>` names no device: it would remove a host
+		// route an administrator set as readily as one of ours. Only what
+		// the journal recorded for this node may go again
+		if j, ok := p.Net.(interface{ HasBypass(netip.Addr) bool }); ok && !j.HasBypass(h) {
+			return nil, fd, p.refuse(req.Op, "not a bypass route of this node", "host", h)
 		}
 		return nil, fd, p.Net.DelBypass(ctx, h)
 
@@ -414,10 +475,21 @@ func (p *Parent) handle(ctx context.Context, req request) (result any, fd int, e
 		if p.ForgetIdentity == nil {
 			return nil, fd, p.refuse(req.Op, "this node does not forget its identity on request")
 		}
-		if err := p.ForgetIdentity(a.NewIdentity); err != nil {
+		// A separated node has its control plane in its configuration:
+		// there is nothing to forget about it but the identity. Forgetting
+		// the pin and the trust without a new key is what a worker would
+		// ask for that wants to pin its own next (R132); it is refused
+		// here, not only in the worker.
+		if !a.NewIdentity {
+			return nil, fd, p.refuse(req.Op, "the control plane stands in the configuration and its pin stays; only a new identity can be asked for")
+		}
+		// No further request of this worker is answered, whatever the
+		// outcome: it asked to be ended.
+		p.end()
+		if err := p.ForgetIdentity(); err != nil {
 			return nil, fd, p.refuse(req.Op, err.Error())
 		}
-		p.Log.Warn("privsep: the node's identity was discarded at the worker's request", "new_identity", a.NewIdentity)
+		p.Log.Warn("privsep: the node's identity was discarded at the worker's request; the worker is ended and the service starts again with a new key")
 		return nil, fd, nil
 	}
 	return nil, fd, p.refuse(req.Op, "unknown operation")

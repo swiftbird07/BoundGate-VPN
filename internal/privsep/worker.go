@@ -386,11 +386,13 @@ func (r *remoteAnchors) Record(ev []anchors.Evidence) error {
 	return err
 }
 
-// ForgetIdentity has the parent delete what makes this node this node: the
-// pinned control plane and the trust it learned, and with newIdentity the
-// device key as well. The worker cannot delete those files itself — they are
+// ForgetIdentity has the parent delete the node's identity: the device key
+// and its enrollment. The worker cannot delete those files itself — they are
 // the parent's, in a state directory that is sticky — and the service ends
-// after it, because the key the parent holds is already open.
+// after it, because the key the parent holds is already open. The parent
+// takes only newIdentity == true, keeps the pinned control plane, the admin
+// key list and the binding history whatever is asked (R132), and answers
+// nothing more to this worker: the call is the last thing it does.
 func (c *Client) ForgetIdentity(newIdentity bool) error {
 	_, err := c.call(context.Background(), opForgetIdentity, forgetArgs{NewIdentity: newIdentity}, nil)
 	return err

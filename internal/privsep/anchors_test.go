@@ -228,3 +228,83 @@ func TestTheParentOutlivesAPanic(t *testing.T) {
 		}
 	}
 }
+
+// A worker that asks for a new identity gets exactly that: the key goes,
+// the pin, the admin keys and the binding history stay, and the worker is
+// answered nothing after it. Without a new identity nothing is forgotten
+// at all: the control plane of a separated node stands in its
+// configuration, and a worker that could have the pin removed could have
+// its own pinned next (R132).
+func TestAWorkerCannotHaveTheAnchorsForgotten(t *testing.T) {
+	dir := t.TempDir()
+	files, err := anchors.Open(anchors.Options{Dir: dir, Owner: -1, Shared: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	forgotten := 0
+	p := &Parent{Key: testKey{priv}, Net: &fakeNet{}, TUNName: "bg0", Anchors: files,
+		ForgetIdentity: func() error { forgotten++; return nil },
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := pair(t, p)
+	ctx := context.Background()
+	if _, err := c.call(ctx, opPinControl, pinArgs{SPKI: spki(1).String()}, nil); err != nil {
+		t.Fatal(err)
+	}
+	a := admin(t)
+	if _, err := c.call(ctx, opFollowSigners, followArgs{Links: extend(t, nil, a, a)}, &followResult{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// forgetting the control plane without a new identity: refused, and
+	// nothing changed
+	if err := c.ForgetIdentity(false); err == nil {
+		t.Fatal("the parent forgot the control plane at the worker's word")
+	}
+	if forgotten != 0 {
+		t.Fatal("the identity went")
+	}
+	if cur, ok, err := files.Pin(); err != nil || !ok || cur != spki(1) {
+		t.Fatalf("the pin: %v %v %v", cur, ok, err)
+	}
+	select {
+	case <-p.Ended():
+		t.Fatal("the parent ended over a refused request")
+	default:
+	}
+
+	// a new identity: the identity goes, the anchors stay, and the worker
+	// is ended rather than answered again -- not even a pin, which would be
+	// what a worker that just had the files removed would ask for next
+	if err := c.ForgetIdentity(true); err != nil {
+		t.Fatal(err)
+	}
+	if forgotten != 1 {
+		t.Fatalf("the identity was forgotten %d times", forgotten)
+	}
+	select {
+	case <-p.Ended():
+	default:
+		t.Fatal("the parent did not end the worker")
+	}
+	for _, again := range []struct {
+		op   string
+		args any
+	}{
+		{opPinControl, pinArgs{SPKI: spki(2).String()}},
+		{opFollowSigners, followArgs{Links: extend(t, nil, a, a)}},
+		{opRecord, recordArgs{Evidence: []anchors.Evidence{proof(t, a, "n9", "", 1)}}},
+		{opSign, signArgs{}},
+		{opHello, nil},
+	} {
+		if _, err := c.call(ctx, again.op, again.args, nil); err == nil {
+			t.Fatalf("%s was answered after the identity was given up", again.op)
+		}
+	}
+	if cur, ok, err := files.Pin(); err != nil || !ok || cur != spki(1) {
+		t.Fatalf("the pin after the forget: %v %v %v", cur, ok, err)
+	}
+	if tr, err := files.Trust(); err != nil || !tr.Pinned() {
+		t.Fatalf("the admin keys after the forget: %+v %v", tr, err)
+	}
+}

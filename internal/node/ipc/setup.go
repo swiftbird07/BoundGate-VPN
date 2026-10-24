@@ -131,7 +131,7 @@ func Listen(socketPath, group string, users []string) (net.Listener, error) {
 	return ln, nil
 }
 
-func serveMux(ctx context.Context, ln net.Listener, socketPath string, removeAtEnd bool, mux *http.ServeMux) error {
+func serveMux(ctx context.Context, ln net.Listener, socketPath string, removeAtEnd bool, mux http.Handler) error {
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -225,8 +225,27 @@ func setupHandler(status node.Status, access Options, upd *update.Service, save 
 func Forget(stateDir, settingsPath string, newIdentity bool) error {
 	files := []string{settingsPath, "control.pin", "admin_trust.json", "bindings_seen.json", "admin_keys", "enrollment.json"}
 	if newIdentity {
-		files = append(files, "device.key", "device.sekey", "device.tpm", "device.crt")
+		files = append(files, identityFiles...)
 	}
+	return remove(stateDir, files)
+}
+
+// identityFiles make a node this node: its device key in whichever form it
+// has, and its certificate.
+var identityFiles = []string{"device.key", "device.sekey", "device.tpm", "device.crt"}
+
+// ForgetIdentity removes the device key and the enrollment that went with
+// it, and nothing else: the pinned control plane, the admin key list and the
+// bindings seen stay. This is what the privileged parent does at its
+// worker's request (docs/PRIVSEP.md): the control plane of a separated node
+// stands in its configuration, so a new key is enrolled with the same one,
+// under the same pin and the same admins. A worker that could have those
+// forgotten could have its own pinned next (R132).
+func ForgetIdentity(stateDir string) error {
+	return remove(stateDir, append([]string{"enrollment.json"}, identityFiles...))
+}
+
+func remove(stateDir string, files []string) error {
 	for _, f := range files {
 		if f == "" {
 			continue // no settings file: the control plane comes from the configuration

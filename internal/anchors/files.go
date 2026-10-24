@@ -79,7 +79,7 @@ func Open(o Options) (*Files, error) {
 			if err == nil {
 				err = f.write(n, b)
 			}
-			if err != nil {
+			if err != nil && !errors.Is(err, os.ErrNotExist) { // not exist: read reclaimed a squatted name
 				return nil, fmt.Errorf("anchors: %w", err)
 			}
 		}
@@ -95,8 +95,22 @@ const (
 
 func (f *Files) path(name string) string { return filepath.Join(f.o.Dir, name) }
 
+// read reads one of the files as its owner's. The writer of the files (the
+// parent, which owns the directory) finds something else under the name --
+// a file of the worker, a directory, a link -- removes it and reads
+// nothing: a name the worker could occupy would otherwise keep the parent
+// from ever pinning, following or recording again (R145). A reader of
+// another user's files (the worker) refuses it, as before.
 func (f *Files) read(name string, max int64) ([]byte, error) {
-	return safefile.ReadOf(f.path(name), f.o.Owner, max)
+	b, err := safefile.ReadOf(f.path(name), f.o.Owner, max)
+	if errors.Is(err, safefile.ErrNotOwn) && f.o.Shared && !f.o.ReadOnly {
+		if removed, rerr := safefile.Reclaim(f.path(name)); rerr != nil {
+			return nil, fmt.Errorf("%w; and it could not be removed: %v", err, rerr)
+		} else if removed {
+			return nil, fmt.Errorf("%w: %s was removed: %v", os.ErrNotExist, f.path(name), err)
+		}
+	}
+	return b, err
 }
 
 func (f *Files) write(name string, b []byte) error {
@@ -109,6 +123,11 @@ func (f *Files) write(name string, b []byte) error {
 	mode := os.FileMode(0o600)
 	if f.o.Shared {
 		mode = 0o644
+		// a directory of the worker under the name would make the rename
+		// fail; the parent owns the directory and clears the name first
+		if _, err := safefile.Reclaim(f.path(name)); err != nil {
+			return err
+		}
 	}
 	return safefile.WriteAtomicMode(f.path(name), b, mode)
 }

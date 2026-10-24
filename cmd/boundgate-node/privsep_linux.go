@@ -28,6 +28,7 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/ipc"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/privsep"
+	"gitlab.net407.com/SBH/BoundGate-VPN/internal/safefile"
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/sandbox"
 )
 
@@ -77,6 +78,7 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 	if err := shareState(cfg.StateDir, uid, gid, parentFiles, log); err != nil {
 		return err
 	}
+	reclaimParentFiles(cfg.StateDir, log)
 	if cfg.LogDir != "" {
 		if err := handOver(cfg.LogDir, uid, nil, log); err != nil {
 			return err
@@ -91,6 +93,7 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 		return err
 	}
 	journal := netcfg.NewJournal(netcfg.New(), filepath.Join(cfg.StateDir, "netstate.json"))
+	journal.Log = log
 	cleanUp(ctx, journal, log)
 	ln, err := ipc.Listen(cfg.Socket, cfg.SocketGroup, cfg.SocketUsers)
 	if err != nil {
@@ -112,14 +115,14 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 	log.Info("privilege separation: the node runs as an unprivileged worker", "uid", uid, "gid", gid, "key_kind", key.Kind())
 
 	// A new identity ends the service instead of starting another worker:
-	// the key above is open, and the next process opens the new one.
+	// the key above is open, and the next process opens the new one. Only
+	// the identity goes (the key, the enrollment); the pin, the admin keys
+	// and the binding history are the control plane's, which the
+	// configuration still names (R132).
 	var forgot atomic.Bool
-	forget := func(newIdentity bool) error {
-		if err := ipc.Forget(cfg.StateDir, "", newIdentity); err != nil {
-			return err
-		}
-		forgot.Store(newIdentity)
-		return nil
+	forget := func() error {
+		forgot.Store(true) // whatever the removal says: this parent is done
+		return ipc.ForgetIdentity(cfg.StateDir)
 	}
 
 	backoff := time.Second
@@ -130,6 +133,8 @@ func runPrivileged(ctx context.Context, raw []byte, cfg config) error {
 		// the worker's device went with it; the host routes and NAT rules it
 		// asked for did not
 		cleanUp(context.Background(), journal, log)
+		// and whatever it may have put under one of the parent's names
+		reclaimParentFiles(cfg.StateDir, log)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -213,6 +218,14 @@ func superviseWorker(ctx context.Context, p *privsep.Parent, uid, gid int, socke
 			err = errors.New("the worker closed the socket")
 		}
 		return err
+	case <-p.Ended():
+		// the worker asked for a new identity: it is ended now, not waited
+		// for, so that nothing it asks for after that is ever answered
+		_ = cmd.Process.Kill()
+		<-waited
+		cancel()
+		<-served
+		return errors.New("the worker gave up the node's identity")
 	case <-ctx.Done():
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
@@ -224,6 +237,24 @@ func superviseWorker(ctx context.Context, p *privsep.Parent, uid, gid int, socke
 		cancel()
 		<-served
 		return nil
+	}
+}
+
+// reclaimParentFiles clears the parent's names in the state directory of
+// anything that is not the parent's own file: the worker may create files
+// and directories there, and one under a name of the parent's would keep the
+// parent from reading its key or its anchors on the next start, or from
+// writing its journal (R145). The parent owns the directory, so it may.
+func reclaimParentFiles(dir string, log *slog.Logger) {
+	for name := range parentFiles {
+		path := filepath.Join(dir, name)
+		removed, err := safefile.Reclaim(path)
+		switch {
+		case err != nil:
+			log.Error("privsep: a name of the parent's in the state directory is taken by something that could not be removed; the service may not start again until it is", "path", path, "err", err)
+		case removed:
+			log.Error("privsep: a name of the parent's in the state directory was taken by something else; removed it. The worker is the only other writer there: this is what an attack on the node looks like", "path", path)
+		}
 	}
 }
 

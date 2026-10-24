@@ -252,3 +252,46 @@ func TestLinkDNSOnAPlatformWithoutIt(t *testing.T) {
 		t.Fatal("no error from a configurator that cannot set the resolver")
 	}
 }
+
+// A name taken by something else -- a directory of the worker's where the
+// journal would be written (R145) -- does not keep the journal from its
+// record: the writer owns the directory and clears the name first. And a
+// previous process's journal that is not this user's file is not read, so
+// that nobody dictates what root removes.
+func TestTheJournalReclaimsItsName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "netstate.json")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCfg{}
+	j := NewJournal(f, path)
+	if n := j.Recover(context.Background()); n != 0 {
+		t.Fatalf("recovered %d entries from a directory", n)
+	}
+	if err := j.AddBypass(context.Background(), netip.MustParseAddr("203.0.113.7")); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("the journal after a record over a squatted name: %v %v", fi, err)
+	}
+	if !j.HasBypass(netip.MustParseAddr("203.0.113.7")) || j.HasBypass(netip.MustParseAddr("203.0.113.8")) {
+		t.Fatal("HasBypass does not answer from the record")
+	}
+	// the next process recovers from what was written
+	g := &fakeCfg{}
+	if n := NewJournal(g, path).Recover(context.Background()); n != 1 || strings.Join(g.calls, ";") != "unbypass 203.0.113.7" {
+		t.Fatalf("recover: %d %v", n, g.calls)
+	}
+	// a symbolic link under the name: removed, not followed, on the next write
+	if err := os.Symlink("/etc/hostname", path); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.AddBypass(context.Background(), netip.MustParseAddr("203.0.113.9")); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(path); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("the journal was written through a link")
+	}
+}

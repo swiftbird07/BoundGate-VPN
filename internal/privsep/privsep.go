@@ -100,9 +100,10 @@ type recordArgs struct {
 	Evidence []anchors.Evidence `json:"evidence"`
 }
 
-// forgetArgs asks the parent to delete what makes this node this node. The
-// worker cannot do it itself: the pin, the trust and the key files belong to
-// the parent, and the shared state directory is sticky.
+// forgetArgs asks the parent to delete what makes this node this node: its
+// key and its enrollment. The worker cannot do it itself: the key files
+// belong to the parent, and the shared state directory is sticky. Only with
+// NewIdentity; the pin, the trust and the history are never part of it.
 type forgetArgs struct {
 	NewIdentity bool `json:"new_identity"`
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -24,9 +25,20 @@ import (
 type Journal struct {
 	Configurator
 	path string
+	// Log, when set, hears what went wrong with the file itself: a record
+	// that could not be written is a change to the host that a crash would
+	// leave behind, and nobody should learn that only then.
+	Log *slog.Logger
 
 	mu sync.Mutex
 	st journalState
+}
+
+func (j *Journal) log() *slog.Logger {
+	if j.Log != nil {
+		return j.Log
+	}
+	return slog.Default()
 }
 
 type journalRoute struct {
@@ -75,7 +87,18 @@ func (j *Journal) Recover(ctx context.Context) int {
 	// directory belongs to the worker, which must not dictate what root
 	// removes (safefile)
 	b, err := safefile.ReadOwn(j.path, 1<<20)
-	if err != nil {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return 0
+	case errors.Is(err, safefile.ErrNotOwn):
+		// something else under the journal's name: the worker's doing, in
+		// a directory that is this process's (R145). It goes, so that the
+		// next record can be written; what it hid cannot be recovered
+		removed, rerr := safefile.Reclaim(j.path)
+		j.log().Error("THE NETWORK JOURNAL'S NAME WAS TAKEN BY SOMETHING ELSE: host changes of a previous process may still be there (`ip route`, `nft list ruleset`)", "path", j.path, "err", err, "removed", removed, "remove_err", rerr)
+		return 0
+	case err != nil:
+		j.log().Error("the network journal cannot be read; host changes of a previous process may still be there", "path", j.path, "err", err)
 		return 0
 	}
 	var old journalState
@@ -162,14 +185,44 @@ func giveBackDNS(ctx context.Context, l LinkDNSConfigurator, ifname string) erro
 // save writes the state; called with mu held.
 func (j *Journal) save() {
 	if len(j.st.Routes) == 0 && len(j.st.Bypass) == 0 && j.st.NAT == "" && j.st.Arrival == "" && j.st.DNS == "" {
-		_ = os.Remove(j.path)
+		if _, err := safefile.Reclaim(j.path); err != nil {
+			j.log().Error("the network journal could not be removed", "path", j.path, "err", err)
+		}
+		if err := os.Remove(j.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			j.log().Error("the network journal could not be removed", "path", j.path, "err", err)
+		}
 		return
 	}
 	b, _ := json.MarshalIndent(j.st, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(j.path), 0o700); err != nil {
+		j.log().Error("THE NETWORK JOURNAL CANNOT BE WRITTEN: a crash would leave this process's host changes behind", "path", j.path, "err", err)
 		return
 	}
-	_ = safefile.WriteAtomic(j.path, b)
+	// whatever else has taken the name since the last record goes first:
+	// the directory is this process's, and the rename below would fail on a
+	// directory under the name (R145)
+	if removed, err := safefile.Reclaim(j.path); err != nil {
+		j.log().Error("THE NETWORK JOURNAL CANNOT BE WRITTEN: a crash would leave this process's host changes behind", "path", j.path, "err", err)
+		return
+	} else if removed {
+		j.log().Warn("the network journal's name was taken by something else; removed it", "path", j.path)
+	}
+	if err := safefile.WriteAtomic(j.path, b); err != nil {
+		j.log().Error("THE NETWORK JOURNAL CANNOT BE WRITTEN: a crash would leave this process's host changes behind", "path", j.path, "err", err)
+	}
+}
+
+// HasBypass reports whether host is a bypass route this journal recorded:
+// what the parent of privilege separation lets a worker remove again.
+func (j *Journal) HasBypass(host netip.Addr) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, h := range j.st.Bypass {
+		if h == host {
+			return true
+		}
+	}
+	return false
 }
 
 func (j *Journal) CreateTUN(name string, mtu int) (tun.Device, string, error) {

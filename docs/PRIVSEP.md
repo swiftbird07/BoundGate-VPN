@@ -44,8 +44,8 @@ the node as it would run alone, with two replacements:
 |---|---|---|
 | a TLS signature with the device key | the key in the process | `sign`: the parent signs a SHA-256/384/512 digest; the private key never enters the worker |
 | the TUN device | opens `/dev/net/tun` | `create_tun`: the parent creates the configured device (`tun_name`, default `bg0`) and passes its descriptor |
-| address, routes | `ip addr/route` | `set_address`, `add_route`, `del_route`: only on that device, only network prefixes |
-| host routes to control plane, hubs, IdP | `ip route replace <host>` | `add_bypass`, `del_bypass`: unicast host addresses only |
+| address, routes | `ip addr/route` | `set_address`, `add_route`, `del_route`: only on that device, only network prefixes; the address a unicast one with a prefix (no loopback, multicast or `/0`: an address is an entry in the local table, which wins over every route) |
+| host routes to control plane, hubs, IdP | `ip route replace <host>` | `add_bypass`, `del_bypass`: unicast host addresses only, and removed only when the parent's journal recorded them for this node (`ip route del <host>` names no device and would take an administrator's host route as readily) |
 | forwarding, NAT, forward rules, reply via arrival | `sysctl`, `nft` | the same operations, only for that device, NAT only for a pool in a private or shared range (the rule for the overlay pool) |
 | the host's resolver, while the overlay is up | systemd-resolved over the system bus | `set_link_dns`: only for that device, at most eight resolver addresses, each a unicast address -- loopback among the refused, because a hub that named 127.0.0.1 would point the host at itself and hide that it resolves nothing. The worker has no bus socket and its seccomp filter no business getting one; the parent, which holds the journal, makes the call ([ACL.md](ACL.md), #14) |
 | a hub's listener on 443 | root | the one capability `CAP_NET_BIND_SERVICE` (ambient), when the parent has it |
@@ -97,11 +97,23 @@ worker's: the parent does not start without.
 
 What such a node can still do is give up its identity:
 `boundgatectl down && boundgatectl reset -new-identity`. The worker asks the
-parent for it (`forget_identity`), because the pin, the trust and the key
-files are the parent's and the directory is sticky. The parent deletes them
-and ends the service instead of starting another worker — the key it holds is
-open, and the new one comes with the next process, which the service manager
-starts. The address stays: the configuration names it again.
+parent for it (`forget_identity`), because the key files are the parent's
+and the directory is sticky. The parent deletes the identity -- the key in
+whichever form, the certificate, the enrollment -- and nothing else: the
+pinned control plane, the admin key list and the binding history stay, since
+the control plane is the one the configuration names and a new key is
+enrolled with it under the same pin and the same admins. A worker that could
+have those three forgotten could have its own pinned next (R132), so the
+parent refuses the request without a new identity outright, answers nothing
+to that worker after it, and ends it at once rather than waiting for it to
+leave. The service ends instead of starting another worker — the key the
+parent holds is open, and the new one comes with the next process, which the
+service manager starts. The address stays: the configuration names it again.
+To pin another control plane, root removes `control.pin` by hand.
+
+The parent owns the directory, and keeps its names its own: whatever else it
+finds under one of them -- a file of the worker's, a directory, a link --
+it removes, at its start, after every worker and before it writes (R145).
 
 The parent reads what the worker sends for this (chains, bindings,
 signatures): Go's parsers for JSON and SSH signatures, which the fuzz tests

@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,7 +74,17 @@ func (f *fakeNet) AddBypass(_ context.Context, h netip.Addr) error {
 	f.rec("bypass " + h.String())
 	return nil
 }
-func (f *fakeNet) DelBypass(context.Context, netip.Addr) error { return nil }
+func (f *fakeNet) DelBypass(_ context.Context, h netip.Addr) error {
+	f.rec("unbypass " + h.String())
+	return nil
+}
+
+// HasBypass is what the journal answers: only what AddBypass recorded.
+func (f *fakeNet) HasBypass(h netip.Addr) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Contains(f.calls, "bypass "+h.String())
+}
 
 func (f *fakeNet) SetLinkDNS(_ context.Context, ifname string, servers []netip.Addr) error {
 	line := "dns " + ifname
@@ -155,8 +166,18 @@ func TestTheParentAnswersOnlyWhatItsRulesAllow(t *testing.T) {
 		net.AddRoute(ctx, netip.MustParsePrefix("10.0.0.0/8"), "eth0"),
 		net.AddRoute(ctx, netip.MustParsePrefix("10.1.2.3/8"), "bg0"),
 		net.SetAddress(ctx, "eth0", netip.MustParsePrefix("10.21.0.4/16"), 1400),
+		// an address is an entry in the local table, which wins over every
+		// route: only a unicast address with a real prefix
+		net.SetAddress(ctx, "bg0", netip.MustParsePrefix("127.0.0.1/8"), 1400),
+		net.SetAddress(ctx, "bg0", netip.MustParsePrefix("224.0.0.1/4"), 1400),
+		net.SetAddress(ctx, "bg0", netip.MustParsePrefix("0.0.0.0/0"), 1400),
+		net.SetAddress(ctx, "bg0", netip.MustParsePrefix("::/0"), 1400),
+		net.SetAddress(ctx, "bg0", netip.MustParsePrefix("fe80::1/64"), 1400),
 		net.AddBypass(ctx, netip.MustParseAddr("127.0.0.1")),
 		net.AddBypass(ctx, netip.MustParseAddr("224.0.0.1")),
+		// `ip route del <host>` names no device: only a host route of ours
+		// may go again, never one an administrator set
+		net.DelBypass(ctx, netip.MustParseAddr("192.0.2.9")),
 		net.SetNAT(ctx, netip.MustParsePrefix("8.8.8.0/24"), []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, "bg0"),
 		net.SetNAT(ctx, netip.MustParsePrefix("10.21.0.0/16"), nil, "eth0"),
 		net.SetNAT(ctx, netip.MustParsePrefix("100.0.0.0/6"), []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, "bg0"),
@@ -177,6 +198,7 @@ func TestTheParentAnswersOnlyWhatItsRulesAllow(t *testing.T) {
 		net.SetAddress(ctx, "bg0", netip.MustParsePrefix("10.21.0.4/16"), 1400),
 		net.AddRoute(ctx, netip.MustParsePrefix("10.60.0.0/24"), "bg0"),
 		net.AddBypass(ctx, netip.MustParseAddr("203.0.113.7")),
+		net.DelBypass(ctx, netip.MustParseAddr("203.0.113.7")),
 		net.SetNAT(ctx, netip.MustParsePrefix("10.21.0.0/16"), []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, "bg0"),
 		net.SetNAT(ctx, netip.MustParsePrefix("100.96.0.0/16"), []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, "bg0"), // shared address space, as the rehearsal's pool
 		net.SetLinkDNS(ctx, "bg0", []netip.Addr{netip.MustParseAddr("10.60.0.53")}),
@@ -189,7 +211,7 @@ func TestTheParentAnswersOnlyWhatItsRulesAllow(t *testing.T) {
 	fn.mu.Lock()
 	got := strings.Join(fn.calls, "; ")
 	fn.mu.Unlock()
-	if got != "create bg0; addr bg0 10.21.0.4/16; route 10.60.0.0/24 bg0; bypass 203.0.113.7; nat 10.21.0.0/16; nat 100.96.0.0/16; dns bg0 10.60.0.53; dns bg0" {
+	if got != "create bg0; addr bg0 10.21.0.4/16; route 10.60.0.0/24 bg0; bypass 203.0.113.7; unbypass 203.0.113.7; nat 10.21.0.0/16; nat 100.96.0.0/16; dns bg0 10.60.0.53; dns bg0" {
 		t.Fatalf("the host saw: %s", got)
 	}
 	if _, err := c.call(ctx, "exec", nil, nil); err == nil {
