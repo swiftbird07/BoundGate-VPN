@@ -9,11 +9,11 @@ import (
 )
 
 type fakeNet struct {
-	names  map[string][]netip.Addr // "ip" answers
-	nat64  []netip.Addr            // ipv4only.arpa
-	ipv4   bool                    // the machine has an IPv4 route
-	fail   bool                    // lookups fail
-	asked  int
+	names map[string][]netip.Addr // "ip" answers
+	nat64 []netip.Addr            // ipv4only.arpa
+	ipv4  bool                    // the machine has an IPv4 route
+	fail  bool                    // lookups fail
+	asked int
 }
 
 func (f *fakeNet) hosts() *hosts {
@@ -100,5 +100,30 @@ func TestHostsOnAnIPv6OnlyNetwork(t *testing.T) {
 	g := &fakeNet{names: map[string][]netip.Addr{"vpn.example": {v4}}}
 	if ip, err := g.hosts().resolve(ctx, "vpn.example"); err != nil || ip != v4 {
 		t.Fatalf("no way through: %v %v", ip, err)
+	}
+}
+
+// While the overlay is up the hub's resolver answers the names of the
+// control plane and of the other hubs (R140). An answer that leads nowhere
+// is followed by a try at the address the name was reached at under its
+// pin before: a hub that was taken over cannot pass as either, but it must
+// not keep the node from them either.
+func TestHostsRememberWhereANameWasReached(t *testing.T) {
+	f := &fakeNet{names: map[string][]netip.Addr{"vpn.example": {v4}}, ipv4: true}
+	h := f.hosts()
+	if _, ok := h.lastGood("vpn.example", v4); ok {
+		t.Fatal("nothing was reached yet")
+	}
+	h.confirm("vpn.example:443", v4) // with or without a port
+	if _, ok := h.lastGood("vpn.example", v4); ok {
+		t.Fatal("the address that was just tried is no alternative")
+	}
+	other := netip.MustParseAddr("198.51.100.9")
+	if g, ok := h.lastGood("vpn.example:443", other); !ok || g != v4 {
+		t.Fatalf("the address the name was reached at: %v %v", g, ok)
+	}
+	h.confirm("vpn.example", other)
+	if g, ok := h.lastGood("vpn.example", v4); !ok || g != other {
+		t.Fatalf("a later success replaces it: %v %v", g, ok)
 	}
 }

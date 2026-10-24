@@ -68,6 +68,15 @@ type Config struct {
 	// Resolve, if set, turns the control plane's host name into the address
 	// to dial (the node's address book: what it excluded from its tunnel).
 	Resolve func(ctx context.Context, host string) (netip.Addr, error)
+	// Confirm, if set, is told the address the control plane answered at,
+	// and LastGood is asked for the address it answered at before when the
+	// one Resolve gave failed: while the overlay is up, the control plane's
+	// name is answered by a hub's resolver (R140), and a hub that answers it
+	// with another address must not keep the node from its control plane.
+	// After a failed request the next one dials what LastGood says, when
+	// that is another address; after a successful one, Resolve again.
+	Confirm  func(host string, addr netip.Addr)
+	LastGood func(host string, tried netip.Addr) (netip.Addr, bool)
 	// Poll, when set, replaces the long-poll: Run asks for the snapshot
 	// this often, and at once after Refresh or Reconnect. Nothing is kept
 	// open in between (no keep-alives, no pings), so a phone's radio can
@@ -80,7 +89,7 @@ func New(cfg Config) *Client {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	rt := &dualTransport{tls: cfg.TLS, log: cfg.Log, resolve: cfg.Resolve, quiet: cfg.Poll > 0}
+	rt := &dualTransport{tls: cfg.TLS, log: cfg.Log, resolve: cfg.Resolve, confirm: cfg.Confirm, lastGood: cfg.LastGood, quiet: cfg.Poll > 0}
 	rt.h3, rt.tcp = rt.transports()
 	c := &Client{URL: "https://" + cfg.Addr, http: &http.Client{Transport: rt}, log: cfg.Log, verify: cfg.Verify, onError: cfg.OnError,
 		poll: cfg.Poll, kick: make(chan struct{}, 1)}
@@ -135,11 +144,33 @@ func (d *dualTransport) addr(ctx context.Context, hostport string) (netip.AddrPo
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
+	d.mu.Lock()
+	if d.tryGood && d.lastGood != nil {
+		if g, ok := d.lastGood(host, ip); ok {
+			d.log.Warn("the control plane's name resolves to another address than it was reached at; trying the one that worked", "host", host, "resolved", ip, "before", g)
+			ip = g
+		}
+	}
+	d.dialedHost, d.dialed = host, ip
+	d.mu.Unlock()
 	p, err := net.LookupPort("tcp", port)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
 	return netip.AddrPortFrom(ip, uint16(p)), nil
+}
+
+// answered notes how a request ended: the address that answered is the one
+// to confirm, and after a failure the next dial tries the address that
+// answered before, when the name now resolves to another one.
+func (d *dualTransport) answered(ok bool) {
+	d.mu.Lock()
+	host, ip, tryGood := d.dialedHost, d.dialed, d.tryGood
+	d.tryGood = !ok && !tryGood // alternate: the fresh answer, then the last good one, then the fresh one again
+	d.mu.Unlock()
+	if ok && d.confirm != nil && host != "" && ip.IsValid() {
+		d.confirm(host, ip)
+	}
 }
 
 // errReconnected ends the requests that were in flight at Reconnect.
@@ -203,10 +234,12 @@ func (c *Client) Transport() string {
 // request fails before a response arrived. It retries HTTP/3 periodically
 // so a temporary UDP problem does not stick.
 type dualTransport struct {
-	tls     *tls.Config
-	log     *slog.Logger
-	resolve func(ctx context.Context, host string) (netip.Addr, error)
-	quiet   bool
+	tls      *tls.Config
+	log      *slog.Logger
+	resolve  func(ctx context.Context, host string) (netip.Addr, error)
+	confirm  func(host string, addr netip.Addr)
+	lastGood func(host string, tried netip.Addr) (netip.Addr, bool)
+	quiet    bool
 
 	mu           sync.Mutex
 	h3           *http3.Transport
@@ -214,11 +247,24 @@ type dualTransport struct {
 	tcpUntil     time.Time
 	fallbackSeen bool
 	last         string // what carried the last answer: "h3" or "h2"
+	// the address the last dial went to, and whether the next one goes to
+	// the address that answered before instead of the resolved one
+	dialedHost string
+	dialed     netip.Addr
+	tryGood    bool
 }
 
 const h3RetryAfter = 5 * time.Minute
 
 func (d *dualTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rsp, err := d.roundTrip(req)
+	if req.Context().Err() == nil {
+		d.answered(err == nil)
+	}
+	return rsp, err
+}
+
+func (d *dualTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	d.mu.Lock()
 	useTCP := time.Now().Before(d.tcpUntil)
 	h3, tcp := d.h3, d.tcp

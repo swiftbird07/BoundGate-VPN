@@ -370,6 +370,10 @@ type Node struct {
 	status   Status
 	sess     *session
 	autoDone bool
+	// resume is the routing profile of a session that ended because its
+	// snapshot ran out (staleWatch): the overlay comes back with the next
+	// snapshot, as it was.
+	resume string
 	// moves: tunnels on their way to a new socket after a network change,
 	// with what cancels the move (a later change wins).
 	moves map[*transport.ClientTunnel]context.CancelFunc
@@ -590,7 +594,7 @@ func (n *Node) init(enclave bool) (*Node, error) {
 	n.control = controlclient.New(controlclient.Config{
 		Addr: cfg.ControlAddr,
 		TLS:  transport.ClientTLSConfigControl(cert, cfg.ControlServerName, n.pins, onLearn),
-		Log:  cfg.Log, Verify: n.verifySnapshot, OnError: n.controlError, Resolve: n.hosts.resolve,
+		Log:  cfg.Log, Verify: n.verifySnapshot, OnError: n.controlError, Resolve: n.hosts.resolve, Confirm: n.hosts.confirm, LastGood: n.hosts.lastGood,
 		Poll: n.every(0, quietPoll),
 	})
 	n.ship = newShipper(n.control, cfg.Log, n.every(shipEvery, quietShip))
@@ -866,8 +870,14 @@ func (n *Node) onSnapshot(diff registry.Diff, snap *registry.Snapshot) {
 	}
 	s := n.sess
 	auto := n.cfg.AutoUp && !n.autoDone && s == nil
+	profile := n.cfg.Profile
+	if n.resume != "" && s == nil {
+		// the overlay went down because its snapshot ran out; this is the
+		// snapshot it waited for
+		auto, profile = true, n.resume
+	}
 	if auto {
-		n.autoDone = true
+		n.autoDone, n.resume = true, ""
 	}
 	n.mu.Unlock()
 	if s != nil {
@@ -875,7 +885,7 @@ func (n *Node) onSnapshot(diff registry.Diff, snap *registry.Snapshot) {
 	}
 	if auto {
 		go func() {
-			if err := n.Up(context.Background(), n.cfg.Profile); err != nil {
+			if err := n.Up(context.Background(), profile); err != nil {
 				n.log.Error("auto up failed", "err", err)
 			}
 		}()
@@ -1533,6 +1543,13 @@ func newSession(n *Node, snap *registry.Snapshot, prof *profile.Profile) *sessio
 
 func (s *session) apply(ctx context.Context) error {
 	n := s.n
+	// A session that is closed while it is still being built -- `down`, a
+	// switch of networks, the daemon ending -- has been torn down by then,
+	// and must not go on adding to the host behind that: what it asks for
+	// from here on fails, Up tears down again, and nothing is left (R143).
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(s.ctx, cancel)()
 	if err := s.addBypassHost(ctx, n.cfg.ControlAddr); err != nil {
 		return err
 	}
@@ -1662,6 +1679,7 @@ func (s *session) apply(ctx context.Context) error {
 	hubs := n.holder.Load().Hubs()
 	if !s.isHub {
 		s.spoke = newSpokeManager(s)
+		go s.staleWatch()
 		// in power save the platform reports network changes (NetworkChanged)
 		if !n.cfg.AllowOverlap && !n.cfg.PowerSave {
 			go s.spoke.watchLocalNets(s.ctx)
@@ -1803,6 +1821,38 @@ func (s *session) enforceSessions(snap *registry.Snapshot) {
 	// applyDiff does not come by: decide the open flows again here
 	if c := s.flows.Reevaluate(s.decide); c > 0 {
 		s.n.log.Info("flows closed: a user session ended", "closed", c)
+	}
+}
+
+// staleWatch ends a spoke's session once its snapshot is older than its
+// max_age (R26): the control plane has not answered for that long, so what
+// the node knows about its peers, its hubs and their revocations may be
+// anything by now. A hub fails closed flow by flow while its snapshot is
+// stale; a spoke has no flows to refuse, only tunnels to hubs it may no
+// longer trust -- and with the hub's resolvers in place (R140) it is the
+// hub that answers the control plane's name, so a hub that was taken over
+// could otherwise keep its spokes for as long as it liked. The overlay
+// comes back with the next snapshot (onSnapshot), with the same profile.
+func (s *session) staleWatch() {
+	t := time.NewTicker(s.n.every(30*time.Second, 2*time.Minute))
+	defer t.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-t.C:
+			if !s.n.holder.Stale(time.Now()) {
+				continue
+			}
+			s.n.mu.Lock()
+			if s.n.sess == s {
+				s.n.resume = s.profile.Name
+			}
+			s.n.mu.Unlock()
+			s.n.log.Error("the registry snapshot is older than its max_age and the control plane has not answered: the overlay goes down until it does (R26)")
+			s.close("the registry snapshot ran out: the control plane has not answered for longer than its max_age")
+			return
+		}
 	}
 }
 

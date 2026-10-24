@@ -45,16 +45,32 @@ func dnsHeader(dns []netip.Addr) string {
 	return strings.Join(s, ",")
 }
 
-// parseDNSHeader reads DNSHeader; what does not parse is left out.
+// parseDNSHeader reads DNSHeader; what does not parse is left out, and so
+// is what a resolver cannot be: loopback, which would point the host at
+// itself, multicast, link-local, the unspecified address. At most
+// MaxDNSServers are taken. The hub is authenticated, but what it says about
+// the host's resolver is checked here on every platform, not only by the
+// privileged parent of a separated node.
 func parseDNSHeader(v string) []netip.Addr {
 	var out []netip.Addr
 	for _, f := range strings.Split(v, ",") {
-		if a, err := netip.ParseAddr(strings.TrimSpace(f)); err == nil {
-			out = append(out, a.Unmap())
+		a, err := netip.ParseAddr(strings.TrimSpace(f))
+		if err != nil {
+			continue
+		}
+		a = a.Unmap()
+		if a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+			continue
+		}
+		if out = append(out, a); len(out) == MaxDNSServers {
+			break
 		}
 	}
 	return out
 }
+
+// MaxDNSServers is how many resolvers a hub may hand a spoke.
+const MaxDNSServers = 8
 
 // Handler is implemented by the gateway service. Both methods run with an
 // AuthenticatedPeer that this package produced; nothing else can call them.
@@ -367,9 +383,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	st := qconn.ConnectionState().TLS
 	peer, err := PeerFromTLSState(&st, s.cfg.Lookup, src)
 	if err != nil {
-		// The handshake already enforced membership; reaching this point means
-		// the device was revoked in between. Close hard so the client knows.
+		// The handshake already enforced membership; reaching this point
+		// means the device was revoked in between -- or that the registry
+		// could not answer this time, which says nothing about the device
+		// and must not be told to it as "revoked". Close so the client knows
+		// which.
 		s.log.Warn("transport: peer rejected after handshake", "src", src, "err", err)
+		if errors.Is(err, ErrLookupFailed) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = qconn.CloseWithError(ErrCodeTryAgain, "registry did not answer")
+			return
+		}
 		w.WriteHeader(http.StatusForbidden)
 		_ = qconn.CloseWithError(ErrCodeRevoked, "device not approved")
 		return

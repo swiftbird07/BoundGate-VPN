@@ -387,15 +387,33 @@ func (m *spokeManager) dialWith(ctx context.Context, hub registry.Node, transpor
 		KeepAlive:        keepAlive,
 		HandshakeTimeout: 5 * time.Second,
 	}
-	var t *transport.ClientTunnel
-	if transportName == "tcp" {
-		t, err = transport.DialTCP(dctx, cc)
-	} else {
-		t, err = transport.Dial(dctx, cc)
+	dial := func(cc transport.ClientConfig) (*transport.ClientTunnel, error) {
+		if transportName == "tcp" {
+			return transport.DialTCP(dctx, cc)
+		}
+		return transport.Dial(dctx, cc)
 	}
+	t, err := dial(cc)
 	if err != nil {
-		return nil, nil, err
+		// While the overlay is up the hub's name is answered by a hub's
+		// resolver (R140): one that answers it with an address of its own
+		// cannot pass as this hub (the pin), but it could keep the node from
+		// it. The address this hub was reached at before is tried as well.
+		good, ok := s.n.hosts.lastGood(target, addr.Addr())
+		if !ok || dctx.Err() != nil {
+			return nil, nil, err
+		}
+		s.n.log.Warn("hub name resolves to another address than it was reached at; trying the one that worked", "hub", hub.Name, "resolved", addr.Addr(), "before", good, "err", err)
+		if berr := s.addBypass(good); berr != nil {
+			return nil, nil, err
+		}
+		cc.GatewayAddr = netip.AddrPortFrom(good, addr.Port()).String()
+		if t, err = dial(cc); err != nil {
+			return nil, nil, err
+		}
+		addr = netip.AddrPortFrom(good, addr.Port())
 	}
+	s.n.hosts.confirm(target, addr.Addr())
 	prefixes, err := t.LocalPrefixes(dctx)
 	if err != nil || len(prefixes) == 0 {
 		_ = t.Close()

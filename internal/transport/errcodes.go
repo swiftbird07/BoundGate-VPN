@@ -20,6 +20,10 @@ const (
 	// ErrCodeNoAnswer: the client gave up on a tunnel that swallowed its
 	// packets without answering (liveness, client.go). Dial again at once.
 	ErrCodeNoAnswer quic.ApplicationErrorCode = 0x42420005
+	// ErrCodeTryAgain: the hub could not look the device up (its registry
+	// did not answer). Nothing is known about the device; reconnect with
+	// backoff.
+	ErrCodeTryAgain quic.ApplicationErrorCode = 0x42420006
 )
 
 // CloseCode extracts the application error code from a connection error, if

@@ -33,7 +33,14 @@ type hosts struct {
 	mu    sync.Mutex
 	known map[string][]netip.Addr
 	stale map[string]bool
-	log   *slog.Logger
+	// good is the address a name was last reached at under its pin. While
+	// the overlay is up with the hub's resolvers (R140) the names of the
+	// control plane and of the other hubs are answered by a hub: one that
+	// answers them with an address of its own cannot pass as them (the
+	// pin), but it can keep the node from reaching them. So an answer that
+	// fails is followed by a try at the address that worked last.
+	good map[string]netip.Addr
+	log  *slog.Logger
 	// nat64 is the prefix of this network, learned on demand; checked is
 	// set once it was asked for (a network without NAT64 has none)
 	nat64   netip.Prefix
@@ -44,10 +51,43 @@ type hosts struct {
 }
 
 func newHosts(log *slog.Logger) *hosts {
-	return &hosts{known: map[string][]netip.Addr{}, stale: map[string]bool{}, log: log,
+	return &hosts{known: map[string][]netip.Addr{}, stale: map[string]bool{}, good: map[string]netip.Addr{}, log: log,
 		lookup:   net.DefaultResolver.LookupNetIP,
 		routable: hasRoute,
 	}
+}
+
+// confirm notes that host (a name or a literal, with or without a port) was
+// reached at a under its pin.
+func (h *hosts) confirm(host string, a netip.Addr) {
+	host = hostOf(host)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if prev, ok := h.good[host]; ok && prev != a {
+		h.log.Info("name reached at another address than before", "host", host, "addr", a, "before", prev)
+	}
+	h.good[host] = a
+}
+
+// lastGood is the address host was last reached at under its pin, when it is
+// not the one the name resolves to now (the caller tried that already).
+func (h *hosts) lastGood(host string, tried netip.Addr) (netip.Addr, bool) {
+	host = hostOf(host)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	a, ok := h.good[host]
+	if !ok || a == tried {
+		return netip.Addr{}, false
+	}
+	return a, true
+}
+
+// hostOf strips a port, when there is one.
+func hostOf(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
 }
 
 // hasRoute reports whether the machine has a route to a: connecting a UDP

@@ -69,6 +69,10 @@ func (s *Server) handleTCP(w http.ResponseWriter, r *http.Request, path string) 
 	peer, err := PeerFromTLSState(r.TLS, s.cfg.Lookup, src)
 	if err != nil {
 		s.log.Warn("transport: peer rejected after handshake", "src", src, "err", err, "transport", "tcp")
+		if errors.Is(err, ErrLookupFailed) {
+			http.Error(w, "registry did not answer; try again", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "device not approved", http.StatusForbidden)
 		return
 	}
