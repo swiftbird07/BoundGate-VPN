@@ -162,9 +162,11 @@ jobs:
           COMMIT=${{ gitea.sha }} deploy/release/manifest.sh "$V" dist/release "$PUBLIC_IMAGE" "${{ steps.image.outputs.digest }}" \
             | jq --arg go "$(go env GOVERSION)" '.type = "boundgate-build" | .go = $go' > build.json
           cat build.json
-          # the token reaches curl through its configuration on stdin, never as an argument: argv is
-          # visible to every process on the runner (and in its audit log)
-          auth() { printf 'header = "Authorization: token %s"\n' "$TOKEN" | curl -fsS -K - "$@"; }
+          # the token reaches curl through a configuration file of this job, never as an argument:
+          # argv is visible to every process on the runner (and in its audit log). Not on stdin:
+          # the request that creates the draft reads its body from there (-d @-)
+          AUTHF=$(umask 077; mktemp); printf 'header = "Authorization: token %s"\n' "$TOKEN" > "$AUTHF"
+          auth() { curl -fsS -K "$AUTHF" "$@"; }
           # the network between runner and server has bad moments (a name that does not resolve, once):
           # an upload is tried again, after removing what an attempt may have left under that name
           upload() { # upload RELEASE-ID FILE

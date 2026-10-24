@@ -217,12 +217,19 @@ fi
 # ---- 3. what CI built ----
 say "waiting for CI's draft release of $V (up to $WAIT_MINUTES min)"
 deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+# the newest run of the release workflow for this tag: its state, and where to look
+ci_run() { api GET "/actions/tasks?limit=30" | jq -r --arg v "$V" '[.workflow_runs[] | select(.head_branch == $v and (.workflow_id | endswith("release.yml")))][0] // empty | "\(.status)\t\(.html_url // .url)"'; }
 while :; do
   REL=$(api GET "/releases?draft=true&limit=50" | jq -c --arg v "$V" '[.[] | select(.tag_name == $v)][0] // empty')
   if [ -n "$REL" ]; then
     [ "$(echo "$REL" | jq -r .draft)" = true ] || die "$V is published already"
     echo "$REL" | jq -e '[.assets[].name] | index("build.json")' >/dev/null && break
   fi
+  # a workflow that failed leaves no draft to wait for: say so now, not after the deadline
+  run=$(ci_run 2>/dev/null || true)
+  case "${run%%	*}" in
+    failure|cancelled|skipped) die "CI's release workflow for $V ended with '${run%%	*}' (${run#*	}); fix it, move the tag (git tag -d $V; git push origin :refs/tags/$V), and run this again" ;;
+  esac
   [ "$(date +%s)" -lt "$deadline" ] || die "no complete draft of $V after $WAIT_MINUTES min; look at the release workflow in Gitea, then run: make release VERSION=$V"
   sleep "$POLL"
 done
