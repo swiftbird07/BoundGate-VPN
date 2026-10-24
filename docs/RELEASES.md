@@ -4,9 +4,9 @@ A release is a tag `vMAJOR.MINOR.PATCH`, made with one command on the
 maintainer's Mac:
 
 ```bash
-make release                  # the next patch version after the highest tag (the first: v0.1.0)
+make release                  # the next patch version after the highest tag (the first: v0.1.0), or the highest tag again while nothing of it is published
 make release BUMP=minor       # or major
-make release VERSION=v1.4.0   # a version of your choice; the same line resumes a release that stopped halfway
+make release VERSION=v1.4.0   # a version of your choice; the same line resumes that release
 make release-next             # only says which version it would be
 ```
 
@@ -18,6 +18,18 @@ Two halves, and the signing keys are all in one of them:
 | 2 | CI, `.gitea/workflows/release.yml` | tests, Linux and Windows binaries, the image; parks them in a **draft** release with `build.json`, a record of what it built and with which Go. CI signs nothing and holds no signing key |
 | 3 | here, while CI works | the Mac app: universal, signed with your Developer ID, notarized, stapled (`apps/macos/build-app.sh`, `notarize.sh`; the credentials stay in your keychain), and the Android app: built in its images (`apps/android/build.sh`, 5–6 min with warm caches), signed here with your key (`deploy/release/sign-apk.sh`) |
 | 4 | here | downloads CI's files, compares them with `build.json`, the tagged commit and go.mod's toolchain, writes the manifest over everything, **signs it with the release key**, checks the signature the way clients will |
+
+**A run that stopped is taken up again.** Every step can be repeated, and
+the script finds its own way back: a plain `make release` chooses the highest
+tag again as long as nothing of that version is published (a draft, or no
+release at all, counts as nothing); a tag that points at another commit than
+HEAD marked what CI built last time, and the fix came after it, so the tag is
+removed here and on the server and HEAD is tagged (a published release never
+moves); a release workflow that failed for the tagged commit is started once
+more by pushing the tag again, and a second failure, or one of another
+commit, ends the wait with what to fix. `make release-next` only counts tags
+and does not ask Gitea, so after a failed attempt it names the version after
+the one `make release` would take up.
 
 **One Go for everything.** The standard library is linked into every binary,
 so its patch level decides which of its vulnerabilities a release carries.

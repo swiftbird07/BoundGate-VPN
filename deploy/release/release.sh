@@ -1,7 +1,8 @@
 #!/bin/sh
 # Makes a release, from the maintainer's Mac:
 #
-#   make release                    # next patch version after the highest tag (first: v0.1.0)
+#   make release                    # next patch version after the highest tag (first: v0.1.0),
+#                                   # or the highest tag again while nothing of it is published
 #   make release BUMP=minor         # or major
 #   make release VERSION=v1.4.0     # a version of your choice; also resumes that release
 #
@@ -15,7 +16,9 @@
 #   5. puts the same files on GitHub, the public mirror that updaters read
 #      (deploy/release/mirror-github.sh)
 #
-# Every step can be repeated: run it again with VERSION=... after a failure.
+# Every step can be repeated: run it again after a failure. The tag of a
+# release that is not published follows HEAD (the fix came after it), and a
+# CI run that failed for the tagged commit is started once more.
 #
 # Needs: git, curl, jq, ssh-keygen, openssl; for the Mac app Xcode and what
 # apps/macos/notarize.sh asks for. Environment:
@@ -52,7 +55,16 @@ die() { echo "release: $*" >&2; exit 1; }
 sha() { openssl dgst -sha256 -r "$1" | cut -d' ' -f1; }
 keygen() { if [ -x /opt/homebrew/bin/ssh-keygen ]; then /opt/homebrew/bin/ssh-keygen "$@"; else ssh-keygen "$@"; fi; } # Apple's cannot use FIDO2 keys
 
-highest() { git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -1; }
+# tags [r]: the vX.Y.Z tags by version, lowest first (r: highest first)
+tags() { git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2,1n${1:-} -k2,2n${1:-} -k3,3n${1:-}; }
+highest() { tags | tail -1; }
+# published VERSION: the release of VERSION on Gitea is no longer a draft.
+# Such a tag never moves; everything before that is a build marker of ours.
+published() { [ "$(api GET "/releases/tags/$1" 2>/dev/null | jq -r .draft)" = false ]; } # (jq's // would turn a false into nothing)
+# last_release: the highest tag whose release is published. A tag above it
+# marks an attempt that stopped (CI failed, the run was interrupted) and
+# is not a release anybody got.
+last_release() { for t in $(tags r); do if published "$t"; then echo "$t"; return; fi; done; }
 # next_version BUMP: the highest vX.Y.Z tag, one further
 next_version() {
   last=$(highest)
@@ -92,10 +104,6 @@ HEAD=$(git rev-parse HEAD)
 GO_WANT=$(sed -n 's/^toolchain \(go[0-9.]*\)$/\1/p' go.mod)
 [ -n "$GO_WANT" ] || die "go.mod has no toolchain line: a release pins its Go"
 
-V=${1:-${VERSION:-}}
-[ -n "$V" ] && [ "$V" != dev ] || V=$(next_version "${BUMP:-patch}")
-echo "$V" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || die "version must be vMAJOR.MINOR.PATCH, got $V"
-
 # the token stays off every command line (ps shows those): curl reads it from a file only we can read
 TMP=$(umask 077; mktemp -d); trap 'rm -rf "$TMP"' EXIT
 printf 'header = "Authorization: token %s"\n' "$TOKEN" > "$TMP/auth"
@@ -106,6 +114,21 @@ api() { # api METHOD PATH [curl args]: JSON on stdout
 
 # a pushed tag starts CI and is seen by everyone: find out now what would stop this run later
 [ "$(api GET "" | jq -r '.permissions.push')" = true ] || die "the access token does not get write access to $GITEA_REPO at $GITEA_URL (curl's message above: 401 = wrong or expired token, 404 = the token's user does not see the repository)"
+
+V=${1:-${VERSION:-}}
+[ "$V" != dev ] || V=
+if [ -z "$V" ]; then
+  V=$(next_version "${BUMP:-patch}")
+  # The highest tag may mark an attempt that never got out (CI failed, the
+  # run was interrupted, the fix came after it): that version is taken up
+  # again rather than counted past, and below the tag moves to HEAD.
+  top=$(highest)
+  if [ -n "$top" ] && ! published "$top"; then
+    say "$top is tagged but nothing of it is published: resuming it (VERSION=$V would leave it behind and start the next one)"
+    V=$top
+  fi
+fi
+echo "$V" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || die "version must be vMAJOR.MINOR.PATCH, got $V"
 [ -n "${NO_GITHUB:-}" ] || deploy/release/mirror-github.sh --check
 
 # Known vulnerabilities the code can reach, for the Linux and the Windows
@@ -160,13 +183,10 @@ fi
   || die "the Android app cannot be signed on this machine (NO_APK=1 releases without it)"
 
 # ---- 1. tag ----
-# published: the release of $V on Gitea is no longer a draft. Such a tag
-# never moves; everything before that is a build marker of ours.
-published() { [ "$(api GET "/releases/tags/$V" 2>/dev/null | jq -r '.draft // empty')" = false ]; }
 # retag: the tag goes, here and on the server, so that the next push of it
 # starts CI again (a re-run replaces the draft of the same tag, release.yml)
 retag() {
-  published && die "$V is published already; pick another version"
+  published "$V" && die "$V is published already; pick another version"
   git tag -d "$V" >/dev/null 2>&1 || true
   git push -q origin ":refs/tags/$V" 2>/dev/null || true
 }
@@ -181,10 +201,12 @@ if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
 else
   top=$(highest)
   [ -z "$top" ] || newer "$V" "$top" || die "$V is not newer than $top: nodes refuse to go back"
+  last=$(last_release)
+  [ -z "$top" ] || [ "$top" = "$last" ] || say "$top is tagged but nothing of it is published; it stays as it is, $V goes on without it"
   # a fresh install with this kit starts no older than KIT_FLOOR: keep it at the last release
   floor=$(sed -n 's/^KIT_FLOOR=\(v[0-9][0-9.]*\)$/\1/p' deploy/prod/update.sh)
   [ -n "$floor" ] || die "deploy/prod/update.sh has no KIT_FLOOR"
-  [ -z "$top" ] || ! newer "$top" "$floor" || die "KIT_FLOOR in deploy/prod/update.sh is $floor, older than the last release $top: set it to $top, commit, push, and run this again"
+  [ -z "$last" ] || ! newer "$last" "$floor" || die "KIT_FLOOR in deploy/prod/update.sh is $floor, older than the last release $last: set it to $last, commit, push, and run this again"
   [ "$(git rev-parse origin/main)" = "$HEAD" ] || die "HEAD is not origin/main: push first, releases are built from what is on the server"
   git tag -a "$V" -m "BoundGate $V"
   say "tagged $V at $(git rev-parse --short HEAD)"
@@ -223,7 +245,7 @@ mirror() {
   if [ -n "${NO_GITHUB:-}" ]; then say "NO_GITHUB: not mirrored; updaters that read GitHub do not see $V"; else deploy/release/mirror-github.sh "$V"; fi
 }
 # a run that got as far as publishing here only has the mirror left to do
-if [ "$(api GET "/releases/tags/$V" 2>/dev/null | jq -r '.draft')" = false ]; then
+if published "$V"; then
   say "$V is published on $GITEA_URL already"
   mirror
   exit 0

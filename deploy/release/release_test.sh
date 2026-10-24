@@ -44,6 +44,7 @@ git push -q origin --tags
 
 # ---- the stand-in for Gitea, and for GitHub (three hosts: website, API, uploads) ----
 G=$T/gitea; mkdir -p "$G/assets" "$G/uploaded" "$T/bin"
+printf 'v0.1.0\nv0.1.9\nv0.1.10\n' > "$G/published"   # the releases the tags of old stand for
 cat > "$T/bin/curl" <<'EOF'
 #!/bin/sh
 # understands what the release scripts send: -K file, -X METHOD, -o FILE, -w FORMAT,
@@ -75,7 +76,11 @@ case "$method $url" in
   "POST http://uploads.github.test/repos/go/gr/releases/70/assets?name="*) cp "$attach" "$FAKE/gh-uploaded/${url##*name=}"; echo '{}' ;;
   "PATCH http://api.github.test/repos/go/gr/releases/70") cp "$FAKE/body" "$FAKE/gh-patched"; echo '{}' ;;
   "GET http://github.test/go/gr/releases/latest") printf 'http://github.test/go/gr/releases/tag/%s' "$(jq -r .tag_name "$FAKE/gh-created")" ;;
-  "GET "*"/releases/tags/"*) [ -f "$FAKE/patched" ] || exit 22; echo '{"draft":false}' ;;
+  "GET "*"/releases/tags/"*) # releases of old: $FAKE/published; the current one: a draft until it is patched
+    t=${url##*/}; cur=$(jq -r '.[0].tag_name // empty' "$FAKE/releases.json" 2>/dev/null)
+    if grep -qx "$t" "$FAKE/published" 2>/dev/null || { [ -f "$FAKE/patched" ] && [ "$t" = "$cur" ]; }; then echo '{"draft":false}'
+    elif [ "$t" = "$cur" ]; then echo '{"draft":true}'
+    else exit 22; fi ;;
   "GET "*"/repos/o/r") echo "{\"permissions\":{\"push\":${FAKE_PUSH:-true}}}" ;;
   "GET "*"/releases?draft=true"*) cat "$FAKE/releases.json" ;;
   "GET "*"/releases/latest") cat "$FAKE/latest.json" ;;
@@ -223,8 +228,10 @@ done
 if $R v0.1.5 > "$T/out" 2>&1; then fail "went back to v0.1.5"; fi
 grep -q "not newer" "$T/out" || fail "v0.1.5: $(cat "$T/out")"
 # v0.1.11 is out, and update.sh still lets a fresh install start at v0.1.10
+echo v0.1.11 >> "$G/published"
 if NO_MAC=1 $R v0.1.12 > "$T/out" 2>&1; then fail "released while KIT_FLOOR is behind the last release"; fi
 grep -q "KIT_FLOOR in deploy/prod/update.sh is v0.1.10, older than the last release v0.1.11" "$T/out" && ! git rev-parse -q --verify refs/tags/v0.1.12 >/dev/null || fail "KIT_FLOOR: $(cat "$T/out")"
+grep -vx v0.1.11 "$G/published" > "$T/p" && mv "$T/p" "$G/published"   # back to the draft the cases below work on
 echo x > stray; git add stray
 if $R > "$T/out" 2>&1; then fail "released with uncommitted changes"; fi
 git reset -q; rm stray
@@ -285,5 +292,20 @@ rm -f dist/.release-apk "dist/BoundGate-v0.1.12-unsigned.apk"
 if NO_MAC=1 APK_KS=$T/none.jks $R v0.1.12 > "$T/out" 2>&1; then fail "went on without a keystore"; fi
 grep -q "cannot read the keystore" "$T/out" || fail "wrong reason: $(cat "$T/out")"
 [ -z "$(git tag -l v0.1.12)" ] || fail "a run refused over the APK key left a tag behind"
+
+# ---- 7. the highest tag was never published: a run without a version takes it up again, at HEAD ----
+# v0.1.11 is out; an attempt at v0.1.12 tagged a commit whose CI run failed, and the fix came after it
+echo v0.1.11 >> "$G/published"
+printf '#!/bin/sh\nKIT_FLOOR=v0.1.11\n' > deploy/prod/update.sh; git commit -qam "floor v0.1.11"
+git tag -a v0.1.12 -m "BoundGate v0.1.12"; git push -q origin main refs/tags/v0.1.12
+OLD=$(git rev-parse HEAD)
+echo fix > fix; git add fix; git commit -qm fix; git push -q origin main
+V=v0.1.12; HEAD=$(git rev-parse HEAD)
+ci_draft one; apk_built
+NO_MAC=1 $R > "$T/out" 2>&1 || { cat "$T/out"; fail "resuming the unpublished tag failed"; }
+grep -q "v0.1.12 is tagged but nothing of it is published: resuming it" "$T/out" || fail "did not take up v0.1.12: $(cat "$T/out")"
+grep -q "moving the tag" "$T/out" && grep -q "released v0.1.12" "$T/out" || fail "v0.1.12: $(cat "$T/out")"
+[ "$(git rev-parse 'v0.1.12^{commit}')" = "$HEAD" ] && [ "$(git ls-remote origin 'refs/tags/v0.1.12^{}' | cut -f1)" = "$HEAD" ] || fail "the tag did not move to HEAD (was $OLD)"
+[ -z "$(git tag -l v0.1.13)" ] || fail "counted past the unpublished tag"
 
 echo "release.sh test: ok"
