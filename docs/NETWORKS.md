@@ -77,19 +77,28 @@ switch; `boundgatectl down` or the app's disconnect does that.
 the node: someone who picked "Work · Full" in an app has said enough, and the
 daemon does the `up` itself.
 
-`boundgatectl network remove ID` gives up a network: a network with a
-directory of its own loses that directory and with it its device key, which
-belonged to that control plane and is of no use anywhere else. The network
-that owns the state root instead gives up what ties it to its control plane
--- its settings, its pin, the admin key list, the bindings it has seen -- the
-same as `boundgatectl reset`, because the root also holds the daemon's own
-files. Revoke the node in that network's admin UI afterwards; the control
-plane cannot tell on its own that the device is gone.
+`boundgatectl network remove ID` gives up a network, its device key included:
+the key belonged to that control plane and is of no use anywhere else, and
+the next network must not inherit it -- two control planes would see the same
+device (R142). A network with a directory of its own loses that directory.
+The network that owns the state root gives up what ties it to its control
+plane -- its settings, its pin, the admin key list, the bindings it has seen
+-- and its key files, and keeps the daemon's own files (the journal, the
+update work directory) where they are. The network that runs is removed only
+once the node that runs it has ended, so that it cannot write its enrollment
+or its anchors again on the way out. Revoke the node in that network's admin
+UI afterwards; the control plane cannot tell on its own that the device is
+gone.
 
-`boundgatectl reset` keeps its meaning: forget the network this daemon is in.
-With another network in the list the daemon continues there, otherwise it goes
-back to setup mode. `reset -new-identity` is unchanged: the same network, a
-new key.
+`boundgatectl reset` means: give up the network this daemon is in, as
+`network remove` does -- with its key, so the device comes back to that
+control plane with a new fingerprint. With another network in the list the
+daemon continues there, otherwise it goes back to setup mode.
+`reset -new-identity` is the same network with a new key.
+
+A directory a removed network left behind (one that could not be deleted) is
+never taken over for a new network of the same name: `network add` refuses it
+and says which directory to remove.
 
 ## The IPC
 

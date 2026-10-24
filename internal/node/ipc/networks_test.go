@@ -146,13 +146,13 @@ func TestRemovingANetworkTakesItsOwnStateAndNothingElse(t *testing.T) {
 	if err := root.Discard(dir); err != nil {
 		t.Fatal(err)
 	}
-	// the device key and the journal are not the network's to delete
-	for _, f := range []string{"device.key", "netstate.json"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
-			t.Errorf("%s is gone: %v", f, err)
-		}
+	// the journal is the daemon's, not the network's to delete
+	if _, err := os.Stat(filepath.Join(dir, "netstate.json")); err != nil {
+		t.Errorf("netstate.json is gone: %v", err)
 	}
-	for _, f := range []string{"control.pin", "settings.json"} {
+	// the key goes with the network, root or not: the next network must not
+	// be the same device to another control plane (R142)
+	for _, f := range []string{"device.key", "control.pin", "settings.json"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); !os.IsNotExist(err) {
 			t.Errorf("%s survived: %v", f, err)
 		}
@@ -162,6 +162,17 @@ func TestRemovingANetworkTakesItsOwnStateAndNothingElse(t *testing.T) {
 	}
 	if ns.Current != "" {
 		t.Errorf("current is %q with no networks left", ns.Current)
+	}
+	// a directory a removed network left behind is not taken over
+	if err := os.MkdirAll(work.Path(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Create(dir); err == nil {
+		t.Fatal("a leftover directory was taken over as the new network's")
+	}
+	os.RemoveAll(work.Path(dir))
+	if err := work.Create(dir); err != nil {
+		t.Fatal(err)
 	}
 }
 

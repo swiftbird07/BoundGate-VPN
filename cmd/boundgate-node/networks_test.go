@@ -78,27 +78,40 @@ func TestTheDaemonSwitchesBetweenNetworks(t *testing.T) {
 		t.Error("the same control plane was added twice")
 	}
 
-	// giving up the current network falls back to the one that is left
+	// giving up the current network falls back to the one that is left. Its
+	// files go only once the node that ran it has ended (the next turn of
+	// the loop, reload): until then it still talks to its control plane and
+	// could write its enrollment or its anchors again
 	if err := again.Remove(work.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(work.Path(root)); !os.IsNotExist(err) {
-		t.Errorf("the removed network's state is still there: %v", err)
+	if _, err := os.Stat(work.Path(root)); err != nil {
+		t.Errorf("the running network's state went while its node still runs: %v", err)
+	}
+	if list, _ := again.List(); list.Current != work.ID {
+		t.Errorf("the list changed before the node ended: %+v", list)
 	}
 	cur, ok, err = again.reload()
 	if err != nil || !ok || cur.ID != home.ID {
 		t.Fatalf("after the removal: %+v %v %v", cur, ok, err)
 	}
+	if _, err := os.Stat(work.Path(root)); !os.IsNotExist(err) {
+		t.Errorf("the removed network's state is still there: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(root, "device.key")); err != nil {
 		t.Errorf("the key of the network that stayed is gone: %v", err)
 	}
 
-	// and giving up the last one leads back to setup mode
+	// and giving up the last one leads back to setup mode, with its key
+	// gone: the next network is another device to its control plane (R142)
 	if err := again.Remove(home.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := again.reload(); ok || err != nil {
 		t.Fatalf("with no networks left: %v %v", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "device.key")); !os.IsNotExist(err) {
+		t.Errorf("the removed root network's key is still there: %v", err)
 	}
 	list, err := again.List()
 	if err != nil || len(list.Networks) != 0 || list.Current != "" {

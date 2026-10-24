@@ -114,7 +114,18 @@ func Serve(ctx context.Context, socketPath string, n *node.Node, opt Options) er
 		go func() { time.Sleep(100 * time.Millisecond); cancel() }() // answer first
 	}
 	mux := handler(n, opt, func() { stop(ErrReset) }, func() { stop(ErrSwitch) })
-	if err := serveMux(ctx, ln, socketPath, opt.Listener == nil, mux); err != nil {
+	// Between the answer to a switch or a reset and the end of this node
+	// nothing may change any more: an `up` that slipped in there would add
+	// routes to a session the daemon is about to end, and the next network
+	// would start over its leftovers (R143).
+	ending := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && ended.Load() != nil {
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: "this node is ending (another network was chosen, or it was reset); ask again in a moment"})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	if err := serveMux(ctx, ln, socketPath, opt.Listener == nil, ending); err != nil {
 		return err
 	}
 	if err, ok := ended.Load().(error); ok {

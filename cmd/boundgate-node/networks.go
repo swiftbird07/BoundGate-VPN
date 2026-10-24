@@ -27,6 +27,10 @@ type networks struct {
 	// should come up in, taken once by the loop: someone who picked
 	// "Work - Full" does not want to click connect afterwards.
 	upNext string
+	// removing is the running network that was asked to go: its files go
+	// once the node that runs it has ended (reload), not while it still
+	// talks to its control plane and could write them again.
+	removing string
 }
 
 // reload reads the list (taking over an older single-network state the first
@@ -42,6 +46,21 @@ func (ns *networks) reload() (ipc.Network, bool, error) {
 	if migrated {
 		if err := ipc.SaveNetworks(ns.root, list); err != nil {
 			return ipc.Network{}, false, err
+		}
+	}
+	if id := ns.removing; id != "" {
+		// the node that ran this network has ended: now its files can go
+		ns.removing = ""
+		if n, ok := list.Get(id); ok {
+			if err := n.Discard(ns.root); err != nil {
+				return ipc.Network{}, false, err
+			}
+			if err := list.Remove(id); err != nil {
+				return ipc.Network{}, false, err
+			}
+			if err := ipc.SaveNetworks(ns.root, list); err != nil {
+				return ipc.Network{}, false, err
+			}
 		}
 	}
 	cur, ok := list.CurrentNetwork()
@@ -91,7 +110,8 @@ func (ns *networks) Add(name string, s ipc.Settings, selectIt bool, profile stri
 	if err != nil {
 		return ipc.Network{}, err
 	}
-	if _, err := n.Prepare(ns.root); err != nil {
+	if err := n.Create(ns.root); err != nil {
+		ns.list.Remove(n.ID)
 		return ipc.Network{}, err
 	}
 	// the network that owns the state root also writes settings.json, so a
@@ -133,12 +153,19 @@ func (ns *networks) Remove(id string) error {
 	if !ok {
 		return fmt.Errorf("no network %q (boundgatectl networks)", id)
 	}
+	ns.upNext = ""
+	if id == ns.list.Current {
+		// the node that runs it still talks to its control plane and would
+		// write its enrollment or its anchors again: the socket ends that
+		// node (ErrSwitch), and the next turn of the loop takes the files
+		ns.removing = id
+		return nil
+	}
 	if err := n.Discard(ns.root); err != nil {
 		return err
 	}
 	if err := ns.list.Remove(id); err != nil {
 		return err
 	}
-	ns.upNext = ""
 	return ipc.SaveNetworks(ns.root, ns.list)
 }

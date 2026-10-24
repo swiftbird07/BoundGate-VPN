@@ -95,20 +95,43 @@ func (n Network) Prepare(stateDir string) (string, error) {
 // in Dir means the file was edited by hand, and nothing is deleted there.
 func (n Network) subDir() string { return filepath.Join("networks", n.ID) }
 
-// Discard gives up a network's state. A network with a directory of its own
-// loses that directory and with it its device key -- the key belonged to that
-// control plane and is of no use to anyone else. The network that owns the
-// state root instead gives up what ties it to its control plane, the same as
-// `boundgatectl reset` does, because the root also holds the daemon's own
-// files (the journal, the update work directory).
+// Discard gives up a network's state, its device key included: the key
+// belonged to that control plane and is of no use to anyone else, and the
+// next network must not inherit it -- two control planes would see the same
+// device (R142). A network with a directory of its own loses that directory.
+// The network that owns the state root gives up what ties it to its control
+// plane and its key files, and keeps the daemon's own files (the journal,
+// the update work directory) where they are.
 func (n Network) Discard(stateDir string) error {
 	if n.Dir == "" {
-		return Forget(stateDir, filepath.Join(stateDir, "settings.json"), false)
+		return Forget(stateDir, filepath.Join(stateDir, "settings.json"), true)
 	}
 	if filepath.Clean(n.Dir) != n.subDir() {
 		return fmt.Errorf("network %q has the state directory %q, which this daemon did not create; remove it yourself", n.ID, n.Dir)
 	}
 	return os.RemoveAll(n.Path(stateDir))
+}
+
+// Create makes the directory of a network that was just added. A directory
+// that is already there is not taken over: it is a network that was removed
+// and could not be deleted, or something the daemon did not make, and its
+// key would become this network's (R142). The root network has the daemon's
+// state directory and nothing to create.
+func (n Network) Create(stateDir string) error {
+	if n.Dir == "" {
+		return nil
+	}
+	p := n.Path(stateDir)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	if err := os.Mkdir(p, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("a state directory for network %q is still there (%s): remove it, or give the network another name", n.ID, p)
+		}
+		return err
+	}
+	return nil
 }
 
 // Find returns the index of a network, or -1.
