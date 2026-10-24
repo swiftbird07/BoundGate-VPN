@@ -60,7 +60,7 @@ grep -q '^profile: lan-only ' "$D/node.yaml" && ! grep -q '^profiles_dir' "$D/no
 ! grep -q '^      - ./profiles:' "$D/docker-compose.yml" || fail "the profiles mount was enabled without a profile of its own"
 # names through the hub: the option and the system bus the node asks resolved over
 grep -q '^resolver: hub ' "$D/node.yaml" || fail "resolver: $(grep -n resolver "$D/node.yaml")"
-grep -q '^      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket$' "$D/docker-compose.yml" || fail "the system bus is not mounted: $(grep -n dbus "$D/docker-compose.yml")"
+! grep -q 'dbus' "$D/docker-compose.yml" || fail "the host's system bus is still in the kit (#18): $(grep -n dbus "$D/docker-compose.yml")"
 grep -q '^BOUNDGATE_IMAGE=ghcr.io/swiftbird07/boundgate:latest$' "$D/.env" && ! grep -q 'COMPOSE_PROFILES' "$D/.env" || fail ".env: $(cat "$D/.env")"
 [ "$(cat "$T/log")" = "docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH -v $D:/kit -w /kit --entrypoint chown ghcr.io/swiftbird07/boundgate:latest -R 0:0 state logs" ] \
   || fail "something other than the ownership was done: $(cat "$T/log")"
@@ -77,9 +77,8 @@ D=$T/wl; run 2 "$D" db1 vpn.example.org 4 4 10.20.0.0/16 192.168.5.0/24 '' 2 2 n
 grep -q '^profile: site ' "$D/node.yaml" && grep -q '^profiles_dir: /etc/boundgate/profiles' "$D/node.yaml" || fail "routing: $(grep -n 'profile' "$D/node.yaml")"
 grep -q '^      - ./profiles:/etc/boundgate/profiles:ro$' "$D/docker-compose.yml" || fail "the profiles mount is not enabled: $(grep -n profiles "$D/docker-compose.yml")"
 printf 'name: site\nrouting:\n  mode: include\n  networks:\n    - 10.20.0.0/16\n    - 192.168.5.0/24\n' | cmp -s - "$D/profiles/site.yaml" || fail "the profile written: $(cat "$D/profiles/site.yaml")"
-# this one keeps its own resolver: no bus in the container, and the script says what it costs
+# this one keeps its own resolver, and the script says what it costs
 grep -q '^resolver: system ' "$D/node.yaml" || fail "resolver: $(grep -n resolver "$D/node.yaml")"
-! grep -q '^      - /run/dbus/system_bus_socket' "$D/docker-compose.yml" || fail "the system bus was mounted for resolver: system"
 grep -q 'cannot match this node by name' "$T/out" || fail "no note about what a own resolver costs: $(cat "$T/out")"
 
 echo "== 4b. a node that is set up again may give up its identity, through the daemon, never with rm"

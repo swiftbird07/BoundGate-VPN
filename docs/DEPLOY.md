@@ -44,16 +44,15 @@ For a node it also asks:
   ([PROFILES.md](PROFILES.md)).
 * **Where it resolves names** — through the resolvers the hub offers while
   the overlay is up (the default), or keeping the machine's own. The first
-  writes `resolver: hub` and mounts the host's system bus
-  (`/run/dbus/system_bus_socket`) read-only into the node container, because
-  the node asks systemd-resolved over D-Bus; it sets the resolvers for the
-  tunnel device alone, with the routing domain `~.`, and does not touch
-  `/etc/resolv.conf`. That mount is the host's D-Bus, so the container can
-  speak to other bus services as well — the node container already runs as
-  root on the host's network, which is why the question exists and why the
-  line stays commented out for `resolver: system`. The second writes
-  `resolver: system`, and then a dynamic access list cannot match this node
-  by name ([ACL.md](ACL.md)).
+  writes `resolver: hub`: the node redirects the host's DNS queries, and
+  those of its containers, to the hub's resolver with nftables, which it may
+  do anyway (it runs as root on the host's network with NET_ADMIN), and
+  takes the redirect away with the overlay ([ACL.md](ACL.md)). The second
+  writes `resolver: system`, and then a dynamic access list cannot match
+  this node by name. An installation that mounts `/run/dbus/system_bus_socket` (the
+  kit did for this answer until #18) no longer needs it and gives the
+  container the host's whole system bus, systemd included, so remove the
+  line from `docker-compose.yml`.
 * **A new identity**, when the directory already holds a node with a device
   key — the usual reason being a `key_kind` that changed. It has the daemon
   do it (`boundgatectl down`, then `reset -new-identity`) and never deletes

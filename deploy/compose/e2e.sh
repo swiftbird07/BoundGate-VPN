@@ -209,20 +209,20 @@ if x node-a timeout 4 nslookup other.example 10.60.0.53 >/dev/null 2>&1; then fa
 x node-a timeout 5 nslookup target.lab 10.60.0.53 2>/dev/null | grep -q 10.60.0.10 || fail "the resolver did not answer target.lab through the tunnel"
 wait_for 10 reach 10.60.0.10 target || fail "the address the name resolved to stayed closed"
 # The hub offers that resolver to its spokes (`dns:`), so the spoke routes it
-# through the tunnel and tries to point its host at it (#14). These
-# containers have no systemd-resolved and no bus socket, so what is asserted
-# here is the honest failure: the node comes up anyway and says why -- and it
-# says it about the bus, not "this platform cannot", which is what a
-# separated node reported before the parent learned the operation.
+# through the tunnel and sends its host's names there (#14). These containers
+# have no systemd-resolved and no bus socket, and need neither: the node
+# redirects every DNS query that leaves the host to the hub's resolver (#18).
 status_is node-a '.routes | index("10.60.0.53/32") != null' || fail "the hub's resolver got no route through the tunnel"
-status_is node-a '.dns == null and (.dns_error | test("systemd-resolved"))' || fail "the node does not say why the host kept its own resolver"
+status_is node-a '.dns == ["10.60.0.53"]' || fail "the node did not send the host's names to the hub's resolver: $(docker compose -f docker-compose.yml exec -T node-a boundgatectl -json status | jq -c '{dns, dns_error}')"
 # a server name alone does not open an address of the overlay's networks:
 # anyone could write a permitted name into a ClientHello (it does on the
 # internet, which the lab has none of; see the unit tests)
 if reach_tls public.lab 10.60.0.11; then fail "a server name alone opened an address inside the overlay's networks"; fi
 if x node-a curl -sf --max-time 2 http://10.60.0.11 >/dev/null 2>&1; then fail "a port nothing in the list names was open"; fi
-# resolved through the trusted resolver, the same address opens under its name
-x node-a timeout 5 nslookup tls.lab 10.60.0.53 2>/dev/null | grep -q 10.60.0.11 || fail "the resolver did not answer tls.lab"
+# resolved through the trusted resolver, the same address opens under its
+# name -- also when the host asked a resolver of its own (one that does not
+# even exist here): the query is redirected, and the hub sees it all the same
+x node-a timeout 5 nslookup tls.lab 192.0.2.53 2>/dev/null | grep -q 10.60.0.11 || fail "a query to another resolver was not redirected to the hub's"
 wait_for 10 reach_tls tls.lab 10.60.0.11 || fail "tls.lab stayed closed after it was resolved"
 # a plain address entry of the same list, enforced where the traffic enters the LAN
 wait_for 10 reach 192.168.178.10 target-lan || fail "the address entry of the list did not open the LAN target"

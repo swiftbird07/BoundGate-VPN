@@ -153,13 +153,22 @@ detail of its setup.** A node that keeps asking the resolver of the network
 it sits in sends no query through the tunnel, so the hub learns no name for
 it: plain HTTP, and every other protocol without a server name, then arrives
 as a bare address and only an address entry of the list can permit it. A
-spoke daemon therefore points the host's resolver at the resolvers its
-primary hub offers while the overlay is up (`resolver: hub`, the default:
-systemd-resolved over D-Bus on Linux, for the tunnel device alone and with
-the routing domain `~.`, so `/etc/resolv.conf` is not touched). A server that
-has to keep its own resolver says `resolver: system` and lives with the
-above. `boundgatectl status` shows which resolvers are in effect, or why the
-host kept its own.
+spoke daemon therefore sends the host's names to the resolvers its primary
+hub offers while the overlay is up (`resolver: hub`, the default). On macOS
+and Windows it points the system's resolver there. On Linux it redirects:
+every DNS query that leaves the host or is forwarded by it (port 53, UDP and
+TCP, not to one of the host's own addresses, not one that came out of the
+tunnel) is rewritten to the hub's resolver with nftables, and the redirected
+queries that leave through the tunnel take the overlay address. That covers
+what asks a resolver of its own -- a link's resolver that systemd-resolved
+sends out of that link, Docker's containers, a hard-coded `8.8.8.8` -- and
+needs neither systemd-resolved nor the host's system bus; resolved is still
+told, when there is a bus, so `resolvectl` shows it. IPv6 queries are
+refused, so a resolver moves on to an IPv4 server, which is then redirected
+(the overlay carries IPv4). DNS over TLS or HTTPS is out of its reach. A
+server that has to keep its own resolver says `resolver: system` and lives
+with the above. `boundgatectl status` shows which resolvers are in effect,
+or why the host kept its own.
 
 ### DNS flows are decided query by query
 

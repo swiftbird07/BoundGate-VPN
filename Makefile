@@ -9,7 +9,7 @@ VPKG = gitlab.net407.com/SBH/BoundGate-VPN/internal/version
 LDFLAGS = -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT)
 BINS = boundgate-control boundgate-node boundgatectl boundgate-mux boundgate-fakeidp boundgate-udpbridge boundgate-embedtest
 
-.PHONY: test-arrival test-lib apple-core ios-project android image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin build-windows windows-zip test test-race vet vuln fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
+.PHONY: test-arrival test-dns-redirect test-lib apple-core ios-project android image image-push rehearsal mac-app mac-sekey release release-next release-mirror release-test setup-test tag-latest-test release-key update-test test-tpm web web-dev web-check web-test build-linux build-darwin build-windows windows-zip test test-race vet vuln fuzz cooldown compose-up compose-down compose-logs setup-dev e2e clean
 
 # The admin SPA (web/) is built into internal/control/web/dist and embedded
 # into boundgate-control; build-linux depends on it so the lab image has it.
@@ -100,6 +100,14 @@ test-arrival:
 	box sh -c 'CGO_ENABLED=0 go test -c -o bin/netcfg.test ./internal/node/netcfg/'
 	docker run --rm --privileged -v $(CURDIR)/bin:/t:ro -e BOUNDGATE_TEST_ARRIVAL=1 $(ALPINE) \
 	  sh -c 'apk add -q --no-cache iproute2 nftables netcat-openbsd && /t/netcfg.test -test.run Arrival -test.v'
+
+# The DNS redirect of resolver: hub (#18) with a real kernel: network
+# namespaces for a LAN, a hub behind a tunnel device and a container, each
+# with a resolver of its own. Not part of `test`: needs a privileged container.
+test-dns-redirect:
+	box sh -c 'CGO_ENABLED=0 go test -c -o bin/netcfg.test ./internal/node/netcfg/'
+	docker run --rm --privileged -v $(CURDIR)/bin:/t:ro -e BOUNDGATE_TEST_DNS_REDIRECT=1 $(ALPINE) \
+	  sh -c 'apk add -q --no-cache iproute2 nftables dnsmasq && /t/netcfg.test -test.run DNSRedirect -test.v'
 
 # TPM-backed device keys against a software TPM (swtpm) on the default
 # bridge, where the box can reach it. Not part of `test`: needs Docker.

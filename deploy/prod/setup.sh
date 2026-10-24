@@ -185,7 +185,7 @@ main() {
   mkdir -p "$DIR" || die "cannot create $DIR"
   cd "$DIR"
   # what the questions below may set (set -u: next_steps reads them)
-  NEW_IDENTITY=; PROFILE=; PROFILES_DIR=; RESOLVER=; DBUS=
+  NEW_IDENTITY=; PROFILE=; PROFILES_DIR=; RESOLVER=
   if [ -e docker-compose.yml ]; then
     confirm "There is a setup in $DIR already. Existing files are kept, missing ones written. Continue?" n || exit 0
   fi
@@ -336,23 +336,21 @@ public_addr: \"$PUBLIC:443\"" ;;
   # Where this machine resolves names while the overlay is up. Through the
   # hub is what the policies need: a hub only learns which address a name
   # stands for when it sees the query, so a node that asks its own network's
-  # resolver cannot be matched by name at all (docs/ACL.md). It needs
-  # systemd-resolved and the host's system bus in the container.
+  # resolver cannot be matched by name at all (docs/ACL.md). The node
+  # redirects the host's DNS queries with nftables; nothing to mount.
   say ""
-  say "  1  through the resolvers the hub offers, while the overlay is up (systemd-resolved, tunnel device only)"
+  say "  1  through the resolvers the hub offers, while the overlay is up (this host's and its containers' queries)"
   say "  2  keep this machine's own resolver"
-  [ -S /run/dbus/system_bus_socket ] || say "   note: there is no system bus at /run/dbus/system_bus_socket; 1 has no effect until there is one"
   ask RES "Where should this machine resolve names?" 1 '^[12]$' "1 or 2"
   case "$RES" in
-    1) RESOLVER=hub; DBUS=1 ;;
+    1) RESOLVER=hub ;;
     2) RESOLVER=system
        say "   note: a dynamic access list cannot match this node by name then, and plain HTTP"
        say "   reaches the hub as a bare address (docs/ACL.md)" ;;
   esac
-  dbus_mount() { if [ -n "$DBUS" ]; then sed 's|^      # - /run/dbus/system_bus_socket|      - /run/dbus/system_bus_socket|'; else cat; fi; }
 
   say ""
-  kit node/docker-compose.yml; tpm_device < "$GOT" | profile_mount | dbus_mount | write_new docker-compose.yml
+  kit node/docker-compose.yml; tpm_device < "$GOT" | profile_mount | write_new docker-compose.yml
   write_new node.yaml <<EOF
 # Written by setup.sh. Every setting: deploy/prod/node/node.yaml.example, docs/DEPLOY.md
 name: $NODE
@@ -368,7 +366,7 @@ $EXTRA
 auto_up: true
 profile: $PROFILE                  # which of the advertised networks this machine routes: docs/PROFILES.md${PROFILES_DIR:+
 profiles_dir: $PROFILES_DIR        # mounted read-only in docker-compose.yml}
-resolver: $RESOLVER                # hub: systemd-resolved sends every name through the tunnel (docs/ACL.md); system: keep this machine's resolver
+resolver: $RESOLVER                # hub: this host's DNS goes to the hub's resolver while the overlay is up (docs/ACL.md); system: keep this machine's resolver
 socket: /run/boundgate/node.sock
 tun_name: bg0
 log_dir: /var/log/boundgate

@@ -12,16 +12,12 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-// systemd-resolved is where a Linux host's names are resolved, and it takes
-// resolvers per link: the tunnel device gets the hub's resolvers and the
-// routing domain "~.", which sends every name there instead of to the
-// resolver of the network the machine sits in. That is what a dynamic access
-// list needs (the hub only learns a name when it sees the query, docs/ACL.md)
-// and what a user expects of a tunnel that routes everything.
-//
-// Nothing else on the host is touched: /etc/resolv.conf stays as it is, the
-// setting lives on the link and dies with it. A machine without resolved
-// keeps its resolver and the node says so in its status.
+// systemd-resolved takes resolvers per link: the tunnel device gets the hub's
+// resolvers and the routing domain "~.", so `resolvectl` shows that every name
+// goes there. What makes it so is the redirect (dnsredirect_linux.go); this is
+// only told when there is a bus to tell it on, and nothing else on the host
+// is touched: /etc/resolv.conf stays as it is, the setting lives on the link
+// and dies with it.
 const (
 	resolvedService = "org.freedesktop.resolve1"
 	resolvedPath    = dbus.ObjectPath("/org/freedesktop/resolve1")
@@ -49,16 +45,21 @@ type busCall interface {
 	Close() error
 }
 
-// ErrNoResolver says the host has no resolver that takes per-link settings.
-// The node keeps the system's resolver and reports it; it is not a reason to
-// refuse the overlay.
+// ErrNoResolver says the host has no resolver that takes per-link settings:
+// no bus, or no resolved on it. The redirect works without; resolved is then
+// simply not told.
 var ErrNoResolver = errors.New("netcfg: no systemd-resolved on the system bus")
 
-// SetLinkDNS implements LinkDNSConfigurator.
-func (c linuxCfg) SetLinkDNS(ctx context.Context, ifname string, servers []netip.Addr) error {
+// errNoDevice: the tunnel device is gone, and with it whatever resolved had
+// for its link.
+var errNoDevice = errors.New("netcfg: no such device")
+
+// resolvedLinkDNS hands the resolvers to systemd-resolved for ifname, or
+// takes them back with an empty list.
+func (c linuxCfg) resolvedLinkDNS(ctx context.Context, ifname string, servers []netip.Addr) error {
 	iface, err := net.InterfaceByName(ifname)
 	if err != nil {
-		return fmt.Errorf("netcfg: resolver for %s: %w", ifname, err)
+		return fmt.Errorf("%w: resolver for %s: %v", errNoDevice, ifname, err)
 	}
 	bus, err := dialSystemBus()
 	if err != nil {

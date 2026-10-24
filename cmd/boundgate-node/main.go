@@ -67,9 +67,9 @@ type config struct {
 	// keep the system's resolver.
 	DNS []netip.Addr `yaml:"dns"`
 	// Resolver (spoke, default hub): what to do with the resolvers the
-	// primary hub offers. `hub` points this host's resolver at them while
-	// the overlay is up (Linux: systemd-resolved, per link, with the
-	// routing domain `~.`; /etc/resolv.conf is not touched), `system`
+	// primary hub offers. `hub` sends this host's names to them while the
+	// overlay is up (Linux: every DNS query of the host and its containers
+	// is redirected with nftables; /etc/resolv.conf is not touched), `system`
 	// leaves the host's resolver alone. A node that resolves outside the
 	// tunnel cannot be matched by a dynamic access list by name, and plain
 	// HTTP reaches the hub as a bare address (docs/ACL.md).

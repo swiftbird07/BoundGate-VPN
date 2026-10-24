@@ -265,8 +265,8 @@ type Status struct {
 	// (resolver: system), or because of DNSError.
 	DNS []string `json:"dns,omitempty"`
 	// DNSError says why the hub's resolvers are not in effect although the
-	// hub offers them (no systemd-resolved, no D-Bus socket in the
-	// container, a platform whose daemon cannot do it yet).
+	// hub offers them (no nftables on a Linux host, no IPv4 resolver
+	// among them, a platform whose daemon cannot do it yet).
 	DNSError string `json:"dns_error,omitempty"`
 	Tunnels  int    `json:"tunnels"` // accepted tunnels (hub role)
 	// Relay: what this hub relays between spokes right now and relayed so far.
