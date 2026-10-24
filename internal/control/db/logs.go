@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"math"
 	"strings"
 	"time"
 )
@@ -106,8 +108,9 @@ func (q LogQuery) where(mark int64) (string, []any) {
 		args = append(args, q.Until.UTC().Format(timeFormat))
 	}
 	if q.Text != "" {
-		sqlq += ` AND (message LIKE ? OR attrs_json LIKE ?)`
-		args = append(args, "%"+q.Text+"%", "%"+q.Text+"%")
+		sqlq += ` AND (message LIKE ? ESCAPE '\' OR attrs_json LIKE ? ESCAPE '\')`
+		p := likePattern(q.Text)
+		args = append(args, p, p)
 	}
 	for k, v := range q.Attrs {
 		if !validAttrKey(k) {
@@ -140,14 +143,28 @@ func (q LogQuery) prepare() LogQuery {
 	if q.Limit > MaxLogLimit {
 		q.Limit = MaxLogLimit
 	}
-	if q.Text != "" && q.Since.IsZero() {
+	if q.Text != "" {
+		// a start of its own moves the window, it does not widen it: a
+		// search over everything ever kept would hold a reader of the pool
+		// for as long as it takes, and four of them hold every node's
+		// lookup (R139)
 		until := q.Until
 		if until.IsZero() {
 			until = time.Now()
 		}
-		q.Since = until.Add(-TextWindow)
+		if floor := until.Add(-TextWindow); q.Since.IsZero() || q.Since.Before(floor) {
+			q.Since = floor
+		}
 	}
 	return q
+}
+
+// likePattern makes a LIKE pattern that matches text as it is: SQLite's
+// wildcards in it are escaped, so "%" or "_" in a search finds a percent
+// sign or an underscore and not everything.
+func likePattern(text string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(text) + "%"
 }
 
 // CountLogs counts the events a query matches, without reading them.
@@ -288,10 +305,18 @@ func deref(s *string) string {
 // one, mid-migration) counts as filled rather than as "scan everything".
 func (d *DB) readWatermark(ctx context.Context) int64 {
 	var mark int64
-	if err := d.sql.QueryRowContext(ctx, `SELECT watermark FROM log_events_backfill WHERE id = 1`).Scan(&mark); err != nil {
+	err := d.sql.QueryRowContext(ctx, `SELECT watermark FROM log_events_backfill WHERE id = 1`).Scan(&mark)
+	switch {
+	case err == nil:
+		return mark
+	case errors.Is(err, sql.ErrNoRows), strings.Contains(err.Error(), "no such table"):
 		return 1
 	}
-	return mark
+	// a read that failed for another reason (the database busy, broken)
+	// says nothing about the rows: until it is read again, every row is
+	// taken as one whose attributes are still inside attrs_json, which is
+	// slower and right, instead of fast and missing the old rows
+	return math.MaxInt64
 }
 
 // LogColumnsFilled reports whether every event's hot attributes are columns,

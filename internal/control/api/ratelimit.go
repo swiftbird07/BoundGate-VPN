@@ -28,7 +28,11 @@ func newRateLimiter(burst int, per time.Duration) *rateLimiter {
 func (l *rateLimiter) allowClient(ip string) bool { return l.allow(clientKey(ip)) }
 
 // allow reports whether key may proceed and consumes a token if so.
-func (l *rateLimiter) allow(key string) bool {
+func (l *rateLimiter) allow(key string) bool { return l.allowN(key, 1) }
+
+// allowN is allow for n tokens at once: bytes of a request, for a limiter
+// whose burst is a number of bytes.
+func (l *rateLimiter) allowN(key string, n float64) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -40,10 +44,10 @@ func (l *rateLimiter) allow(key string) bool {
 	refill := now.Sub(b.last).Seconds() / l.per.Seconds() * l.burst
 	b.tokens = min(l.burst, b.tokens+refill)
 	b.last = now
-	if b.tokens < 1 {
+	if b.tokens < n {
 		return false
 	}
-	b.tokens--
+	b.tokens -= n
 	// keep the map bounded
 	if len(l.buckets) > 10000 {
 		for k, v := range l.buckets {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -81,9 +82,23 @@ func hintFrom(ev ShippedEvent, via string) (string, SignInHint, bool) {
 	if principal == "" || ev.Attrs["principal_name"] == nil {
 		return "", SignInHint{}, false // principal_name is set only for a known node
 	}
+	// The hint is shown on the device as a notification with a button. Its
+	// words are the reporting node's, and any approved node may report
+	// one for any other (R137): so they are an address, a port, a protocol
+	// and a host name, and nothing else gets through to the screen.
 	h := SignInHint{Via: via, At: ev.TS}
-	h.Dst, _ = ev.Attrs["dst"].(string)
-	h.Proto, _ = ev.Attrs["proto"].(string)
+	dst, _ := ev.Attrs["dst"].(string)
+	if a, err := netip.ParseAddr(dst); err != nil {
+		return "", SignInHint{}, false
+	} else {
+		h.Dst = a.String()
+	}
+	switch p, _ := ev.Attrs["proto"].(string); p {
+	case "", "tcp", "udp", "icmp", "icmpv6":
+		h.Proto = p
+	default:
+		return "", SignInHint{}, false
+	}
 	switch p := ev.Attrs["dport"].(type) {
 	case float64:
 		h.Port = int(p)
@@ -91,6 +106,9 @@ func hintFrom(ev ShippedEvent, via string) (string, SignInHint, bool) {
 		h.Port = p
 	case uint16:
 		h.Port = int(p)
+	}
+	if h.Port < 0 || h.Port > 65535 {
+		return "", SignInHint{}, false
 	}
 	for _, k := range []string{"sni", "dns_name"} {
 		if v, _ := ev.Attrs[k].(string); v != "" {
@@ -103,8 +121,26 @@ func hintFrom(ev ShippedEvent, via string) (string, SignInHint, bool) {
 			h.Name, _ = ns[0].(string)
 		}
 	}
-	if h.Dst == "" {
-		return "", SignInHint{}, false
+	if h.Name != "" && !hostNameForDisplay(h.Name) {
+		h.Name = "" // the address alone, then
 	}
 	return principal, h, true
+}
+
+// hostNameForDisplay: a host name as a device may show it -- letters,
+// digits, dots, dashes and underscores, at most 253 of them -- and not a
+// sentence somebody wrote for the screen.
+func hostNameForDisplay(s string) bool {
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '.', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }

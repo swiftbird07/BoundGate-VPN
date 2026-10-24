@@ -83,16 +83,20 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         main.post(poll)
+        // The actions are the tile's and the notification's (LaunchToken).
+        // This activity is exported, so any app could send them; without the
+        // token they are just a way to open the app
+        val own = LaunchToken.accepts(this, intent)
         if (intent?.action == ACTION_SIGN_IN) {
             // from the notification: go straight to the sign-in, once
             intent = Intent(intent).setAction(null)
-            main.post { if (status?.optJSONObject("user") == null) signIn() }
+            if (own) main.post { if (status?.optJSONObject("user") == null) signIn() }
         }
         if (intent?.action == ACTION_CONNECT) {
             // from the Quick Settings tile, when Android first has to ask for
             // the VPN permission: the same step as the Connect button
             intent = Intent(intent).setAction(null)
-            main.post { connect() }
+            if (own) main.post { connect() }
         }
     }
 

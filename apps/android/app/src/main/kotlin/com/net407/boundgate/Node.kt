@@ -137,7 +137,7 @@ class Node(private val context: Context) : Core.Platform {
     /** Tapping it opens the app and starts the sign-in (MainActivity.ACTION_SIGN_IN). */
     private fun notifySignIn(nm: NotificationManager, title: String, text: String) {
         nm.createNotificationChannel(NotificationChannel(ATTENTION, "Sign-in", NotificationManager.IMPORTANCE_HIGH))
-        val intent = Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_SIGN_IN)
+        val intent = LaunchToken.stamp(context, Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_SIGN_IN))
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val open = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n = Notification.Builder(context, ATTENTION)

@@ -87,7 +87,7 @@ class VpnTileService : TileService() {
     }
 
     private fun openApp(action: String?) {
-        val intent = Intent(this, MainActivity::class.java).setAction(action)
+        val intent = LaunchToken.stamp(this, Intent(this, MainActivity::class.java).setAction(action))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val go = {
             if (Build.VERSION.SDK_INT >= 34) {

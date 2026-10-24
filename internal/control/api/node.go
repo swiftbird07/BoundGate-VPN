@@ -87,6 +87,12 @@ func (h *Handlers) nodeEnroll(w http.ResponseWriter, r *http.Request) {
 	if n, err := h.d.DB.NodeBySPKI(r.Context(), spki); err == nil {
 		writeJSON(w, http.StatusOK, h.enrollStatus(r, n))
 		return
+	} else if !errors.Is(err, db.ErrNotFound) {
+		// a database that could not answer is not a key it never saw: an
+		// approved node that asks while the database is busy must not be
+		// told it is unknown, let alone be entered a second time
+		fail(w, err, h.d.Logs.System)
+		return
 	}
 	ip := remoteIP(r)
 	// Without an admin signing key no node can ever be approved, and the

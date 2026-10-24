@@ -59,7 +59,10 @@ the APK carries only the Kotlin standard library besides the app itself.
   tile opens the app, which asks for it and connects. The same happens if
   Android refuses to start the service from the tile. The core's
   `statusChanged` asks the system to read the tile again whenever what it
-  shows changes.
+  shows changes. The intents the tile and the sign-in notification send to
+  the activity carry a token from the app's private preferences
+  (`LaunchToken`): the activity is exported, so any app could send the same
+  actions, and without the token they only open the app (R147).
 * **Always-on VPN:** the service declares `SUPPORTS_ALWAYS_ON`. The system
   starts it with the action `android.net.VpnService`, and after the process
   was killed it starts it again (`START_STICKY`). Both mean "connect".

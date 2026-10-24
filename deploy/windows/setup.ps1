@@ -63,6 +63,21 @@ if (-not $tag) {
     catch { Stop-Setup "cannot read the latest release of $repo ($($_.Exception.Message))" }
 }
 if ($tag -notmatch $vpat) { Stop-Setup "the release is not a version: $tag" }
+# --- never backwards: this script notes what it installed, and refuses a release older
+# than that, so that a "latest" that was turned back (or a BOUNDGATE_REF somebody typed
+# in) cannot put a release with a known fault back on the machine. BOUNDGATE_DOWNGRADE=1
+# says it is meant.
+function Get-Semver([string]$v) { [version]($v.Substring(1)) }
+$versionFile = Join-Path $installDir 'version.txt'
+if (Test-Path -LiteralPath $versionFile) {
+    $installed = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+    if ($installed -match $vpat -and (Get-Semver $tag) -lt (Get-Semver $installed)) {
+        if ($env:BOUNDGATE_DOWNGRADE -ne '1') {
+            Stop-Setup "$installed is installed and $tag is older; set BOUNDGATE_DOWNGRADE=1 if you mean to go back"
+        }
+        Write-Warning "going back from $installed to $tag"
+    }
+}
 Write-Host "BoundGate setup ($tag, windows/$arch)"
 
 $work = Join-Path $env:TEMP ('boundgate-setup-' + [guid]::NewGuid())
@@ -125,6 +140,8 @@ try {
     # install.ps1 is a file; a machine's default policy runs none. This process only
     Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
     & $install.FullName @installArgs
+    # what is installed now, for the check above on the next run
+    [IO.File]::WriteAllText($versionFile, $tag + "`n", (New-Object Text.UTF8Encoding($false)))
 } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }

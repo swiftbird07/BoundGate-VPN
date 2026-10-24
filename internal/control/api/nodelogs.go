@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -41,6 +44,11 @@ const (
 // batch every 5 s and drains what it buffered during an outage (at most 5
 // batches) at once.
 const ShipBatchesPerMinute = 30
+
+// ShipBytesPerMinute bounds how much one node may ship: the batches above
+// are small, and the budget lets a few full ones through after an outage
+// without letting one node write the database full at 4 MiB a batch (R146).
+const ShipBytesPerMinute = 16 << 20
 
 // NodeFlowLog is which of the flow decisions that nodes report the control
 // plane writes to its own flow log as well (`log_node_flows`).
@@ -106,8 +114,22 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too many log batches from this node; try again later")
 		return
 	}
+	// the bytes as well as the batches: a batch may be large once in a
+	// while (an outage drained), not thirty times a minute (R146)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, ShipMaxBytes+1))
+	if err != nil || len(raw) > ShipMaxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "the batch is too large")
+		return
+	}
+	if !h.shipBytes.allowN(string(peer.DeviceID()), float64(len(raw))) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "too many log bytes from this node; try again later")
+		return
+	}
 	var body ShipRequest
-	if err := readJSON(r, &body, ShipMaxBytes); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -140,6 +162,7 @@ func (h *Handlers) nodeShipLogs(w http.ResponseWriter, r *http.Request) {
 		if ev.Attrs == nil {
 			ev.Attrs = map[string]any{}
 		}
+		boundAttrs(ev.Attrs)
 		ev.Attrs["node_id"] = self.ID
 		ev.Attrs["node_name"] = self.Name
 		ev.Attrs["reported_by"] = self.ID
@@ -241,12 +264,78 @@ func logNodeFlow(l *slog.Logger, ev ShippedEvent, sess string) {
 		if k == "session" {
 			continue
 		}
+		if reservedLogKey(k) {
+			// slog writes a duplicate key as it is, and whatever reads
+			// the file takes the last one: a node could otherwise write
+			// its own "level", "msg" or "time" into the control plane's
+			// record (R146)
+			k = "node_" + k
+		}
 		args = append(args, k, ev.Attrs[k])
 	}
 	if sess != "" {
 		args = append(args, "session", sess)
 	}
 	l.Info("flow "+clip(ev.Message, 64), args...)
+}
+
+// reservedLogKey says whether k is a key the control plane's own log line
+// carries, which a reported attribute must not take over.
+func reservedLogKey(k string) bool {
+	switch k {
+	case slog.TimeKey, slog.LevelKey, slog.MessageKey, slog.SourceKey, "stream", "component", "event_time", "session":
+		return true
+	}
+	return false
+}
+
+// Bounds on what one reported event may carry. The node's own records are a
+// few dozen short attributes; a node that sends more sends it to fill the
+// database (R146).
+const (
+	shipMaxAttrs    = 64
+	shipMaxString   = 512
+	shipMaxListed   = 32
+	shipMaxListItem = 253 // a host name
+)
+
+// boundAttrs cuts a reported event's attributes to size: at most
+// shipMaxAttrs keys (the rest dropped, by sorted name, so that the result
+// is the same whichever order they came in), strings to shipMaxString, lists
+// to shipMaxListed strings, and nothing nested.
+func boundAttrs(attrs map[string]any) {
+	if len(attrs) > shipMaxAttrs {
+		keys := make([]string, 0, len(attrs))
+		for k := range attrs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys[shipMaxAttrs:] {
+			delete(attrs, k)
+		}
+	}
+	for k, v := range attrs {
+		switch v := v.(type) {
+		case string:
+			attrs[k] = clip(v, shipMaxString)
+		case []any:
+			if len(v) > shipMaxListed {
+				v = v[:shipMaxListed]
+			}
+			for i, item := range v {
+				switch item := item.(type) {
+				case string:
+					v[i] = clip(item, shipMaxListItem)
+				case float64, bool, nil:
+				default:
+					v[i] = nil
+				}
+			}
+			attrs[k] = v
+		case map[string]any:
+			delete(attrs, k)
+		}
+	}
 }
 
 func tunnelReport(hubID string, ev ShippedEvent) (db.TunnelReport, bool) {

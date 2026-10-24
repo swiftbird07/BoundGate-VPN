@@ -64,6 +64,7 @@ type Handlers struct {
 	signLimit  *rateLimiter // sign-token routes, per client
 	loginLimit *rateLimiter // admin login entry point, per client
 	shipLimit  *rateLimiter // node log batches, per node
+	shipBytes  *rateLimiter // node log bytes, per node
 	lookup     transport.DeviceLookup
 	admin      http.Handler
 	node       http.Handler
@@ -91,8 +92,8 @@ func NewWithError(d Deps) (*Handlers, error) {
 		d.PendingTTL = 24 * time.Hour
 	}
 	h := &Handlers{d: d, limit: newRateLimiter(5, time.Minute), signLimit: newRateLimiter(30, time.Minute), loginLimit: newRateLimiter(10, time.Minute),
-		shipLimit: newRateLimiter(ShipBatchesPerMinute, time.Minute),
-		lookup:    dbLookup{d.DB}, loginPolls: map[string]int{}}
+		shipLimit: newRateLimiter(ShipBatchesPerMinute, time.Minute), shipBytes: newRateLimiter(ShipBytesPerMinute, time.Minute),
+		lookup: dbLookup{d.DB}, loginPolls: map[string]int{}}
 	wa, err := h.newWebAuthn()
 	if err != nil {
 		return nil, fmt.Errorf("admin passkeys: %w", err)

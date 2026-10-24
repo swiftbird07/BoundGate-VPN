@@ -110,15 +110,30 @@ func TestFreeTextSearchStaysInsideItsWindow(t *testing.T) {
 	if err != nil || len(evs) != 1 || evs[0].Message != "the new one" {
 		t.Fatalf("%+v %v", evs, err)
 	}
-	// a start of its own is honoured
+	// a start of its own moves the window, it does not widen it (R139):
+	// from three days ago to now is still the last day
 	evs, _ = d.ListLogs(ctx, LogQuery{Text: "one", Since: now.Add(-72 * time.Hour)})
-	if len(evs) != 2 {
-		t.Fatalf("an explicit window: %d", len(evs))
+	if len(evs) != 1 || evs[0].Message != "the new one" {
+		t.Fatalf("an explicit start widened the window: %d", len(evs))
+	}
+	// a day around the old one finds it
+	evs, _ = d.ListLogs(ctx, LogQuery{Text: "one", Since: now.Add(-60 * time.Hour), Until: now.Add(-40 * time.Hour)})
+	if len(evs) != 1 || evs[0].Message != "the old one" {
+		t.Fatalf("an explicit window elsewhere: %d", len(evs))
 	}
 	// without free text nothing is windowed
 	evs, _ = d.ListLogs(ctx, LogQuery{Stream: "system"})
 	if len(evs) != 2 {
 		t.Fatalf("no text, no window: %d", len(evs))
+	}
+	// LIKE's wildcards in the text are characters, not wildcards
+	d.InsertLog(ctx, LogEvent{TS: now, Stream: "system", Message: "100% sure"})
+	evs, _ = d.ListLogs(ctx, LogQuery{Text: "%"})
+	if len(evs) != 1 || evs[0].Message != "100% sure" {
+		t.Fatalf("a percent sign matched %d events", len(evs))
+	}
+	if evs, _ = d.ListLogs(ctx, LogQuery{Text: "_"}); len(evs) != 0 {
+		t.Fatalf("an underscore matched %d events", len(evs))
 	}
 }
 
