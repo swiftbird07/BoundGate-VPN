@@ -2,7 +2,7 @@ module gitlab.net407.com/SBH/BoundGate-VPN
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	fyne.io/systray v1.12.0
