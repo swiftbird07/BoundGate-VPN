@@ -160,8 +160,23 @@ fi
   || die "the Android app cannot be signed on this machine (NO_APK=1 releases without it)"
 
 # ---- 1. tag ----
+# published: the release of $V on Gitea is no longer a draft. Such a tag
+# never moves; everything before that is a build marker of ours.
+published() { [ "$(api GET "/releases/tags/$V" 2>/dev/null | jq -r '.draft // empty')" = false ]; }
+# retag: the tag goes, here and on the server, so that the next push of it
+# starts CI again (a re-run replaces the draft of the same tag, release.yml)
+retag() {
+  published && die "$V is published already; pick another version"
+  git tag -d "$V" >/dev/null 2>&1 || true
+  git push -q origin ":refs/tags/$V" 2>/dev/null || true
+}
+git fetch -q origin "refs/tags/$V:refs/tags/$V" 2>/dev/null || true # a tag another machine pushed
+if git rev-parse -q --verify "refs/tags/$V" >/dev/null && [ "$(git rev-parse "$V^{commit}")" != "$HEAD" ]; then
+  # the tag marks what CI built last time; what fixed that came after it
+  say "$V is tagged at $(git rev-parse --short "$V^{commit}") and HEAD is $(git rev-parse --short HEAD): moving the tag, nothing of $V is published"
+  retag
+fi
 if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
-  [ "$(git rev-parse "$V^{commit}")" = "$HEAD" ] || die "tag $V exists and is not the commit checked out; check it out to resume, or pick another version"
   say "$V is tagged already: resuming"
 else
   top=$(highest)
@@ -217,22 +232,39 @@ fi
 # ---- 3. what CI built ----
 say "waiting for CI's draft release of $V (up to $WAIT_MINUTES min)"
 deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
-# the newest run of the release workflow for this tag: its state, and where to look
-ci_run() { api GET "/actions/tasks?limit=30" | jq -r --arg v "$V" '[.workflow_runs[] | select(.head_branch == $v and (.workflow_id | endswith("release.yml")))][0] // empty | "\(.status)\t\(.html_url // .url)"'; }
+# the newest run of the release workflow for this tag: state, commit, where to look
+ci_run() { api GET "/actions/tasks?limit=30" | jq -r --arg v "$V" '[.workflow_runs[] | select(.head_branch == $v and (.workflow_id | endswith("release.yml")))][0] // empty | "\(.status) \(.head_sha) \(.html_url // .url)"'; }
+retried=dist/.release-retried-$V
 while :; do
   REL=$(api GET "/releases?draft=true&limit=50" | jq -c --arg v "$V" '[.[] | select(.tag_name == $v)][0] // empty')
   if [ -n "$REL" ]; then
     [ "$(echo "$REL" | jq -r .draft)" = true ] || die "$V is published already"
     echo "$REL" | jq -e '[.assets[].name] | index("build.json")' >/dev/null && break
   fi
-  # a workflow that failed leaves no draft to wait for: say so now, not after the deadline
+  # A workflow that failed leaves no draft to wait for. For this very commit
+  # it is started once more (a runner has bad moments; the tag is pushed
+  # again, which is what starts it); a second failure, or one of another
+  # commit, is something to fix: after the push of the fix this script moves
+  # the tag by itself.
   run=$(ci_run 2>/dev/null || true)
-  case "${run%%	*}" in
-    failure|cancelled|skipped) die "CI's release workflow for $V ended with '${run%%	*}' (${run#*	}); fix it, move the tag (git tag -d $V; git push origin :refs/tags/$V), and run this again" ;;
+  set -- $run
+  case "${1:-}" in
+    failure|cancelled|skipped)
+      if [ "${2:-}" = "$HEAD" ] && [ "$(cat "$retried" 2>/dev/null)" != "$HEAD" ]; then
+        say "CI's release workflow for $V ended with '$1' (${3:-}); starting it once more"
+        echo "$HEAD" > "$retried"
+        retag
+        git tag -a "$V" -m "BoundGate $V"
+        git push -q origin "refs/tags/$V"
+        deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+      else
+        die "CI's release workflow for $V ended with '$1' (${3:-}) and did so before; fix it, commit, push, and run this again: the tag moves to the fix by itself"
+      fi ;;
   esac
   [ "$(date +%s)" -lt "$deadline" ] || die "no complete draft of $V after $WAIT_MINUTES min; look at the release workflow in Gitea, then run: make release VERSION=$V"
   sleep "$POLL"
 done
+rm -f "$retried"
 RID=$(echo "$REL" | jq -r .id)
 OUT=dist/release/$V
 rm -rf "$OUT" "$OUT.build.json"; mkdir -p "$OUT"
