@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -24,10 +25,13 @@ func TestServiceCheckAndApply(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	os.WriteFile(tokenFile, []byte("sekrit\n"), 0o600)
 	bundle := installed(t, id, team)
-	idle := false
+	var idle atomic.Bool
 	mac := &fakeMac{}
+	restarted := make(chan struct{}, 1)
+	restartDelay = 10 * time.Millisecond
 	s := &Service{Source: Source{BaseURL: g.srv.URL, Repo: "o/r"}, TokenFile: tokenFile, Keys: keys, Current: "v1.0.0",
-		Bundle: bundle, Idle: func() bool { return idle }, WorkDir: filepath.Join(t.TempDir(), "update"), Mac: MacApp{Run: mac.run}, Log: slog.New(slog.DiscardHandler)}
+		Bundle: bundle, Idle: idle.Load, WorkDir: filepath.Join(t.TempDir(), "update"), Mac: MacApp{Run: mac.run}, Log: slog.New(slog.DiscardHandler),
+		Restart: func() { restarted <- struct{}{} }}
 
 	st := s.Check(context.Background())
 	if st.Error != "" || !st.Available || st.Latest != "v1.1.0" || !st.CanInstall {
@@ -39,9 +43,17 @@ func TestServiceCheckAndApply(t *testing.T) {
 	if err := s.Apply(context.Background()); err == nil || !strings.Contains(err.Error(), "disconnect") {
 		t.Fatalf("installed while the node was up: %v", err)
 	}
-	idle = true
+	idle.Store(true)
 	if err := s.Apply(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	// the daemon ends right after the install, so that the app it opens
+	// again meets the new release, not the old one for as long as it stays
+	// connected
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the daemon did not restart after the install")
 	}
 	if b, _ := os.ReadFile(filepath.Join(bundle, "Contents", "MacOS", "boundgate-node")); string(b) != "new" {
 		t.Fatal("the app was not replaced")
@@ -81,4 +93,20 @@ func TestServiceCheckAndApply(t *testing.T) {
 	if st := s.Status(); st.CanInstall || st.InstallHint == "" {
 		t.Fatalf("status without bundle: %+v", st)
 	}
+}
+
+// A node that was connected in the second between the install and the
+// restart is not cut off: the daemon restarts the next time it is down.
+func TestNoRestartUnderAConnectedNode(t *testing.T) {
+	restartDelay = 10 * time.Millisecond
+	var idle atomic.Bool
+	restarted := make(chan struct{}, 1)
+	s := &Service{Idle: idle.Load, Log: slog.New(slog.DiscardHandler), Restart: func() { restarted <- struct{}{} }}
+	s.restartSoon()
+	select {
+	case <-restarted:
+		t.Fatal("restarted under a connected node")
+	case <-time.After(200 * time.Millisecond):
+	}
+	(&Service{Log: slog.New(slog.DiscardHandler)}).restartSoon() // unsupervised: nothing to call
 }

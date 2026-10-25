@@ -56,6 +56,10 @@ type Service struct {
 	WorkDir string
 	Mac     MacApp
 	Log     *slog.Logger
+	// Restart ends the daemon so that its supervisor starts the binary that
+	// was just installed. Nil: the daemon is not supervised, and it runs the
+	// old release until someone restarts it.
+	Restart func()
 
 	mu     sync.Mutex
 	status Status
@@ -173,7 +177,34 @@ func (s *Service) Apply(ctx context.Context) error {
 	s.status.Available, s.status.Installed = false, r.Manifest.Version
 	s.mu.Unlock()
 	s.Log.Warn("update installed; the daemon restarts from the new app", "from", s.Current, "to", r.Manifest.Version)
+	s.restartSoon()
 	return nil
+}
+
+// restartDelay is how long the daemon waits after an install before it ends:
+// long enough for the answer to reach the app, short enough that the app it
+// opens again meets the new daemon.
+var restartDelay = time.Second
+
+// restartSoon ends the daemon right after an install, while the node is still
+// down. It used to wait until it noticed its executable had been replaced,
+// at most 15 s later -- by then the app that had just opened again had
+// connected, and a node that is up is never cut off for an update: the Mac
+// ran the old daemon under the new app for days, and the panel said "restarts
+// from it in a moment" all the while. Someone who connects within that second
+// still gets it the next time the node is down (restartWhenReplaced).
+func (s *Service) restartSoon() {
+	if s.Restart == nil {
+		return
+	}
+	go func() {
+		time.Sleep(restartDelay)
+		if s.Idle != nil && !s.Idle() {
+			s.Log.Warn("update installed, but the node was connected meanwhile; the daemon restarts the next time it is down")
+			return
+		}
+		s.Restart()
+	}()
 }
 
 func (s *Service) setInstalling(v bool) {

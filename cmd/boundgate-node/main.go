@@ -566,5 +566,12 @@ func newUpdater(cfg config, log *slog.Logger, idle func() bool) *update.Service 
 		}
 		s.Bundle, _ = update.BundleOf(exe)
 	}
+	if underLaunchd() {
+		// KeepAlive starts the new binary at once
+		s.Restart = func() {
+			log.Warn("exiting so that launchd starts the release that was just installed")
+			terminateSelf()
+		}
+	}
 	return s
 }

@@ -23,8 +23,16 @@ type MacApp struct {
 	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
+// toolTimeout bounds one system tool of an install. Gatekeeper asks Apple
+// whether the download is notarized, and with that request held up (a
+// firewall that asks first, no network) spctl waited for the whole
+// ten-minute install budget -- with every button of the app greyed out.
+var toolTimeout = 3 * time.Minute
+
 // SystemRun runs the tool with nothing of the daemon's environment.
 func SystemRun(ctx context.Context, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, toolTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
 	return cmd.CombinedOutput()
