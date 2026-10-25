@@ -50,15 +50,14 @@ type Service struct {
 	Current   string
 	Interval  time.Duration
 	// Bundle is the app this daemon runs from, "" when it does not.
-	Bundle string
-	// Idle reports whether the node is down; an update is only installed then.
-	Idle    func() bool
+	Bundle  string
 	WorkDir string
 	Mac     MacApp
 	Log     *slog.Logger
 	// Restart ends the daemon so that its supervisor starts the binary that
-	// was just installed. Nil: the daemon is not supervised, and it runs the
-	// old release until someone restarts it.
+	// was just installed, and that one connects again if this one was
+	// connected. Nil: the daemon is not supervised, and it runs the old
+	// release until someone restarts it.
 	Restart func()
 
 	mu     sync.Mutex
@@ -146,9 +145,6 @@ func (s *Service) Apply(ctx context.Context) error {
 	if s.Bundle == "" {
 		return errors.New("update: " + s.Status().InstallHint)
 	}
-	if s.Idle != nil && !s.Idle() {
-		return errors.New("update: disconnect first")
-	}
 	s.setInstalling(true)
 	defer s.setInstalling(false)
 	r, st := s.check(ctx)
@@ -186,23 +182,18 @@ func (s *Service) Apply(ctx context.Context) error {
 // opens again meets the new daemon.
 var restartDelay = time.Second
 
-// restartSoon ends the daemon right after an install, while the node is still
-// down. It used to wait until it noticed its executable had been replaced,
-// at most 15 s later -- by then the app that had just opened again had
-// connected, and a node that is up is never cut off for an update: the Mac
-// ran the old daemon under the new app for days, and the panel said "restarts
-// from it in a moment" all the while. Someone who connects within that second
-// still gets it the next time the node is down (restartWhenReplaced).
+// restartSoon ends the daemon right after an install, connected or not: the
+// install was asked for, and nobody should have to do anything more. It used
+// to wait until it noticed its executable had been replaced and the node was
+// down -- by then the app that had just opened again had connected, and the
+// Mac ran the old daemon under the new app for a day, the panel saying
+// "restarts from it in a moment" all the while.
 func (s *Service) restartSoon() {
 	if s.Restart == nil {
 		return
 	}
 	go func() {
 		time.Sleep(restartDelay)
-		if s.Idle != nil && !s.Idle() {
-			s.Log.Warn("update installed, but the node was connected meanwhile; the daemon restarts the next time it is down")
-			return
-		}
 		s.Restart()
 	}()
 }

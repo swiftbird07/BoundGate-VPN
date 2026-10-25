@@ -13,11 +13,7 @@ public struct PanelView: View {
         VStack(spacing: 12) {
             header
             if let u = model.update, let v = u.installed, !v.isEmpty {
-                // the daemon restarts right after an install, but never under
-                // a connected node: one that was connected meanwhile waits
-                Notice(tone: .info, text: model.isConnected
-                       ? "BoundGate \(v) is installed. Disconnect once, and the background service switches to it."
-                       : "BoundGate \(v) is installed. The background service restarts from it in a moment.")
+                Notice(tone: .info, text: "BoundGate \(v) is installed. The background service restarts from it in a moment.")
             } else if let u = model.update, u.available, let latest = u.latest { UpdateCard(model: model, update: u, latest: latest) }
             KeyWarningView(model: model)
             content

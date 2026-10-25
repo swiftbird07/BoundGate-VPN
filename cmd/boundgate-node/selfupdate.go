@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -52,3 +54,41 @@ func restartWhenReplaced(ctx context.Context, log *slog.Logger, idle func() bool
 		return
 	}
 }
+
+// resumeFile names the profile a daemon was connected in when it ended for an
+// update it had installed itself. The daemon that starts next reads it once.
+const resumeFile = "resume-after-update"
+
+// saveResume records profile for the next start.
+func saveResume(stateDir, profile string) error {
+	if profile == "" {
+		profile = "full" // what a node that names no profile comes up in
+	}
+	return os.WriteFile(filepath.Join(stateDir, resumeFile), []byte(profile+"\n"), 0o600)
+}
+
+// takeResume returns the recorded profile and removes the record: it is good
+// for the one start right after the update. A record older than a few
+// minutes is not from that start -- a daemon that failed to come back and was
+// started by hand a day later should not connect on its own -- and is dropped.
+func takeResume(stateDir string, log *slog.Logger) string {
+	p := filepath.Join(stateDir, resumeFile)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return ""
+	}
+	defer os.Remove(p)
+	if !fi.Mode().IsRegular() || fi.Size() > 256 || time.Since(fi.ModTime()) > resumeWithin {
+		return ""
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	profile := strings.TrimSpace(string(b))
+	log.Info("connecting again after the update", "profile", profile)
+	return profile
+}
+
+// resumeWithin is how old a record may be and still be the update's.
+const resumeWithin = 5 * time.Minute

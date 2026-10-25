@@ -278,14 +278,22 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Disconnects, lets the daemon install the release, and opens the new app.
+    /// Lets the daemon install the release and opens the new app. The daemon
+    /// restarts from it right away and connects again if it was connected:
+    /// nothing is left to do for whoever clicked.
     public func installUpdate() {
         guard busy == nil else { return }
         busy = "Installing the update…"; actionError = nil
         let client = self.client
         let bundle = Bundle.main.bundleURL
         Task.detached {
-            let result = Result { () -> UpdateStatus in _ = try? client.down(); return try client.updateApply() }
+            let result = Result { () -> UpdateStatus in
+                do { return try client.updateApply() } catch where error.localizedDescription.contains("disconnect first") {
+                    // a daemon from before 2026-10-25 installs only while down
+                    _ = try? client.down()
+                    return try client.updateApply()
+                }
+            }
             await MainActor.run {
                 self.busy = nil
                 switch result {

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -45,5 +46,45 @@ func TestRestartWhenReplaced(t *testing.T) {
 	case <-sig:
 	case <-time.After(2 * time.Second):
 		t.Fatal("no restart after the executable changed")
+	}
+}
+
+// A daemon that ended for its own update leaves the profile it was connected
+// in; the next start connects in it once. An old record is not the update's.
+func TestResumeAfterUpdate(t *testing.T) {
+	dir := t.TempDir()
+	log := slog.New(slog.DiscardHandler)
+	if got := takeResume(dir, log); got != "" {
+		t.Fatalf("nothing recorded, yet %q", got)
+	}
+	if err := saveResume(dir, "lan-only"); err != nil {
+		t.Fatal(err)
+	}
+	if got := takeResume(dir, log); got != "lan-only" {
+		t.Fatalf("got %q", got)
+	}
+	if got := takeResume(dir, log); got != "" {
+		t.Fatalf("a record was used twice: %q", got)
+	}
+	// a node that named no profile comes up in the full one
+	if err := saveResume(dir, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := takeResume(dir, log); got != "full" {
+		t.Fatalf("got %q", got)
+	}
+	// a daemon started by hand long after a failed update does not connect
+	if err := saveResume(dir, "full"); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, resumeFile), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if got := takeResume(dir, log); got != "" {
+		t.Fatalf("an hour-old record connected: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, resumeFile)); err == nil {
+		t.Fatal("the old record was left behind")
 	}
 }

@@ -254,7 +254,7 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 	}
 	// one updater for the life of the daemon: with a node running and in
 	// setup mode, where an update needs no control plane
-	upd := newUpdater(cfg, logs.System, func() bool { n := running.Load(); return n == nil || n.Status().State == node.StateDown })
+	upd := newUpdater(cfg, logs.System)
 	if upd != nil {
 		go upd.Run(ctx)
 	}
@@ -272,6 +272,9 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 	default:
 		nets = &networks{root: cfg.StateDir}
 	}
+	// a daemon that ended for an update it installed was connected: the new
+	// one connects again, in the same profile, without anyone asking
+	resume := takeResume(cfg.StateDir, logs.System)
 	for ctx.Err() == nil {
 		cur := current{
 			stateDir:     cfg.StateDir,
@@ -316,6 +319,10 @@ func runWith(ctx context.Context, cfg config, sep *separated) error {
 				local.Name = s.Name
 			}
 		}
+		if resume != "" && cur.upWith == "" {
+			cur.upWith = resume
+		}
+		resume = ""
 		err := runNode(ctx, cfg, local, logs, fromFile, cur, upd, sep)
 		switch {
 		case errors.Is(err, ipc.ErrSwitch):
@@ -533,7 +540,7 @@ var running atomic.Pointer[node.Node]
 // newUpdater builds the release checker. A build without release keys, or
 // one that is not a release, still answers "what is the latest": it never
 // offers to install.
-func newUpdater(cfg config, log *slog.Logger, idle func() bool) *update.Service {
+func newUpdater(cfg config, log *slog.Logger) *update.Service {
 	keys, err := update.BuiltinKeys()
 	if err != nil {
 		log.Info("updates are off", "reason", err)
@@ -559,7 +566,7 @@ func newUpdater(cfg config, log *slog.Logger, idle func() bool) *update.Service 
 		tokenFile = filepath.Join(cfg.StateDir, "update.token")
 	}
 	s := &update.Service{Source: src, TokenFile: tokenFile, Keys: keys, Current: version.Version, Interval: interval,
-		Idle: idle, WorkDir: filepath.Join(cfg.StateDir, "update"), Mac: update.MacApp{Run: update.SystemRun}, Log: log}
+		WorkDir: filepath.Join(cfg.StateDir, "update"), Mac: update.MacApp{Run: update.SystemRun}, Log: log}
 	if exe, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = resolved
@@ -567,8 +574,16 @@ func newUpdater(cfg config, log *slog.Logger, idle func() bool) *update.Service 
 		s.Bundle, _ = update.BundleOf(exe)
 	}
 	if underLaunchd() {
-		// KeepAlive starts the new binary at once
+		// KeepAlive starts the new binary at once, and it connects again
+		// in the profile this one was connected in
 		s.Restart = func() {
+			if n := running.Load(); n != nil {
+				if st := n.Status(); st.State != node.StateDown {
+					if err := saveResume(cfg.StateDir, st.Profile); err != nil {
+						log.Error("the release that was just installed will not connect by itself", "err", err)
+					}
+				}
+			}
 			log.Warn("exiting so that launchd starts the release that was just installed")
 			terminateSelf()
 		}

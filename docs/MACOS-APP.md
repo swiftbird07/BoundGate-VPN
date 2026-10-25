@@ -91,12 +91,13 @@ changed, an approval that does not verify.
   goes as well: the way from a software key to a Secure Enclave key.
 * **App updates.** Replacing `BoundGate.app` does not restart its
   LaunchDaemon; the old process would run on from the deleted file. After an
-  install of its own the daemon ends itself a second later, while the node is
-  still down, and launchd (`KeepAlive`) starts the new one. Otherwise it checks
-  every 15 s whether its executable is still the file it was started from
-  and, once the node is down, ends itself. A node that is up is left alone
-  until it is down. Before 2026-10-25 only the second way existed, and the app
-  that opened again connected before the daemon looked: the old daemon ran on
+  install of its own the daemon ends itself a second later, connected or not,
+  launchd (`KeepAlive`) starts the new one, and that one connects again in the
+  profile the old one was connected in ([RELEASES.md](RELEASES.md)). An app
+  replaced by hand is noticed within 15 s and taken up once the node is down:
+  a connection nobody asked to end is not ended. Before 2026-10-25 only that
+  second way existed, also for the app's own installs, and the app that
+  opened again had connected before the daemon looked: the old daemon ran on
   under the new app for as long as the node stayed up.
 * **Updates.** The daemon looks for signed releases and installs them on
   request (`GET /v1/update`, `POST /v1/update/check`, `POST /v1/update/apply`);

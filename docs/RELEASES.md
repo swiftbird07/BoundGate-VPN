@@ -211,16 +211,18 @@ against a stand-in for Gitea by `make release-test`.
 **The Mac app.** The daemon of a release build asks the release API every six
 hours (`update: {check, source, url, repo, token_file, interval}` in `node.yaml`) and
 verifies what it finds; the app shows "Update available" and, from the menu,
-"Check for Updates…". "Install and restart" disconnects, and the root daemon
-downloads the zip, checks it against the manifest, unpacks it next to the app,
+"Check for Updates…". "Install and restart" needs nothing else: the root
+daemon downloads the zip, checks it against the manifest, unpacks it next to the app,
 and requires: same bundle identifier, a valid code signature **of the same
 team as the running app**, Gatekeeper's acceptance (notarization). Only then
 it swaps the bundles (rename, undone if it fails), answers the app, and a
 second later ends itself so that launchd starts the new one; the app opens
-again and meets the new daemon. Each system tool of the check has three
-minutes (a Gatekeeper request that is held up would otherwise keep the app
-busy for the whole install). If the node was connected in that second, the
-daemon stays until the node is down, and the app says so.
+again and meets the new daemon. A node that was connected stays connected
+until then and connects again afterwards, in the same profile: the daemon
+leaves the profile in `resume-after-update` in its state directory, and the
+next start reads it once (a record older than five minutes is dropped). Each
+system tool of the check has three minutes (a Gatekeeper request that is held
+up would otherwise keep the app busy for the whole install).
 No administrator password: the daemon already is root, and the only thing it
 can be talked into installing is a newer release signed by the release key
 and by the same Apple developer. `boundgatectl update [-install]` does the

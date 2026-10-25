@@ -207,7 +207,7 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 		return nil
 	case "update":
 		fs := flag.NewFlagSet("update", flag.ContinueOnError)
-		install := fs.Bool("install", false, "install the newer release (the node must be down; app bundle installs only)")
+		install := fs.Bool("install", false, "install the newer release and restart into it, connected again if it was (app bundle installs only)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func run(c *ipc.Client, args []string, asJSON bool) error {
 			if st, err = c.UpdateApply(); err != nil {
 				return err
 			}
-			fmt.Println("installed. The daemon restarts from the new app within some seconds; open the app again.")
+			fmt.Println("installed. The daemon restarts from the new app in a moment and connects again if it was connected; open the app again.")
 			return nil
 		}
 		if asJSON {
