@@ -33,9 +33,16 @@ What `PacketTunnelProvider` does:
 
 * It starts the engine with `auto_up` and a 30 MiB Go heap limit.
 * It answers `apply` with `setTunnelNetworkSettings`: the overlay address,
-  the included routes, the excluded host routes for control plane, hubs and
-  IdP, and the MTU, and the hub's resolvers when it offers some (`dns`,
-  for every name). It then hands the core the utun (`bg_utun_fd`).
+  the included routes and the MTU, and the hub's resolvers when it offers
+  some (`dns`, for every name). It then hands the core the utun
+  (`bg_utun_fd`). No excluded routes: the extension's own sockets stay
+  outside the tunnel by the system's doing, and an excluded route would only
+  take other apps' traffic to that address out of the tunnel -- the hub's
+  public address usually also serves the identity provider and more behind a
+  reverse proxy. Safari reached the IdP over the physical path that way and,
+  after a change of network, got "not connected to the internet" for that
+  one site (2026-10-26). The way to the sign-in through the tunnel is a
+  policy ([ANDROID.md](ANDROID.md), lockdown).
 * It ends the VPN when the node's overlay goes down.
 * It forwards app messages to the node and reports its memory.
 
@@ -97,8 +104,8 @@ creates the profiles with automatic signing:
   kept running, the control channel did not, and the node showed as offline
   in the admin UI). The node therefore keeps an address book
   (`internal/node/resolve.go`): every name of the control plane, the hubs,
-  peers and the identity provider is dialed by the address it resolved to,
-  which is also the address excluded from the tunnel. A lookup that fails
+  peers and the identity provider is dialed by the address it resolved to.
+  A lookup that fails
   keeps the address the name had, with one warning in the log, and the next
   lookup that works replaces it. The same code runs on every platform.
 * **IPv6-only networks.** Many mobile networks give a phone no IPv4 at all;
@@ -109,8 +116,7 @@ creates the profiles with automatic signing:
   or a name whose lookup fails inside the tunnel) is translated with the
   network's NAT64 prefix, which the node asks for as `ipv4only.arpa`
   (RFC 7050, /96 prefixes). The prefix is asked for again after every
-  network change. IPv6 is not routed into the tunnel, so those dials need
-  no excluded route.
+  network change. IPv6 is not routed into the tunnel.
 * **Joining a network a peer announces.** On mobile data the tunnel routes
   every network the hubs advertise, also a home LAN behind a subnet router.
   Joining that LAN's Wi-Fi then put the Wi-Fi's router, DHCP and DNS into

@@ -23,11 +23,14 @@ type NetworkSettings struct {
 	MTU     int          `json:"mtu"`
 	// Routes go into the tunnel, sorted. 0.0.0.0/0 arrives as its two halves.
 	Routes []netip.Prefix `json:"routes"`
-	// Excluded are hosts that must stay outside the tunnel even when a route
-	// covers them: the control plane, hubs, the identity provider. Where the
-	// platform keeps the app's own sockets out of the tunnel anyway (iOS and
-	// macOS network extensions, Android with the app disallowed) they need
-	// nothing, but a route for them does no harm.
+	// Excluded are the hosts the node itself talks to: the control plane,
+	// hubs, the identity provider. Where the platform keeps the app's own
+	// sockets out of the tunnel anyway (iOS and macOS network extensions,
+	// Android with the app disallowed) they need no route, and a route for
+	// them does harm: it takes other apps' traffic to that address out of
+	// the tunnel too, and a hub's public address usually serves more than
+	// the hub (iOS, 2026-10-26: the IdP behind the same reverse proxy). iOS
+	// uses the first as the tunnel's remote address and nothing else.
 	Excluded []netip.Addr `json:"excluded,omitempty"`
 	// DNS are the resolvers the primary hub offers. When set, the platform
 	// resolves through them only; they are among Routes (through the

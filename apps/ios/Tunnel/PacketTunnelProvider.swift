@@ -228,7 +228,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
             guard let (net, bits) = r.splitPrefix(), !net.contains(":") else { return nil }
             return bits == 0 ? NEIPv4Route.default() : NEIPv4Route(destinationAddress: net, subnetMask: mask(bits))
         }
-        v4.excludedRoutes = (s.excluded ?? []).filter { !$0.contains(":") }.map { NEIPv4Route(destinationAddress: $0, subnetMask: "255.255.255.255") }
+        // No excluded routes. The extension's own sockets -- the control
+        // channel, the hub links -- stay outside the tunnel by the system's
+        // doing, whatever the routes say. An excluded route only takes
+        // *other* apps' traffic to that address out of the tunnel, and the
+        // hub's address is rarely the hub's alone: behind one public address
+        // sit the hub, the control plane, the identity provider and whatever
+        // else a reverse proxy serves. Safari then reached the IdP over the
+        // physical path, which iOS held "unsatisfied" for a while after the
+        // phone had changed networks, and said "not connected to the
+        // internet" for that one site while everything through the tunnel
+        // worked (2026-10-26). Through the tunnel the hub decides, like for
+        // every other destination; the way to the sign-in is a policy.
         ns.ipv4Settings = v4
         if let dns = s.dns, !dns.isEmpty {
             // the hub's resolvers (hub option `dns`) for every name, through the tunnel

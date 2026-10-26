@@ -47,6 +47,8 @@ class TunnelService : VpnService() {
     @Volatile private var network: Network? = null
     @Volatile private var below: LinkProperties? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
+    // what the interface the core holds was built from, and its descriptor
+    @Volatile private var applied: Pair<String, Int>? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -96,8 +98,27 @@ class TunnelService : VpnService() {
         super.onDestroy()
     }
 
-    /** Builds the interface for the core's settings and hands its descriptor over (the core owns it). */
+    /**
+     * Builds the interface for the core's settings and hands its descriptor
+     * over (the core owns it). The core hands the settings over again after
+     * every change of network (for the resolvers of the network below). The
+     * same interface again, in the middle of the phone joining a Wi-Fi, left
+     * it without internet until the VPN was switched off and on (reported
+     * 2026-10-26; iOS had the same, 2026-09-22): when nothing that goes into
+     * the interface changed, the one the core holds is kept, and only the
+     * network underneath is told to it (setUnderlyingNetworks, watchNetwork).
+     */
     fun establish(s: JSONObject): Int {
+        val lp = below
+        val offered = s.optJSONArray("dns")?.let { d -> (0 until d.length()).map { InetAddress.getByName(d.getString(it)) } }.orEmpty()
+        val fromBelow = if (offered.isEmpty()) "${lp?.dnsServers} ${lp?.domains}" else ""
+        val key = "$s lockdown=$isLockdownEnabled below=$fromBelow"
+        applied?.let { (k, fd) ->
+            if (k == key) {
+                Log.i(Node.TAG, "establish: unchanged, interface $fd kept")
+                return fd
+            }
+        }
         val b = Builder().setSession("BoundGate").setMtu(s.getInt("mtu"))
         prefix(s.getString("address")).let { (a, bits) -> b.addAddress(a, bits) }
         s.optJSONArray("routes")?.let { r ->
@@ -105,17 +126,16 @@ class TunnelService : VpnService() {
         }
         val outside = mutableSetOf<InetAddress>()
         s.optJSONArray("excluded")?.let { e -> for (i in 0 until e.length()) outside += InetAddress.getByName(e.getString(i)) }
-        val offered = s.optJSONArray("dns")?.let { d -> (0 until d.length()).map { InetAddress.getByName(d.getString(it)) } }.orEmpty()
         if (offered.isNotEmpty()) {
             // the hub's resolvers, and only those: the core routes them
             // through the tunnel and the hub lets DNS to them through
             offered.forEach { b.addDnsServer(it) }
         } else {
-            below?.dnsServers?.forEach {
+            lp?.dnsServers?.forEach {
                 b.addDnsServer(it)
                 outside += it
             }
-            below?.domains?.split(' ')?.filter { it.isNotBlank() }?.forEach { b.addSearchDomain(it) }
+            lp?.domains?.split(' ')?.filter { it.isNotBlank() }?.forEach { b.addSearchDomain(it) }
         }
         // Always-on with "Block connections without VPN" blocks every other
         // app's traffic outside the tunnel, excluded or not: then the IdP and
@@ -127,15 +147,19 @@ class TunnelService : VpnService() {
         b.setConfigureIntent(openApp())
         network?.let { b.setUnderlyingNetworks(arrayOf(it)) }
         val pfd = b.establish() ?: throw IllegalStateException("Android does not let BoundGate set up the VPN (was the permission revoked?)")
-        return pfd.detachFd()
+        val fd = pfd.detachFd()
+        applied = key to fd
+        return fd
     }
 
     /** The core took the overlay down and closed the interface. */
     fun released() {
+        applied = null
         stopTunnel()
     }
 
     private fun stopTunnel() {
+        applied = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

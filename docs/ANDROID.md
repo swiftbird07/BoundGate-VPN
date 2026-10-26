@@ -46,7 +46,13 @@ the APK carries only the Kotlin standard library besides the app itself.
   under the VPN). When it changes, it tells the core (`NetworkChanged`: the
   control channel reconnects at once and the hub links move to new sockets
   by QUIC connection migration, POWER.md) and sets it as the VPN's
-  underlying network, so Android reports metering correctly.
+  underlying network, so Android reports metering correctly. The core then
+  hands the settings over again; the interface is only built anew when
+  something in them changed (the resolvers copied from the network below,
+  lockdown), otherwise the one the core holds stays. Until 2026-10-26 every
+  hand-over built a new interface, and one built while the phone was joining
+  a Wi-Fi left it without internet -- the Wi-Fi joined, no icon, nothing
+  reached the net -- until the VPN was switched off and on.
 * **Disconnect:** `POST /v1/down`. The core closes the interface and calls
   `release`, and the service stops. If another VPN takes over or the user
   revokes it in the settings (`onRevoke`), the result is the same.
