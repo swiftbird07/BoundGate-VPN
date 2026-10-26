@@ -29,6 +29,7 @@ const nodes: T.Node[] = [
   node(7, 'lenas-thinkpad', 'pending', ['endpoint'], { kind: 'interactive', platform: 'linux/amd64', key_kind: 'tpm2', hardware_bound: false, hardware_claimed: true, requested_public_addr: '198.51.100.23:4443', requested_at: ago(420) }),
   node(8, 'old-laptop', 'revoked', ['endpoint'], { kind: 'interactive', revoked_at: ago(86400 * 9), revoked_by: 'martin', overlay_ip: '10.21.0.31' }),
   node(9, 'adas-macbook', 'approved', ['endpoint'], { kind: 'interactive', platform: 'darwin/arm64', key_kind: 'secure-enclave', hardware_bound: true, hardware_claimed: true, active_tunnels: 2, tags: ['laptop'] }),
+  node(10, 'adas-pixel', 'approved', ['endpoint'], { kind: 'interactive', platform: 'android', key_kind: 'android-strongbox', hardware_bound: true, hardware_claimed: true, active_tunnels: 1, tags: ['phone'] }),
 ];
 nodes[5].sign_command = `boundgatectl admin sign --control https://control.example.net --node ${nodes[5].id} --fingerprint ${nodes[5].fingerprint} --token st_4be1c0a97d`;
 nodes[5].sign_expires_at = new Date(Date.now() + 480e3).toISOString();
@@ -45,7 +46,7 @@ const tunnels: T.Tunnel[] = [
   tunnel(9, nodes[1], nodes[3], 80000, 52000, 'client down'), tunnel(10, nodes[0], nodes[4], 70000, 41000, 'client down'), tunnel(11, nodes[1], nodes[4], 69990, 41000, 'client down'),
   tunnel(12, nodes[0], nodes[4], 30000, 21000, 'session expired'), tunnel(13, nodes[1], nodes[4], 29990, 21000, 'session expired'), tunnel(14, nodes[0], nodes[8], 50000, 9000, 'client down'),
   tunnel(15, nodes[1], nodes[3], 40000, 7300, 'hub restarted'), tunnel(16, nodes[0], nodes[8], 2400), tunnel(17, nodes[1], nodes[8], 2390),
-  { ...tunnel(18, nodes[2], nodes[8], 1500), transport: 'relay' }, // a path between two spokes, through a hub's relay
+  { ...tunnel(18, nodes[2], nodes[8], 1500), transport: 'relay' }, tunnel(19, nodes[0], nodes[9], 600), // a path between two spokes, through a hub's relay
 ];
 // Counters move and one tunnel flaps, so the demo shows rates and the pulse of a tunnel opening and closing.
 const pace: Record<string, number> = { t1: 2.4e6, t2: 9e6, t3: 3e5, t4: 4e4, t5: 1.2e6, t6: 0, t16: 6e5, t17: 2e4, t18: 3e6 };

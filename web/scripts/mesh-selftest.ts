@@ -1,5 +1,5 @@
 // Self-test of src/lib/mesh.ts: node scripts/mesh-selftest.ts
-import { activity, buildMesh, changes, fmtRate, kindOf, measureRates, openAt, step } from '../src/lib/mesh.ts';
+import { activity, buildMesh, changes, fmtRate, isPhone, kindOf, measureRates, openAt, step } from '../src/lib/mesh.ts';
 import type { Node, Session, Tunnel } from '../src/lib/types.ts';
 
 let failed = 0;
@@ -24,6 +24,7 @@ const tunnels = [tun('t1', 'hub1', 'a', 3600), tun('t2', 'hub2', 'a', 7200, 1800
 const DAY = 86400e3;
 
 ok(kindOf(['hub', 'exit-node']) === 'hub' && kindOf(['subnet-router']) === 'router' && kindOf(['exit-node', 'endpoint']) === 'exit' && kindOf(['endpoint']) === 'endpoint', 'kindOf');
+ok(isPhone('ios') && isPhone('android') && !isPhone('darwin') && !isPhone('linux/arm64') && !isPhone(undefined), 'isPhone');
 ok(openAt(tunnels[1], now - 3000e3) && !openAt(tunnels[1], now) && !openAt(tunnels[1], now - 8000e3), 'openAt');
 
 const live = buildMesh(nodes, sessions, tunnels, now, now, DAY, new Map([['t1', 125000]]));

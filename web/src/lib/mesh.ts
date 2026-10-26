@@ -22,10 +22,13 @@ export interface Mesh { nodes: MeshNode[]; lans: MeshLan[]; edges: MeshEdge[] }
 // power and send one every 10 minutes (node power save, docs/POWER.md).
 const ONLINE_AFTER = 90, ONLINE_AFTER_PHONE = 11 * 60;
 
+/** isPhone: the node runs the iOS or Android app. */
+export const isPhone = (platform?: string) => platform === 'ios' || platform === 'android';
+
 /** seenRecently: the node's last heartbeat is recent enough to call it online. */
 export function seenRecently(n: { platform?: string; last_seen_at?: string }, now = Date.now()): boolean {
   if (!n.last_seen_at) return false;
-  const after = n.platform === 'ios' || n.platform === 'android' ? ONLINE_AFTER_PHONE : ONLINE_AFTER;
+  const after = isPhone(n.platform) ? ONLINE_AFTER_PHONE : ONLINE_AFTER;
   return (now - Date.parse(n.last_seen_at)) / 1000 < after;
 }
 const REPULSION = 9000, SPRING = 230, GRAVITY = 0.006;

@@ -5,7 +5,7 @@
   import { onMount } from 'svelte';
   import { admin } from '../lib/api';
   import type { Node, Session, Tunnel } from '../lib/types';
-  import { activity, buildMesh, changes, fmtRate, kindOf, measureRates, step, type Mesh, type MeshEdge, type MeshNode, type NodeKind } from '../lib/mesh';
+  import { activity, buildMesh, changes, fmtRate, isPhone, kindOf, measureRates, step, type Mesh, type MeshEdge, type MeshNode, type NodeKind } from '../lib/mesh';
   import { ago, bytes, duration, when } from '../lib/util';
   import { poll, type PollState } from '../lib/poll';
   import Icon from '../lib/components/Icon.svelte';
@@ -21,10 +21,11 @@
     router: '<path d="M3.5 12h6.5l5-6h5.5M10 12l5 6h5.5"/><circle cx="10" cy="12" r="1.6"/>',
     exit: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c3.2 3 3.2 14 0 17M12 3.5c-3.2 3-3.2 14 0 17"/>',
     laptop: '<rect x="5" y="5.5" width="14" height="9.5" rx="1.8"/><path d="M2.8 18.5h18.4"/>',
+    phone: '<rect x="7" y="3" width="10" height="18" rx="2.2"/><path d="M11 17.8h2"/>',
     server: '<rect x="4.5" y="4.5" width="15" height="6" rx="1.8"/><rect x="4.5" y="13.5" width="15" height="6" rx="1.8"/><path d="M8 7.5h.01M8 16.5h.01"/>',
     chip: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5"/>',
   };
-  const glyphOf = (n: MeshNode) => (n.kind === 'hub' ? glyphs.hub : n.kind === 'router' ? glyphs.router : n.kind === 'exit' ? glyphs.exit : n.interactive ? glyphs.laptop : glyphs.server);
+  const glyphOf = (n: MeshNode) => (n.kind === 'hub' ? glyphs.hub : n.kind === 'router' ? glyphs.router : n.kind === 'exit' ? glyphs.exit : isPhone(n.node.platform) ? glyphs.phone : n.interactive ? glyphs.laptop : glyphs.server);
   const kindLabel: Record<NodeKind, string> = { hub: 'hub', router: 'subnet router', exit: 'exit node', endpoint: 'endpoint' };
 
   let nodes = $state.raw<Node[]>([]);
