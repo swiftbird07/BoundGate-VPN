@@ -447,16 +447,6 @@ private struct RouteRow: View {
     }
 }
 
-/// The built-in profiles by what they do; a profile from a file by its name.
-private func profileLabel(_ name: String) -> String {
-    switch name {
-    case "full": return "Full"
-    case "lan-only": return "LAN only"
-    case "wan-only": return "WAN only"
-    default: return name
-    }
-}
-
 private struct FitWindow: NSViewRepresentable {
     var height: CGFloat
     func makeNSView(context: Context) -> NSView { NSView() }

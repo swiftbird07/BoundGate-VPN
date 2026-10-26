@@ -80,6 +80,12 @@ creates the profiles with automatic signing:
 * **Start fails.** If the overlay does not come up within 25 seconds (not
   approved, control plane unreachable), the tunnel ends with the node's own
   explanation.
+* **Route.** A "Route" row in the connection card, as on the Mac, whenever
+  the node offers more than one profile ([PROFILES.md](PROFILES.md)):
+  connected, the node switches at once (`POST /v1/profile` to the
+  extension); otherwise the choice is kept in the app group
+  (`AppConfig.profile`) and the extension's engine starts with it
+  (`profile` in embed.Config), so the tunnel comes up in it.
 * **Disconnect.** The tunnel stops and releases the lock. The app takes its
   engine back and retries while the lock is still held.
 * **Wi-Fi ↔ cellular.** `NWPathMonitor` calls `bg_network_changed` when

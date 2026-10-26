@@ -191,8 +191,10 @@ struct MobileConnectionCard: View {
                         // the packet tunnel may use 50 MiB before iOS ends it
                         InfoRow(label: "Tunnel memory", value: String(format: "%.1f of 50 MiB", m))
                     }
+                    MobileRouteRow(model: model)
                 case .loginRequired:
                     Text("Sign in to finish connecting").font(.display(16)).foregroundStyle(t.text)
+                    MobileRouteRow(model: model)
                     Text(model.loginInProgress ? "Continue in the browser, then come back here."
                                                : "The network wants to know who is using this device.")
                         .font(.body(13)).foregroundStyle(t.text2).fixedSize(horizontal: false, vertical: true)
@@ -202,6 +204,7 @@ struct MobileConnectionCard: View {
                 default:
                     Text("Not connected").font(.display(16)).foregroundStyle(t.text)
                     if case .unavailable(let why) = model.vpn { Notice(tone: .warn, text: why) }
+                    MobileRouteRow(model: model)
                 }
                 ForEach(s.skippedRoutes ?? [], id: \.self) { Notice(tone: .info, text: "Not routed: \($0)") }
                 if phase != .connected, let e = s.lastError, !e.isEmpty { Notice(tone: .bad, text: e) }
@@ -223,6 +226,31 @@ struct MobileConnectionCard: View {
                 Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true))
             default:
                 Button("Disconnect") { model.disconnect() }.buttonStyle(BGButtonStyle(large: true))
+            }
+        }
+    }
+}
+
+/// Which networks go through the tunnel, as on the Mac: a choice when the
+/// node offers more than one profile. Connected, the switch is immediate.
+struct MobileRouteRow: View {
+    @ObservedObject var model: MobileModel
+    @Environment(\.theme) private var t
+
+    var body: some View {
+        if model.profiles.count > 1 {
+            let current = Binding<String>(
+                get: { model.profile.isEmpty ? "full" : model.profile },
+                set: { model.setProfile($0) }
+            )
+            HStack(alignment: .firstTextBaseline) {
+                Text("Route").font(.body(12)).foregroundStyle(t.text2)
+                Spacer(minLength: 12)
+                Picker("Route", selection: current) {
+                    ForEach(model.profiles, id: \.self) { Text(profileLabel($0)).tag($0) }
+                }
+                .pickerStyle(.menu).labelsHidden().tint(t.text)
+                .disabled(model.busy != nil)
             }
         }
     }

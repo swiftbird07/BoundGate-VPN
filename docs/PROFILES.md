@@ -95,9 +95,10 @@ they are, so nothing reconnects and no flow is interrupted that both profiles
 route. Routes the new profile drops disappear at once, which is the point of
 the command — the way back to a network is one more switch, not a reconnect.
 
-The same choice is in the Mac panel and the Windows tray under "Route": while
-the node is up, picking a profile applies it live; while it is down, it is
-remembered for the next connection. A hub takes no profile at all — it
+The same choice is in the Mac panel, the Windows tray and, since 2026-10-26,
+the iPhone and Android apps under "Route": while the node is up, picking a
+profile applies it live; while it is down, it is remembered for the next
+connection (on the phones the tunnel then comes up in it). A hub takes no profile at all — it
 advertises networks, it does not route other peers' — and the daemon says so
 instead of switching.
 

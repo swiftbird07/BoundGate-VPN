@@ -53,6 +53,10 @@ the APK carries only the Kotlin standard library besides the app itself.
   hand-over built a new interface, and one built while the phone was joining
   a Wi-Fi left it without internet -- the Wi-Fi joined, no icon, nothing
   reached the net -- until the VPN was switched off and on.
+* **Route:** a "Route" row in the connection card whenever the node offers
+  more than one profile ([PROFILES.md](PROFILES.md)): connected, the node
+  switches at once (`POST /v1/profile`); otherwise the choice is kept in the
+  app's preferences and the service brings the overlay up in it.
 * **Disconnect:** `POST /v1/down`. The core closes the interface and calls
   `release`, and the service stops. If another VPN takes over or the user
   revokes it in the settings (`onRevoke`), the result is the same.

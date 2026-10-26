@@ -40,6 +40,7 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
 
     private var status: JSONObject? = null
+    private var profiles: List<String> = emptyList() // what the node offers: the built-ins, plus any from files
     private var busy: String? = null
     private var actionError: String? = null
     private var pinToConfirm: String? = null
@@ -137,8 +138,10 @@ class MainActivity : Activity() {
     private fun refresh() {
         pool.execute {
             val (code, json) = node.request("GET", "/v1/status")
+            val (pc, pj) = node.request("GET", "/v1/profiles")
             main.post {
                 status = if (code == 200) json else null
+                if (pc == 200) profiles = list(pj.optJSONArray("items")).map { it.toString() }
                 node.tunnelError?.let {
                     node.tunnelError = null
                     actionError = "The tunnel stopped: $it"
@@ -300,7 +303,7 @@ class MainActivity : Activity() {
         val s = status
         val p = phase
         // rebuild only when what is shown changes: a rebuild would take the focus out of a text field
-        val key = listOf(p, busy, actionError, pinToConfirm, loginInProgress, s?.let { sig(it, p) }).toString()
+        val key = listOf(p, busy, actionError, pinToConfirm, loginInProgress, profiles, node.profile, s?.let { sig(it, p) }).toString()
         if (key == shown) return
         shown = key
         content.removeAllViews()
@@ -320,7 +323,7 @@ class MainActivity : Activity() {
     /** The fields of the status the current phase shows. */
     private fun sig(s: JSONObject, p: Phase): String = when (p) {
         Phase.CONNECTED, Phase.CONNECTING, Phase.LOGIN_REQUIRED, Phase.READY -> listOf(
-            s.optString("overlay_ip"), s.optJSONArray("hubs")?.toString(), s.optJSONObject("user")?.optString("username"),
+            s.optString("overlay_ip"), s.optString("profile"), s.optJSONArray("hubs")?.toString(), s.optJSONObject("user")?.optString("username"),
             s.optJSONArray("routes")?.toString(), s.optJSONArray("skipped_routes")?.toString(), s.optString("last_error"),
             s.optString("binding_error"), s.optString("control_error"),
         ).toString()
@@ -447,16 +450,21 @@ class MainActivity : Activity() {
                 val routes = strings(s, "routes")
                 views += ui.info("Networks", if (routes.isEmpty()) "none" else routes.joinToString(", "))
                 views += ui.info("Traffic", "↓ ${bytes(hub.optLong("bytes_in"))}  ↑ ${bytes(hub.optLong("bytes_out"))}")
+                routeRow(s, p)?.let { views += it }
             }
             Phase.LOGIN_REQUIRED -> {
                 views += ui.title("Sign in to finish connecting")
                 views += ui.para(if (loginInProgress) "Continue in the browser, then come back here." else "The network wants to know who is using this device.")
+                routeRow(s, p)?.let { views += it }
             }
             Phase.CONNECTING -> {
                 views += ui.title("Connecting…")
                 for (h in hubs) views += ui.info(h.optString("name"), h.optString("error").ifEmpty { h.optString("state") })
             }
-            else -> views += ui.title("Not connected")
+            else -> {
+                views += ui.title("Not connected")
+                routeRow(s, p)?.let { views += it }
+            }
         }
         for (r in strings(s, "skipped_routes")) views += ui.notice(Tone.WARN, "Not routed: $r")
         if (p != Phase.CONNECTED) s.optString("last_error").takeIf { it.isNotEmpty() }?.let { views += ui.notice(Tone.BAD, it) }
@@ -479,6 +487,44 @@ class MainActivity : Activity() {
             else -> out += ui.button("Disconnect") { disconnect() }
         }
         return out
+    }
+
+    /**
+     * Which networks go through the tunnel (docs/PROFILES.md), as on the Mac:
+     * a choice when the node offers more than one profile. Connected, the
+     * node switches at once, without a new tunnel; otherwise the choice waits
+     * for the next Connect, where the tunnel comes up in it.
+     */
+    private fun routeRow(s: JSONObject, p: Phase): View? {
+        if (profiles.size < 2) return null
+        val live = p == Phase.CONNECTED || p == Phase.LOGIN_REQUIRED
+        val current = (if (live) s.optString("profile").ifEmpty { null } else null) ?: node.profile.ifEmpty { "full" }
+        return ui.row().apply {
+            addView(ui.text("Route", 12f, ui.t.text2), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(ui.text("${profileLabel(current)} ▾", 12f, ui.t.text, ui.medium).apply {
+                isClickable = busy == null
+                setOnClickListener { anchor ->
+                    val m = PopupMenu(this@MainActivity, anchor)
+                    profiles.forEachIndexed { i, name -> m.menu.add(0, i, i, profileLabel(name)).apply { isCheckable = true; isChecked = name == current } }
+                    m.menu.setGroupCheckable(0, true, true)
+                    m.setOnMenuItemClickListener { item ->
+                        val name = profiles[item.itemId]
+                        node.profile = if (name == "full") "" else name
+                        if (live) run("Switching route") { node.call("POST", "/v1/profile", JSONObject().put("profile", name)) } else render()
+                        true
+                    }
+                    m.show()
+                }
+            })
+        }
+    }
+
+    /** The built-in profiles by what they do; a profile from a file by its name. */
+    private fun profileLabel(name: String) = when (name) {
+        "full" -> "Full"
+        "lan-only" -> "LAN only"
+        "wan-only" -> "WAN only"
+        else -> name
     }
 
     private fun since(s: JSONObject): String? {

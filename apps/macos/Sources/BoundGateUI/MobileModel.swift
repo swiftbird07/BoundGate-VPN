@@ -25,6 +25,9 @@ public protocol TunnelControl: AnyObject {
     func tunnelMemory() async -> Double?
     func connect() async throws
     func disconnect()
+    /// the routing profile the person chose ("" = full), kept where the
+    /// tunnel finds it when it starts
+    var profile: String { get set }
 }
 
 /// What the screen shows, like Phase on the Mac without the service states.
@@ -46,13 +49,20 @@ public final class MobileModel: ObservableObject {
     @Published public private(set) var vpn: VPNState = .off
     /// why no engine answers; published so that the screen follows it
     @Published public private(set) var engineError: String?
+    /// the profiles the node offers (built-ins, plus any from files)
+    @Published public var profiles: [String] = []
+    /// the profile the person chose: "" is full, the node's default
+    @Published public var profile: String = ""
     public var openURL: ((URL) -> Void)?
 
     let tunnel: TunnelControl
     private var timer: Timer?
     private var lastTraffic: Traffic.Reading?
 
-    public init(tunnel: TunnelControl) { self.tunnel = tunnel }
+    public init(tunnel: TunnelControl) {
+        self.tunnel = tunnel
+        profile = tunnel.profile
+    }
 
     public func start() {
         refresh()
@@ -86,16 +96,21 @@ public final class MobileModel: ObservableObject {
         let on = vpn == .on
         Task.detached {
             let result = Result { try client.status() }
+            let names = (try? client.profiles()) ?? []
             let mem = on ? await self.tunnel.tunnelMemory() : nil
             await MainActor.run {
                 switch result {
-                case .success(let s): self.status = s
+                case .success(let s):
+                    self.status = s
+                    // while connected the node owns the choice
+                    if on, self.busy == nil, let p = s.profile { self.profile = p == "full" ? "" : p }
                 case .failure(let e):
                     // the extension is starting or stopping: keep the last picture for a moment
                     if !on { self.status = nil }
                     if case DaemonError.unreachable = e {} else { self.actionError = e.localizedDescription }
                 }
                 self.memoryMiB = mem
+                if !names.isEmpty { self.profiles = names }
                 let now = Traffic.Reading(status: self.status, at: Date())
                 self.rate = Traffic.rate(from: self.lastTraffic, to: now)
                 self.lastTraffic = now
@@ -189,6 +204,16 @@ public final class MobileModel: ObservableObject {
     }
 
     public func signOut() { run("Signing out") { _ = try $0.logout() } }
+
+    /// Which networks this phone routes (PROFILES.md). Connected, the node
+    /// switches at once, without a new tunnel; otherwise the choice waits
+    /// for the next Connect, where the tunnel comes up in it.
+    public func setProfile(_ name: String) {
+        profile = name == "full" ? "" : name
+        tunnel.profile = profile
+        guard phase == .connected || phase == .loginRequired else { return }
+        run("Switching route") { _ = try $0.setProfile(name) }
+    }
 
     /// Forgets the control plane; the device key stays.
     public func forget() {

@@ -26,10 +26,18 @@ enum AppConfig {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?.appendingPathComponent("tunnel-error.txt")
     }
 
+    /// The routing profile the person chose (docs/PROFILES.md): "" is the
+    /// node's default, full. In the app group, so the tunnel comes up in it.
+    static var profile: String {
+        get { UserDefaults(suiteName: appGroup)?.string(forKey: "profile") ?? "" }
+        set { UserDefaults(suiteName: appGroup)?.set(newValue, forKey: "profile") }
+    }
+
     /// embed.Config (docs/EMBED.md)
     static func engineConfig(autoUp: Bool, memoryLimitMiB: Int) throws -> [String: Any] {
         var c: [String: Any] = ["state_dir": try stateDir().path, "platform": "ios", "name": deviceName, "auto_up": autoUp, "log_level": "info"]
         if memoryLimitMiB > 0 { c["memory_limit_mib"] = memoryLimitMiB }
+        if !profile.isEmpty { c["profile"] = profile }
         return c
     }
 

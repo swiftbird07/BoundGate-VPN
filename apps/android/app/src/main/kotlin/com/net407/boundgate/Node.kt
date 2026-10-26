@@ -27,6 +27,10 @@ class Node(private val context: Context) : Core.Platform {
     @Volatile var startError: String? = null
         private set
     @Volatile var service: TunnelService? = null
+    /** The routing profile the person chose (docs/PROFILES.md): "" is full, the node's default. */
+    var profile: String
+        get() = context.getSharedPreferences("settings", Context.MODE_PRIVATE).getString("profile", "") ?: ""
+        set(v) = context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().putString("profile", v).apply()
     /** Why the tunnel ended on its own the last time; the screen shows it once. */
     @Volatile var tunnelError: String? = null
     private var key: DeviceKey? = null

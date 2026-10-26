@@ -66,7 +66,7 @@ class TunnelService : VpnService() {
             try {
                 // Connect and Always-on may both start the service: once is enough
                 if (node.call("GET", "/v1/status").optString("state") != "down") return@execute
-                node.call("POST", "/v1/up", JSONObject().put("profile", ""))
+                node.call("POST", "/v1/up", JSONObject().put("profile", node.profile))
             } catch (e: Exception) {
                 Log.w(Node.TAG, "up: ${e.message}")
                 node.tunnelError = e.message

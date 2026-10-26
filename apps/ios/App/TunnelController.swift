@@ -51,6 +51,12 @@ final class TunnelController: ObservableObject, TunnelControl {
         update()
     }
 
+    /// kept in the app group: the tunnel reads it when it starts
+    var profile: String {
+        get { AppConfig.profile }
+        set { AppConfig.profile = newValue }
+    }
+
     func takeTunnelError() -> String? {
         defer { tunnelError = nil }
         return tunnelError
