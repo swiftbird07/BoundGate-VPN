@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,5 +117,50 @@ func TestTheStatusSaysTheOverlayComesBack(t *testing.T) {
 	n.DownByUser()
 	if n.Status().Resuming {
 		t.Fatal("after a down by the user nothing comes back")
+	}
+}
+
+// Status changes reach the app in the order they happened: each is handed
+// over from a goroutine of its own, and an app that was told the newer one
+// must not be told the older one after it (a "sign-in needed" after the
+// "connected" that followed it stayed on the screen for hours).
+func TestStatusChangesArriveInOrder(t *testing.T) {
+	for range 50 {
+		n := resumeNode()
+		var mu sync.Mutex
+		var got []string
+		n.cfg.OnStatus = func(s Status) {
+			mu.Lock()
+			got = append(got, s.Profile)
+			mu.Unlock()
+		}
+		n.notify.Lock() // the app is busy: the changes queue up behind it
+		for _, p := range []string{"a", "b", "c", "d"} {
+			n.mu.Lock()
+			n.status.Profile = p
+			n.mu.Unlock()
+			n.publishStatus()
+		}
+		n.notify.Unlock()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			mu.Lock()
+			last := ""
+			if len(got) > 0 {
+				last = got[len(got)-1]
+			}
+			sorted := slices.IsSorted(got)
+			mu.Unlock()
+			if !sorted {
+				t.Fatalf("delivered out of order: %v", got)
+			}
+			if last == "d" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the newest status never arrived: %v", got)
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 }

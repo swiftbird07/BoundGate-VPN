@@ -389,6 +389,10 @@ type Node struct {
 	// notified is what OnStatus was last told (statusKey); notify serializes the calls.
 	notified statusKey
 	notify   sync.Mutex
+	// statusSeq numbers the changes (under mu); delivered is the newest one
+	// OnStatus was given (under notify): an older one that comes later is
+	// not given any more
+	statusSeq, delivered uint64
 	// signIn is the last hint of the control plane (Status.SignIn).
 	signIn *api.SignInHint
 }
@@ -973,14 +977,24 @@ func (n *Node) publishStatus() {
 	n.publishLocked()
 	k, st := keyOf(&n.status), n.status
 	changed := n.cfg.OnStatus != nil && k != n.notified
+	var seq uint64
 	if changed {
 		n.notified = k
+		n.statusSeq++
+		seq = n.statusSeq
 	}
 	n.mu.Unlock()
 	if changed {
+		// one goroutine per change, so that a slow app never holds the
+		// node up; they may run in any order, and an app that was told
+		// "connected" must not be told the "sign-in needed" from before it
 		go func() {
 			n.notify.Lock()
 			defer n.notify.Unlock()
+			if seq < n.delivered {
+				return
+			}
+			n.delivered = seq
 			n.cfg.OnStatus(st)
 		}()
 	}
