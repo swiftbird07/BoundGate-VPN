@@ -590,8 +590,10 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 			// it has and fails closed when that one ages out (a control
 			// plane restored from a backup must count past it again)
 			c.log.Error("snapshot older than the one in use refused", "version", snap.Version, "in_use", cur.Version)
-			if !c.pause(ctx) {
+			select { // the long-poll would answer this again at once
+			case <-ctx.Done():
 				return nil
+			case <-time.After(c.rejectedRetry()):
 			}
 			continue
 		}

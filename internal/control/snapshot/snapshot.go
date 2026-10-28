@@ -229,7 +229,12 @@ func (s *Source) Notify(version uint64) {
 }
 
 // Wait blocks until the version exceeds since, the timeout passes, or ctx
-// ends. It returns true when a newer version is available.
+// ends. It returns true when a newer version is available -- and at once
+// when since is ahead of this control plane (restored from a backup, its
+// counter behind what its nodes saw): the node is then answered with the
+// snapshot as it is here, which it refuses as older, instead of with "not
+// modified", which it took as "what you have is current" and so never let
+// its snapshot age out (R26).
 func (s *Source) Wait(ctx context.Context, since uint64, timeout time.Duration) (bool, error) {
 	cur, err := s.db.SnapshotVersion(ctx)
 	if err != nil {
@@ -242,6 +247,10 @@ func (s *Source) Wait(ctx context.Context, since uint64, timeout time.Duration) 
 	s.mu.Lock()
 	if cur > s.version {
 		s.version = cur
+	}
+	if since > s.version {
+		s.mu.Unlock()
+		return true, nil // the node is ahead of this control plane
 	}
 	// a change that committed between the read above and this point woke
 	// nobody: its Notify found no waiter. s.version has it, so it is seen
