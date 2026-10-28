@@ -76,6 +76,10 @@ type Declarative struct {
 	timer    *time.Timer
 	fd       int
 	lastErr  error
+	// fails counts the applies in a row the platform refused; the next is
+	// tried after retry << fails, at most a minute (retryLocked)
+	fails int
+	retry time.Duration
 }
 
 // NewDeclarative returns a configurator that applies through p.
@@ -83,7 +87,7 @@ func NewDeclarative(p Platform, log *slog.Logger) *Declarative {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Declarative{p: p, log: log, delay: 50 * time.Millisecond, open: tunFromFD, fd: -1,
+	return &Declarative{p: p, log: log, delay: 50 * time.Millisecond, retry: time.Second, open: tunFromFD, fd: -1,
 		routes: map[netip.Prefix]bool{}, excluded: map[netip.Addr]bool{}}
 }
 
@@ -104,7 +108,7 @@ func (d *Declarative) CreateTUN(name string, mtu int) (tun.Device, string, error
 	d.settings = NetworkSettings{MTU: mtu}
 	d.routes = map[netip.Prefix]bool{}
 	d.fd = -1
-	d.lastErr = nil
+	d.lastErr, d.fails = nil, 0
 	return d.dev, "tunnel", nil
 }
 
@@ -225,7 +229,7 @@ func (d *Declarative) apply(dev *swapTUN) {
 	fd, err := d.p.Apply(s)
 	d.lastErr = err
 	if err != nil {
-		d.log.Error("the platform refused the network settings", "err", err, "address", s.Address, "routes", len(s.Routes))
+		d.log.Error("the platform refused the network settings", "err", err, "address", s.Address, "routes", len(s.Routes), "retry_in", d.retryLocked(dev))
 		return
 	}
 	d.log.Debug("network settings handed to the platform", "fd", fd, "kept", fd == d.fd, "routes", len(s.Routes), "dns", s.DNS, "mtu", s.MTU)
@@ -235,11 +239,27 @@ func (d *Declarative) apply(dev *swapTUN) {
 	nd, err := d.open(fd)
 	if err != nil {
 		d.lastErr = err
-		d.log.Error("tunnel device from the platform", "fd", fd, "err", err)
+		d.log.Error("tunnel device from the platform", "fd", fd, "err", err, "retry_in", d.retryLocked(dev))
 		return
 	}
+	d.fails = 0
 	d.fd = fd
 	dev.swap(nd)
+}
+
+// retryLocked applies again after a refusal. Nothing else would: the
+// node's state is up and stays so, and the next change of a route or a
+// network may be hours away -- an overlay "up" without an interface (the
+// VPN service not running yet, an establish that failed) stayed that way.
+// A change in between replaces the retry (scheduleLocked).
+func (d *Declarative) retryLocked(dev *swapTUN) time.Duration {
+	d.fails++
+	wait := min(d.retry<<min(d.fails-1, 6), time.Minute)
+	if d.timer != nil {
+		d.timer.Stop()
+	}
+	d.timer = time.AfterFunc(wait, func() { d.apply(dev) })
+	return wait
 }
 
 func (d *Declarative) release() {

@@ -1,6 +1,7 @@
 package netcfg
 
 import (
+	"errors"
 	"context"
 	"net/netip"
 	"os"
@@ -50,12 +51,17 @@ type fakePlatform struct {
 	applied  []NetworkSettings
 	newFD    bool
 	released int
+	fail     int // so many applies are refused first
 }
 
 func (p *fakePlatform) Apply(s NetworkSettings) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.applied = append(p.applied, s)
+	if p.fail > 0 {
+		p.fail--
+		return -1, errors.New("the VPN service is not running")
+	}
 	if p.newFD {
 		return 100 + len(p.applied), nil
 	}
@@ -210,5 +216,25 @@ func TestDeclarativeKeepsTheDeviceWhenTheDescriptorStays(t *testing.T) {
 	}
 	if err := d.SetNAT(ctx, netip.Prefix{}, nil, ""); err != nil {
 		t.Fatal("removing NAT is a no-op")
+	}
+}
+
+// A refused apply is tried again by itself: nothing else would, the
+// overlay is up and the next change may be hours away.
+func TestARefusedApplyIsTriedAgain(t *testing.T) {
+	p := &fakePlatform{newFD: true, fail: 2}
+	d := NewDeclarative(p, nil)
+	d.retry = 10 * time.Millisecond
+	d.open = func(fd int) (tun.Device, error) { return newChanTUN(fd), nil }
+	if _, _, err := d.CreateTUN("bg0", 1230); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetAddress(context.Background(), "tunnel", netip.MustParsePrefix("10.25.0.3/32"), 1230); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "an apply that works", func() bool { return len(p.calls()) == 3 && d.Err() == nil })
+	time.Sleep(50 * time.Millisecond)
+	if n := len(p.calls()); n != 3 {
+		t.Fatalf("applied %d times after it worked", n)
 	}
 }
