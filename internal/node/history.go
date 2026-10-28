@@ -70,12 +70,23 @@ func (h *history) save(s *registry.Snapshot) error {
 	if len(h.issued) == 0 && len(h.revoked) == 0 {
 		return nil
 	}
-	var ev []anchors.Evidence
+	// what is recorded stays pending until the anchors have it: a write
+	// that failed is tried again with the next look at a snapshot. Taken
+	// off before, it was forgotten -- the book in memory had moved on, so
+	// the retry saw nothing new and used the snapshot with the history on
+	// disk behind it, and a restart would take the older binding again.
+	type item struct {
+		ev       anchors.Evidence
+		node     string
+		revoking bool
+	}
+	var items []item
+	issued, revoked := map[string]bool{}, map[string]bool{}
 	bindingOf := func(n registry.Node) {
 		if h.issued[string(n.ID)] && n.Binding != "" {
 			if b, err := binding.Parse([]byte(n.Binding)); err == nil && b.Issued == h.nodes[b.NodeID].Issued {
-				ev = append(ev, anchors.Evidence{Binding: n.Binding, Signature: n.Signature})
-				delete(h.issued, string(n.ID))
+				items = append(items, item{ev: anchors.Evidence{Binding: n.Binding, Signature: n.Signature}, node: string(n.ID)})
+				issued[string(n.ID)] = true
 			}
 		}
 	}
@@ -85,29 +96,41 @@ func (h *history) save(s *registry.Snapshot) error {
 	}
 	for _, sr := range s.Revocations {
 		if r, err := binding.ParseRevocation([]byte(sr.Revocation)); err == nil && h.revoked[r.NodeID] && r.Issued == h.nodes[r.NodeID].Revoked {
-			ev = append(ev, anchors.Evidence{Revocation: sr.Revocation, Signature: sr.Signature})
-			delete(h.revoked, r.NodeID)
+			items = append(items, item{ev: anchors.Evidence{Revocation: sr.Revocation, Signature: sr.Signature}, node: r.NodeID, revoking: true})
+			revoked[r.NodeID] = true
 		}
 	}
-	if len(h.issued) != 0 || len(h.revoked) != 0 {
+	if len(issued) != len(h.issued) || len(revoked) != len(h.revoked) {
 		// a change without its proof in the snapshot that brought it
-		n := len(h.issued) + len(h.revoked)
+		n := len(h.issued) - len(issued) + len(h.revoked) - len(revoked)
 		h.issued, h.revoked = map[string]bool{}, map[string]bool{}
 		return fmt.Errorf("store binding history: %d changes have no signed record in the snapshot", n)
 	}
-	for len(ev) > 0 {
+	for len(items) > 0 {
 		n, size := 0, 0
-		for n < len(ev) && n < anchors.MaxEvidence {
-			size += len(ev[n].Binding) + len(ev[n].Revocation) + len(ev[n].Signature) + 64
+		for n < len(items) && n < anchors.MaxEvidence {
+			e := items[n].ev
+			size += len(e.Binding) + len(e.Revocation) + len(e.Signature) + 64
 			if n > 0 && size > evidenceBytes {
 				break
 			}
 			n++
 		}
-		if err := h.a.Record(ev[:n]); err != nil {
+		ev := make([]anchors.Evidence, n)
+		for i := range ev {
+			ev[i] = items[i].ev
+		}
+		if err := h.a.Record(ev); err != nil {
 			return fmt.Errorf("store binding history: %w", err)
 		}
-		ev = ev[n:]
+		for _, it := range items[:n] {
+			if it.revoking {
+				delete(h.revoked, it.node)
+			} else {
+				delete(h.issued, it.node)
+			}
+		}
+		items = items[n:]
 	}
 	return nil
 }
