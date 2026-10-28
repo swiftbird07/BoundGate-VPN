@@ -44,6 +44,10 @@ type Admin struct {
 	Level     db.AdminLevel `json:"level"`
 	Via       string        `json:"via"` // bootstrap | token | session
 	SessionID string        `json:"-"`
+	// Bootstrap: a token minted under the bootstrap token, directly or
+	// through such a token. What it mints dies with the bootstrap token
+	// too (R54).
+	Bootstrap bool `json:"-"`
 }
 
 // AdminConfig configures browser logins.
@@ -119,7 +123,7 @@ func (h *Handlers) resolveAdmin(r *http.Request) (Admin, error) {
 				h.d.Logs.AdminAuth.Warn("admin auth failed", "src", remoteIP(r), "reason", "bad api token")
 				return Admin{}, errNoAuth
 			}
-			return Admin{Subject: "token:" + t.Name, Name: t.Name, Level: db.AdminLevelFull, Via: "token"}, nil
+			return Admin{Subject: "token:" + t.Name, Name: t.Name, Level: db.AdminLevelFull, Via: "token", Bootstrap: t.Bootstrap}, nil
 		}
 		ok, err := h.d.DB.CheckBootstrapToken(ctx, tok)
 		if err != nil {
@@ -518,7 +522,10 @@ func (h *Handlers) passkeyRegisterBegin(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		mode = "first"
-	case a.Level == db.AdminLevelFull:
+	case a.Level == db.AdminLevelFull && hasActivePasskey(own):
+		// a full session whose passkeys were all revoked (offboarding)
+		// keeps its level until it ends, but does not give itself a new
+		// passkey without another admin's approval
 		mode = "self"
 	}
 	var exclude []protocol.CredentialDescriptor
@@ -757,8 +764,32 @@ func (h *Handlers) adminListPasskeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// hasActivePasskey reports whether one of the passkeys can still be used.
+func hasActivePasskey(pks []db.Passkey) bool {
+	for _, p := range pks {
+		if p.Status == "active" {
+			return true
+		}
+	}
+	return false
+}
+
+// bySessionOnly refuses a passkey approval or revocation that does not come
+// from a signed-in admin: "another admin" (R55) means a person, and a token
+// an admin minted for themselves is not one.
+func bySessionOnly(w http.ResponseWriter, a Admin) bool {
+	if a.Via == "session" {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "passkeys are approved and revoked by a signed-in admin, not with a token")
+	return false
+}
+
 func (h *Handlers) adminApprovePasskey(w http.ResponseWriter, r *http.Request) {
 	a, _ := AdminFrom(r.Context())
+	if !bySessionOnly(w, a) {
+		return
+	}
 	p, err := h.d.DB.PasskeyByID(r.Context(), r.PathValue("id"))
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
@@ -783,6 +814,9 @@ func (h *Handlers) adminApprovePasskey(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) adminRevokePasskey(w http.ResponseWriter, r *http.Request) {
 	a, _ := AdminFrom(r.Context())
+	if !bySessionOnly(w, a) {
+		return
+	}
 	p, err := h.d.DB.PasskeyByID(r.Context(), r.PathValue("id"))
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
@@ -865,7 +899,9 @@ func (h *Handlers) adminCreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 		expires = time.Now().Add(d)
 	}
-	t, secret, err := h.d.DB.CreateAPIToken(r.Context(), name, a.Subject, expires, a.Via == "bootstrap")
+	// a token minted under the bootstrap token carries its mark on, so that
+	// a chain of tokens cannot outlive it (R54)
+	t, secret, err := h.d.DB.CreateAPIToken(r.Context(), name, a.Subject, expires, a.Via == "bootstrap" || a.Bootstrap)
 	if err != nil {
 		fail(w, err, h.d.Logs.System)
 		return
