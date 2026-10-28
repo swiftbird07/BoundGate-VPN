@@ -11,11 +11,7 @@ func TestTooLargeAnswersIPv4WithASizeThatFits(t *testing.T) {
 	binary.BigEndian.PutUint16(pkt[2:], 1300)
 	copy(pkt[12:16], []byte{17, 57, 146, 58})
 	copy(pkt[16:20], []byte{10, 25, 0, 1})
-	if tooLarge(pkt, nil) != nil {
-		t.Fatal("a packet that was sent needs no answer")
-	}
-	theirs := []byte{0x45, 0} // connect-ip-go's "MTU 1280"
-	got := tooLarge(pkt, theirs)
+	got := tooLarge(pkt, 1300)
 	if len(got) < 28 || got[20] != 3 || got[21] != 4 {
 		t.Fatalf("not ICMP fragmentation needed: % x", got)
 	}
@@ -25,10 +21,14 @@ func TestTooLargeAnswersIPv4WithASizeThatFits(t *testing.T) {
 	if string(got[12:16]) != string(pkt[16:20]) || string(got[16:20]) != string(pkt[12:16]) {
 		t.Fatal("must go from the packet's destination back to its source")
 	}
+	// a smaller path (a relay) is told as it is
+	if mtu := binary.BigEndian.Uint16(tooLarge(pkt, 1100)[26:]); mtu != 1100 {
+		t.Fatalf("next-hop MTU %d on a path that fits 1100", mtu)
+	}
 	v6 := make([]byte, 1300)
 	v6[0] = 0x60
-	if out := tooLarge(v6, theirs); &out[0] != &theirs[0] {
-		t.Fatal("IPv6: 1280 is the right answer, keep it")
+	if out := tooLarge(v6, 1200); out != nil {
+		t.Fatal("the overlay carries IPv4 only: an IPv6 packet gets no answer")
 	}
 	// PacketSize QUIC packets: 37 bytes of packet overhead, 3 for the HTTP
 	// datagram prefix

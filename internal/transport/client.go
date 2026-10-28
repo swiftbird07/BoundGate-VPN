@@ -79,6 +79,7 @@ type quicClientLink struct {
 	cc    *http3.ClientConn
 	tr    *http3.Transport
 	relay bool // over a relay stream: the socket is not ours to replace
+	out   *sendQueue
 
 	// The QUIC transports the connection ran on, oldest first, with their
 	// sockets. Closing a transport destroys the connections on it, so every
@@ -90,9 +91,13 @@ type quicClientLink struct {
 }
 
 func (l *quicClientLink) ReadPacket(b []byte) (int, error) { return l.conn.ReadPacket(b) }
+// WritePacket queues b for the hub and never waits for it (sendQueue): a
+// node writes into its hub tunnel and its peer paths from one TUN reader.
 func (l *quicClientLink) WritePacket(b []byte) ([]byte, error) {
-	icmp, err := l.conn.WritePacket(b)
-	return tooLarge(b, icmp), err
+	if err := l.Err(); err != nil {
+		return nil, err
+	}
+	return l.out.write(b)
 }
 func (l *quicClientLink) LocalPrefixes(ctx context.Context) ([]netip.Prefix, error) {
 	return l.conn.LocalPrefixes(ctx)
@@ -110,6 +115,7 @@ func (l *quicClientLink) Err() error {
 	}
 }
 func (l *quicClientLink) Close(code quic.ApplicationErrorCode, reason string) error {
+	l.out.close()
 	_ = l.conn.Close()
 	err := l.qconn.CloseWithError(code, reason)
 	_ = l.tr.Close()
@@ -295,7 +301,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*ClientTunnel, error) {
 	if rsp != nil {
 		dns = parseDNSHeader(rsp.Header.Get(DNSHeader))
 	}
-	link := &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr, relay: qt != nil, qts: []*quic.Transport{qt}, pcs: []net.PacketConn{pc}}
+	link := &quicClientLink{conn: conn, qconn: qconn, cc: cc, tr: tr, relay: qt != nil, out: newSendQueue(conn, qconn), qts: []*quic.Transport{qt}, pcs: []net.PacketConn{pc}}
 	if qt == nil {
 		link.qts, link.pcs = []*quic.Transport{ownQT}, []net.PacketConn{ownPC}
 	}

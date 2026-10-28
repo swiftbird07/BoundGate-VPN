@@ -21,15 +21,16 @@ const FitMTU = 1280
 // PacketSize is the QUIC packet size of tunnels from the first packet on.
 const PacketSize = 1340
 
-// tooLarge corrects the answer to a packet that did not fit. connect-ip-go
-// answers with "packet too big, MTU 1280", the IPv6 minimum, also to an IPv4
-// packet of 1280 bytes: the sender learns nothing, repeats the packet, and the
-// connection stalls as soon as it carries data (what a hub behind a mux did
-// to every download). For IPv4 the answer becomes "fragmentation needed" with
-// a size that does fit.
-func tooLarge(pkt, icmp []byte) []byte {
-	if icmp == nil || len(pkt) == 0 || pkt[0]>>4 != 4 {
-		return icmp
+// tooLarge answers a packet that does not fit a datagram of the tunnel,
+// where fits bytes of IP packet would: ICMP "fragmentation needed" for IPv4,
+// with a size that fits and at most FitMTU. (connect-ip-go answered every
+// packet with "packet too big, MTU 1280", the IPv6 minimum, also an IPv4
+// packet of 1280 bytes: the sender learned nothing, repeated the packet, and
+// the connection stalled as soon as it carried data.) The overlay carries
+// IPv4 only; anything else is dropped without an answer.
+func tooLarge(pkt []byte, fits int) []byte {
+	if len(pkt) == 0 || pkt[0]>>4 != 4 {
+		return nil
 	}
-	return netparse.FragNeeded(pkt, FitMTU)
+	return netparse.FragNeeded(pkt, max(68, min(FitMTU, fits)))
 }

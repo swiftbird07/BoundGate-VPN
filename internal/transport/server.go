@@ -101,12 +101,17 @@ type serverLink interface {
 type quicLink struct {
 	conn  *connectip.Conn
 	qconn *quic.Conn
+	out   *sendQueue
 }
 
 func (l *quicLink) ReadPacket(b []byte) (int, error) { return l.conn.ReadPacket(b) }
+
+// WritePacket queues b for the peer and never waits for it (sendQueue).
 func (l *quicLink) WritePacket(b []byte) ([]byte, error) {
-	icmp, err := l.conn.WritePacket(b)
-	return tooLarge(b, icmp), err
+	if err := l.Err(); err != nil {
+		return nil, err
+	}
+	return l.out.write(b)
 }
 func (l *quicLink) Done() <-chan struct{} { return l.qconn.Context().Done() }
 func (l *quicLink) Close(c quic.ApplicationErrorCode, r string) error {
@@ -432,7 +437,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("transport: proxy setup failed", "peer", peer, "err", err)
 		return
 	}
-	t := &Tunnel{id: newTunnelID(), peer: peer, cfg: cfg, link: &quicLink{conn: conn, qconn: qconn}, transport: s.transportName(), opened: time.Now()}
+	out := newSendQueue(conn, qconn)
+	defer out.close()
+	t := &Tunnel{id: newTunnelID(), peer: peer, cfg: cfg, link: &quicLink{conn: conn, qconn: qconn, out: out}, transport: s.transportName(), opened: time.Now()}
 	defer conn.Close()
 	if len(cfg.Assigned) > 0 {
 		if err := conn.AssignAddresses(r.Context(), cfg.Assigned); err != nil {
