@@ -871,24 +871,45 @@ func (n *Node) onSnapshot(diff registry.Diff, snap *registry.Snapshot) {
 	s := n.sess
 	auto := n.cfg.AutoUp && !n.autoDone && s == nil
 	profile := n.cfg.Profile
-	if n.resume != "" && s == nil {
+	if p, ok := n.resumeLocked(); ok {
 		// the overlay went down because its snapshot ran out; this is the
 		// snapshot it waited for
-		auto, profile = true, n.resume
+		auto, profile = true, p
 	}
 	if auto {
-		n.autoDone, n.resume = true, ""
+		n.autoDone = true
 	}
 	n.mu.Unlock()
 	if s != nil {
 		s.applyDiff(diff, snap)
 	}
 	if auto {
-		go func() {
-			if err := n.Up(context.Background(), profile); err != nil {
-				n.log.Error("auto up failed", "err", err)
-			}
-		}()
+		go n.autoUp(profile)
+	}
+}
+
+// resumeLocked answers whether the overlay, down since its snapshot ran out
+// (staleWatch), comes back now, and with which profile: once there is a
+// current snapshot again and the old session is gone. Which of the two
+// comes last is up to timing: a snapshot that arrives while the old session
+// is still being torn down finds n.sess set, so onSnapshot cannot act on
+// it, and watch asks again once the session has ended. Without that the
+// overlay stayed down until the next snapshot, which on a quiet control
+// plane is hours away.
+func (n *Node) resumeLocked() (string, bool) {
+	if n.resume == "" || n.sess != nil || n.holder.Stale(time.Now()) {
+		return "", false
+	}
+	p := n.resume
+	n.resume = ""
+	return p, true
+}
+
+// autoUp brings the overlay up on the node's own account (auto_up, a
+// resume) and logs what a user would have been told.
+func (n *Node) autoUp(profile string) {
+	if err := n.Up(context.Background(), profile); err != nil {
+		n.log.Error("auto up failed", "err", err)
 	}
 }
 
@@ -1255,6 +1276,7 @@ func (n *Node) Up(ctx context.Context, profileName string) error {
 	}
 	s := newSession(n, snap, prof)
 	n.sess = s
+	n.resume = "" // an up of its own stands in for the one that was pending
 	n.status.State, n.status.LastError, n.status.Profile = StateStarting, "", prof.Name
 	n.mu.Unlock()
 
@@ -1334,6 +1356,7 @@ func (n *Node) SetProfile(name string) error {
 func (n *Node) Down(reason string) {
 	n.mu.Lock()
 	s := n.sess
+	n.resume = "" // down is final: an overlay that was waiting to come back stays down
 	n.mu.Unlock()
 	if s == nil {
 		return
@@ -1462,8 +1485,13 @@ func (n *Node) watch(s *session) {
 		n.status.LastClose = s.reason
 		n.status.Profile, n.status.OverlayIP, n.status.Roles, n.status.Prefixes, n.status.Hubs, n.status.Routes, n.status.Tunnels = "", "", nil, nil, nil, nil, 0
 	}
+	profile, resume := n.resumeLocked()
 	n.mu.Unlock()
 	n.log.Info("overlay down", "reason", s.reason)
+	if resume {
+		n.log.Info("the control plane answered while the overlay was going down: it comes back", "profile", profile)
+		go n.autoUp(profile)
+	}
 }
 
 // session is one "up" period: everything apply created, so teardown can
@@ -1832,7 +1860,8 @@ func (s *session) enforceSessions(snap *registry.Snapshot) {
 // longer trust -- and with the hub's resolvers in place (R140) it is the
 // hub that answers the control plane's name, so a hub that was taken over
 // could otherwise keep its spokes for as long as it liked. The overlay
-// comes back with the next snapshot (onSnapshot), with the same profile.
+// comes back with the next snapshot, with the same profile (resumeLocked:
+// from onSnapshot, or from watch when the snapshot came first).
 func (s *session) staleWatch() {
 	t := time.NewTicker(s.n.every(30*time.Second, 2*time.Minute))
 	defer t.Stop()
