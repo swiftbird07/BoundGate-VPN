@@ -49,12 +49,17 @@ func TestAFailedRequestTriesTheAddressThatAnsweredBefore(t *testing.T) {
 		confirm:  func(_ string, a netip.Addr) { confirmed = append(confirmed, a) },
 		lastGood: func(_ string, tried netip.Addr) (netip.Addr, bool) { return good, tried != good }}
 	ctx := context.Background()
-	dial := func() netip.Addr {
+	attempt := func() netip.Addr {
 		ap, err := d.addr(ctx, "vpn.example:443")
 		if err != nil {
 			t.Fatal(err)
 		}
 		return ap.Addr()
+	}
+	dial := func() netip.Addr { // an attempt that connected
+		a := attempt()
+		d.reached("vpn.example:443", a)
+		return a
 	}
 	if a := dial(); a != fresh {
 		t.Fatalf("the first dial goes to what the name resolves to, not %v", a)
@@ -76,5 +81,15 @@ func TestAFailedRequestTriesTheAddressThatAnsweredBefore(t *testing.T) {
 	d.answered(true)
 	if len(confirmed) != 2 || confirmed[0] != fresh || confirmed[1] != good {
 		t.Fatalf("confirmed: %v", confirmed)
+	}
+	// an attempt that never connected, and the request then answered over a
+	// connection that was open already: the address it tried is not the one
+	// that answered
+	if a := attempt(); a != fresh {
+		t.Fatalf("attempt went to %v", a)
+	}
+	d.answered(true)
+	if confirmed[len(confirmed)-1] != good {
+		t.Fatalf("confirmed an address that never answered: %v", confirmed)
 	}
 }

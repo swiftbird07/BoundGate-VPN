@@ -121,14 +121,22 @@ func (d *dualTransport) transports() (*http3.Transport, *http.Transport) {
 			if err != nil {
 				return nil, err
 			}
-			return quic.DialAddr(ctx, ap.String(), tlsCfg, cfg)
+			c, err := quic.DialAddr(ctx, ap.String(), tlsCfg, cfg)
+			if err == nil {
+				d.reached(addr, ap.Addr())
+			}
+			return c, err
 		}
 		tcp.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			ap, err := d.addr(ctx, addr)
 			if err != nil {
 				return nil, err
 			}
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, ap.String())
+			c, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, ap.String())
+			if err == nil {
+				d.reached(addr, ap.Addr())
+			}
+			return c, err
 		}
 	}
 	return h3, tcp
@@ -151,13 +159,28 @@ func (d *dualTransport) addr(ctx context.Context, hostport string) (netip.AddrPo
 			ip = g
 		}
 	}
-	d.dialedHost, d.dialed = host, ip
 	d.mu.Unlock()
 	p, err := net.LookupPort("tcp", port)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
 	return netip.AddrPortFrom(ip, uint16(p)), nil
+}
+
+// reached notes the address a connection was made to. Only a connection
+// that was made counts: a request that failed on one address and then went
+// out on a connection that was already open to another (the TCP fallback
+// after a QUIC attempt that timed out) must not confirm the one that never
+// answered -- the node would then alternate between that one and the
+// resolved one, and never come back to the address that worked.
+func (d *dualTransport) reached(hostport string, ip netip.Addr) {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return
+	}
+	d.mu.Lock()
+	d.dialedHost, d.dialed = host, ip
+	d.mu.Unlock()
 }
 
 // answered notes how a request ended: the address that answered is the one
@@ -257,7 +280,7 @@ type dualTransport struct {
 	tcpUntil     time.Time
 	fallbackSeen bool
 	last         string // what carried the last answer: "h3" or "h2"
-	// the address the last dial went to, and whether the next one goes to
+	// the address the last connection was made to, and whether the next one goes to
 	// the address that answered before instead of the resolved one
 	dialedHost string
 	dialed     netip.Addr
