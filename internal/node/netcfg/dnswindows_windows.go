@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
 // ErrNoResolver says Windows did not take the resolver setting. The node
@@ -31,21 +32,23 @@ func (c *winCfg) SetLinkDNS(_ context.Context, ifname string, servers []netip.Ad
 	if err != nil {
 		return err
 	}
-	luid, err := c.adapter(ifname)
-	if err != nil {
-		return err
-	}
 	if len(servers) == 0 {
-		// the rule goes first: while it is there every name is sent to the
-		// tunnel, so it must not outlive the adapter's resolvers
-		errs := []error{winDelNRPT(rule)}
-		errs = append(errs, luid.SetDNS(windows.AF_INET, nil, nil))
-		errs = append(errs, luid.SetDNS(windows.AF_INET6, nil, nil))
+		var clear func() error
+		if luid, ok := c.findAdapter(ifname); ok {
+			clear = func() error {
+				return errors.Join(luid.SetDNS(windows.AF_INET, nil, nil), luid.SetDNS(windows.AF_INET6, nil, nil))
+			}
+		}
+		err := winGiveBack(func() error { return winDelNRPT(rule) }, clear)
 		winDNSChanged()
-		if err := errors.Join(errs...); err != nil {
+		if err != nil {
 			return fmt.Errorf("%w: %w", ErrNoResolver, err)
 		}
 		return nil
+	}
+	luid, err := c.adapter(ifname)
+	if err != nil {
+		return err
 	}
 	var v6 bool
 	for _, s := range servers {
@@ -74,6 +77,20 @@ func (c *winCfg) SetLinkDNS(_ context.Context, ifname string, servers []netip.Ad
 	}
 	winDNSChanged()
 	return nil
+}
+
+// findAdapter is the adapter of ifname: one this process made, else one
+// the system still has under that name (a crashed run's).
+func (c *winCfg) findAdapter(ifname string) (winipcfg.LUID, bool) {
+	if luid, err := c.adapter(ifname); err == nil {
+		return luid, true
+	}
+	ifc, err := net.InterfaceByName(ifname)
+	if err != nil {
+		return 0, false
+	}
+	luid, err := winipcfg.LUIDFromIndex(uint32(ifc.Index))
+	return luid, err == nil
 }
 
 // winSetNRPT writes the rule that sends every name to these resolvers.

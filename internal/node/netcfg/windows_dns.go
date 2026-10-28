@@ -1,6 +1,7 @@
 package netcfg
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -50,4 +51,24 @@ func winNRPTServers(servers []netip.Addr) string {
 		out = append(out, s.Unmap().String())
 	}
 	return strings.Join(out, ";")
+}
+
+// winGiveBack is the order in which a device's resolver is given back on
+// Windows: the policy rule first, whatever else happens -- while it is there
+// every name goes to the tunnel, and it outlives the adapter and a reboot --
+// then the adapter's own resolvers, when the adapter is still there. One
+// that is gone took its resolvers with it. clear is nil for an adapter that
+// cannot be found.
+//
+// The adapter is looked up by name, not only among the devices this process
+// made: the journal of a run that crashed is replayed by the next one, which
+// never made that device, and refusing then kept the rule -- every name of
+// the machine sent into a tunnel that no longer exists until somebody ran a
+// repair.
+func winGiveBack(delRule func() error, clear func() error) error {
+	errs := []error{delRule()}
+	if clear != nil {
+		errs = append(errs, clear())
+	}
+	return errors.Join(errs...)
 }
