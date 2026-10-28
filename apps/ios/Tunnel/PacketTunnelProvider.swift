@@ -88,14 +88,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, CorePlatform {
         monitor = m
     }
 
-    /// The part of a path that is not the tunnel itself: status, and the
-    /// physical interfaces by name and type, sorted.
+    /// The part of a path that is not the tunnel itself: status, the
+    /// physical interfaces by name and type, and the gateways, sorted. The
+    /// gateways tell one Wi-Fi from the next: a switch between two keeps
+    /// en0 and its type, and without them it passed as no change
+    /// (2026-10-28), the tunnels sat on sockets of the Wi-Fi that was gone,
+    /// and only the liveness check gave up on them, half a minute later.
     private static func underlying(_ path: Network.NWPath) -> String {
         let ifs = path.availableInterfaces
             .filter { $0.type != .other }   // .other is the utun (and loopback)
             .map { "\($0.name)/\($0.type)" }
             .sorted()
-        return "\(path.status) \(ifs.joined(separator: ","))"
+        let gws = path.gateways.map { "\($0)" }.sorted()
+        return "\(path.status) \(ifs.joined(separator: ",")) via \(gws.joined(separator: ","))"
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {

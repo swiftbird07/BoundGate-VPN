@@ -88,12 +88,17 @@ creates the profiles with automatic signing:
   (`profile` in embed.Config), so the tunnel comes up in it.
 * **Disconnect.** The tunnel stops and releases the lock. The app takes its
   engine back and retries while the lock is still held.
-* **Wi-Fi ↔ cellular.** `NWPathMonitor` calls `bg_network_changed` when
-  the network below changes (not on every quality estimate); the tunnels
-  then move to new sockets by QUIC connection migration (POWER.md). iOS
-  keeps an existing socket on the interface it was opened on, so without
-  the move a tunnel dialed on cellular stayed there after Wi-Fi came up,
-  and vice versa (the phone showed "not connected" on 5G, 2026-09-23).
+* **Wi-Fi ↔ cellular, Wi-Fi ↔ Wi-Fi.** `NWPathMonitor` calls
+  `bg_network_changed` when the network below changes (not on every
+  quality estimate); the tunnels then move to new sockets by QUIC
+  connection migration (POWER.md). iOS keeps an existing socket on the
+  interface it was opened on, so without the move a tunnel dialed on
+  cellular stayed there after Wi-Fi came up, and vice versa (the phone
+  showed "not connected" on 5G, 2026-09-23). What counts as a change is
+  the path's status, its physical interfaces and, since 2026-10-28, its
+  gateways: a switch from one Wi-Fi to another keeps `en0` and passed as
+  no change before, and the tunnels sat on sockets of the Wi-Fi that was
+  gone until the liveness check gave up on them half a minute later.
   `sleep()`/`wake()` do nothing: iOS calls them up to 200 times an hour with
   the screen off (POWER.md).
 * **Power save** is on (POWER.md): a keep-alive every 2 min, snapshot every
