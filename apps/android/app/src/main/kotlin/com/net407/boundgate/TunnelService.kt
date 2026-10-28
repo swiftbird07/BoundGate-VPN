@@ -48,9 +48,6 @@ class TunnelService : VpnService() {
     @Volatile private var below: LinkProperties? = null
     // whether Android has confirmed that network reaches the internet
     @Volatile private var validated = false
-    // whether any network below was seen since the service started: the
-    // first one is where the core starts, not a change
-    @Volatile private var seen = false
     // the VPN carries the resolvers of the network below (no hub resolvers):
     // then a change of those is a change of the interface
     @Volatile private var usesBelowDNS = false
@@ -75,13 +72,19 @@ class TunnelService : VpnService() {
             return START_NOT_STICKY
         }
         foreground()
-        watchNetwork()
+        val watching = watchNetwork()
         worker.execute {
             try {
                 // Connect and Always-on may both start the service: once is enough
                 val state = node.call("GET", "/v1/status").optString("state")
                 DebugLog.log("svc", "node state before up: $state")
-                if (state != "down") return@execute
+                if (state != "down") {
+                    // a core that outlived the previous service (it resumes)
+                    // dialled on whatever network was there then; nobody
+                    // watched the network in between
+                    if (watching) changed("service started, core already $state")
+                    return@execute
+                }
                 node.call("POST", "/v1/up", JSONObject().put("profile", node.profile))
                 DebugLog.log("svc", "up accepted profile=${node.profile}")
             } catch (e: Exception) {
@@ -238,13 +241,16 @@ class TunnelService : VpnService() {
      * another and airplane mode present themselves: onLost, then a new
      * network. Until 2026-10-28 that counted as "the first network", the
      * core was not told, and its tunnels sat on sockets of a network that
-     * was gone. Only the network the service starts on is no change. The
+     * was gone. Only the network the service starts on is no change; when
+     * it starts without one, the first that comes is (the core's dials
+     * failed and wait for their retry). The
      * same network becoming validated (Android confirmed it reaches the
      * internet) is passed on too: a dial that failed while it was coming up
      * gets its retry at once.
      */
-    private fun watchNetwork() {
-        if (callback != null) return
+    /** Starts watching; false when the service already watched. */
+    private fun watchNetwork(): Boolean {
+        if (callback != null) return false
         val cm = getSystemService(ConnectivityManager::class.java)
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(n: Network) {
@@ -261,13 +267,11 @@ class TunnelService : VpnService() {
                     if (ok && !was) changed("network $n validated")
                     return
                 }
-                val first = !seen
-                seen = true
                 network = n
                 validated = ok
                 below = cm.getLinkProperties(n)
                 setUnderlyingNetworks(arrayOf(n))
-                if (!first) changed("network $n (validated=$ok)")
+                changed("network $n (validated=$ok)")
             }
 
             override fun onLinkPropertiesChanged(n: Network, lp: LinkProperties) {
@@ -303,7 +307,6 @@ class TunnelService : VpnService() {
             DebugLog.log("net", "active at start: $n $caps")
             if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == false) {
                 network = n
-                seen = true
                 validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                 below = cm.getLinkProperties(n)
             }
@@ -312,6 +315,7 @@ class TunnelService : VpnService() {
         // underneath (the VPN itself shows up here too while it starts)
         cm.registerDefaultNetworkCallback(cb)
         callback = cb
+        return true
     }
 
     private fun openApp(): PendingIntent =
