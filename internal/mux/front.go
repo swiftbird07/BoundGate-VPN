@@ -98,6 +98,20 @@ func (fl *flow) size() int {
 	return n
 }
 
+// evictUnresolved makes room for a new flow by dropping one that still
+// waits for its name, any one (map order): a flood then has to outpace the
+// clients it competes with instead of only filling the table once and
+// keeping it full. False when every flow is resolved. f.mu is held.
+func (f *Front) evictUnresolved() bool {
+	for k, fl := range f.initial {
+		if fl.be == nil {
+			f.forget(k, fl)
+			return true
+		}
+	}
+	return false
+}
+
 // forget drops an unresolved flow; f.mu is held.
 func (f *Front) forget(k flowKey, fl *flow) {
 	f.buffered -= fl.size()
@@ -107,6 +121,12 @@ func (f *Front) forget(k flowKey, fl *flow) {
 const (
 	flowTTL     = 15 * time.Second
 	maxFlows    = 8192
+	// minInitial: RFC 9000 §14.1, a client's datagram that carries an
+	// Initial is at least this long, and a server discards a shorter one.
+	// A spoofed flood of short Initials (the keys are public) would
+	// otherwise fill the table of unresolved flows for the price of a few
+	// tens of bytes each.
+	minInitial = 1200
 	maxHeld     = 4
 	tcpPeekMax  = 16 * 1024
 	tcpPeekWait = 10 * time.Second
@@ -311,6 +331,9 @@ func (f *Front) routeUDP(client netip.AddrPort, pkt []byte) (*backend, [][]byte)
 		}
 		return nil, nil
 	}
+	if len(pkt) < minInitial {
+		return nil, nil
+	}
 	payload, err := openInitial(pkt, h)
 	if err != nil {
 		// not the client's first DCID: a later Initial, addressed to a backend's connection ID
@@ -320,7 +343,7 @@ func (f *Front) routeUDP(client netip.AddrPort, pkt []byte) (*backend, [][]byte)
 		return nil, nil
 	}
 	if fl == nil {
-		if len(f.initial) >= maxFlows {
+		if len(f.initial) >= maxFlows && !f.evictUnresolved() {
 			return nil, nil // under flood: clients retry, established connections are unaffected
 		}
 		fl = &flow{}

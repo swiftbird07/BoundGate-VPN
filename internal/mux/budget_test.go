@@ -69,3 +69,33 @@ func TestHandshakesShareABudget(t *testing.T) {
 		t.Fatalf("%d bytes still accounted after every flow went", fr.buffered)
 	}
 }
+
+// A table full of flows that never got their name (a flood from spoofed
+// addresses) still takes a client's first Initial: one of them makes room.
+func TestAFullTableStillTakesANewClient(t *testing.T) {
+	pkt := firstInitial(t)
+	fr := &Front{cfg: Config{}, byID: map[byte]*backend{}, byName: map[string]*backend{}, wild: map[string]*backend{}, initial: map[flowKey]*flow{}}
+	for i := range maxFlows {
+		fr.initial[flowKey{netip.AddrPortFrom(netip.AddrFrom4([4]byte{198, 51, byte(i >> 8), byte(i)}), 1), "x"}] = &flow{expires: time.Now().Add(flowTTL)}
+	}
+	client := netip.MustParseAddrPort("192.0.2.1:443")
+	fr.routeUDP(client, pkt)
+	found := false
+	for k := range fr.initial {
+		if k.client == client {
+			found = true
+		}
+	}
+	if !found || len(fr.initial) != maxFlows {
+		t.Fatalf("the new client was refused: found %v, %d flows", found, len(fr.initial))
+	}
+	if len(pkt) < minInitial {
+		t.Fatalf("a real client's first datagram has %d bytes, below the minimum", len(pkt))
+	}
+	// shorter than RFC 9000 allows: not even looked at
+	before := len(fr.initial)
+	fr.routeUDP(netip.MustParseAddrPort("192.0.2.2:443"), pkt[:minInitial-1])
+	if len(fr.initial) != before {
+		t.Fatal("a short Initial took a flow")
+	}
+}
