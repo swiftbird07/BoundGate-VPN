@@ -460,15 +460,30 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("transport: tunnel closed", "tunnel", t.id, "peer", peer, "duration", time.Since(t.opened).Round(time.Millisecond).String())
 }
 
+// track registers t and closes the device's older tunnels on this server.
+// A device holds one tunnel per server; another one means it dialed again
+// (another network, a tunnel it gave up on) while the hub still holds the
+// old connection, which it would otherwise keep until its idle timeout. The
+// newest is what the device uses: an older one would keep the networks it
+// announces (the forwarding table keeps the first writer of a prefix) and
+// swallow what is sent there.
 func (s *Server) track(t *Tunnel) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	m := s.tunnels[t.peer.deviceID]
 	if m == nil {
 		m = make(map[*Tunnel]struct{})
 		s.tunnels[t.peer.deviceID] = m
 	}
+	old := make([]*Tunnel, 0, len(m))
+	for o := range m {
+		old = append(old, o)
+	}
 	m[t] = struct{}{}
+	s.mu.Unlock()
+	for _, o := range old {
+		s.log.Info("transport: tunnel replaced", "tunnel", o.id, "by", t.id, "peer", t.peer)
+		go func() { _ = o.Close(ErrCodeReplaced, "replaced by a newer tunnel of the device") }()
+	}
 }
 
 func (s *Server) untrack(t *Tunnel) {

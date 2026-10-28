@@ -413,3 +413,43 @@ func setIPv4Checksum(p []byte) {
 	}
 	binary.BigEndian.PutUint16(p[10:12], ^uint16(sum))
 }
+
+// A device that dials again while its old tunnel is still open (another
+// network, a tunnel it gave up on) keeps only the new one: the old one
+// would hold the device's networks until its idle timeout.
+func TestANewTunnelReplacesTheDevicesOldOne(t *testing.T) {
+	certA, spkiA := newDevice(t, "device-a")
+	lookup := &staticLookup{m: map[devicekey.SPKIHash]transport.DeviceInfo{spkiA: {ID: "dev-a"}}}
+	env := startServer(t, lookup)
+
+	old, err := env.dial(t, certA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	<-env.h.accepted
+	// the new one over the TCP fallback: one device, one tunnel per server
+	// whatever the transport
+	cur, err := env.dialTCP(t, certA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cur.Close()
+	<-env.h.accepted
+	select {
+	case <-old.Done():
+		if code, ok := transport.CloseCode(old.Err()); !ok || code != transport.ErrCodeReplaced {
+			t.Fatalf("old tunnel ended with %v", old.Err())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the old tunnel stayed open")
+	}
+	pkt := ipv4Packet(netip.MustParseAddr("100.96.0.2"), netip.MustParseAddr("10.0.0.1"), []byte("hi"))
+	if _, err := cur.WritePacket(pkt); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2000)
+	if _, err := cur.ReadPacket(buf); err != nil {
+		t.Fatalf("the new tunnel: %v", err)
+	}
+}

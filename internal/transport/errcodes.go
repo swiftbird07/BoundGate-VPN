@@ -24,6 +24,9 @@ const (
 	// did not answer). Nothing is known about the device; reconnect with
 	// backoff.
 	ErrCodeTryAgain quic.ApplicationErrorCode = 0x42420006
+	// ErrCodeReplaced: the device opened a newer tunnel to the same server,
+	// which took over; this one is the device's leftover. Nothing to do.
+	ErrCodeReplaced quic.ApplicationErrorCode = 0x42420007
 )
 
 // CloseCode extracts the application error code from a connection error, if

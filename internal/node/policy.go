@@ -454,6 +454,8 @@ func codeReason(code quic.ApplicationErrorCode) string {
 		return "hub shutting down"
 	case transport.ErrCodePolicy:
 		return "policy"
+	case transport.ErrCodeReplaced:
+		return "replaced by a newer tunnel"
 	case 0:
 		return "closed by peer"
 	}

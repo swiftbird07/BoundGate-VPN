@@ -285,6 +285,8 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 				reason = "hub policy: " + t.Err().Error()
 			case transport.ErrCodeNoAnswer:
 				reason = "no answer from the hub: " + t.Err().Error()
+			case transport.ErrCodeReplaced:
+				reason = "replaced by a newer tunnel to the hub"
 			default:
 				reason = fmt.Sprintf("hub closed the tunnel (code %d)", code)
 			}
