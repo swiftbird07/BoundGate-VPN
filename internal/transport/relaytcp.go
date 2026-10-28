@@ -241,7 +241,7 @@ func (s *Server) handleRelayTCP(w http.ResponseWriter, r *http.Request, peer Aut
 	if listen {
 		status = rh.RelayListen(peer, target)
 	} else if src, status = rh.RelayDial(peer, target); status == http.StatusOK {
-		status = s.relayRoom(target)
+		status = s.relayRoom(target, peer.DeviceID())
 	}
 	if status != http.StatusOK {
 		w.WriteHeader(status)

@@ -346,7 +346,7 @@ func FuzzRelayForward(f *testing.F) {
 			s.relayListen(lctx, lcancel, lst, AuthenticatedPeer{deviceID: "listener"}, target)
 			close(lend)
 		}()
-		for s.relayRoom(target) != 200 {
+		for s.relayRoom(target, "dialer") != 200 {
 			time.Sleep(time.Millisecond)
 		}
 		dctx, dcancel := context.WithCancel(context.Background())
@@ -434,4 +434,48 @@ func FuzzRelayConn(f *testing.F) {
 		}
 		_ = c.Close()
 	})
+}
+
+// One node holds at most a few of a listener's dialer slots: it could
+// otherwise take all of them and keep every other node from reaching that
+// peer through this hub.
+func TestOneDialerCannotTakeEveryRelaySlot(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s.relay.listeners = make(map[netip.Addr]*relayListener)
+	target, src := netip.MustParseAddr("100.96.0.9"), netip.MustParseAddr("100.96.0.2")
+	lctx, lcancel := context.WithCancel(context.Background())
+	defer lcancel()
+	go s.relayListen(lctx, lcancel, newFakeStream(), AuthenticatedPeer{deviceID: "listener"}, target)
+	for s.relayRoom(target, "greedy") != 200 {
+		time.Sleep(time.Millisecond)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	count := func(owner DeviceID) int {
+		s.relay.mu.Lock()
+		defer s.relay.mu.Unlock()
+		n := 0
+		for _, d := range s.relay.listeners[target].dialers {
+			if d.owner == owner {
+				n++
+			}
+		}
+		return n
+	}
+	for i := range relayMaxPerDialer + 3 {
+		go s.relayDialOn(ctx, cancel, newFakeStream(), AuthenticatedPeer{deviceID: "greedy"}, src, target)
+		for deadline := time.Now().Add(time.Second); count("greedy") < min(i+1, relayMaxPerDialer) && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := count("greedy"); n != relayMaxPerDialer {
+		t.Fatalf("one node holds %d slots", n)
+	}
+	if st := s.relayRoom(target, "greedy"); st != 429 {
+		t.Fatalf("the greedy node is still let in: %d", st)
+	}
+	if st := s.relayRoom(target, "other"); st != 200 {
+		t.Fatalf("another node is refused: %d", st)
+	}
 }

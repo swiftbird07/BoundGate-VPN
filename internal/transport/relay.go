@@ -43,6 +43,11 @@ const (
 	ctxListen = 0x02 // IPv4 address, port, UDP payload follow
 
 	relayMaxDialers = 64 // per listener
+	// relayMaxPerDialer: what one node may hold of a listener's dialer
+	// slots. A node has one path to a peer through a hub, two for a moment
+	// while it dials again; without a bound one approved node could take
+	// all of them and keep every other node from reaching that peer here.
+	relayMaxPerDialer = 4
 	// RelayPathMTU is the largest IP packet that fits a tunnel run through
 	// a relay: the inner QUIC connection stays at 1200 byte packets, because
 	// that is all the outer connection's datagrams are certain to carry.
@@ -234,7 +239,7 @@ func (s *Server) relayListen(ctx context.Context, cancel context.CancelFunc, str
 }
 
 func (s *Server) relayDial(ctx context.Context, cancel context.CancelFunc, w http.ResponseWriter, peer AuthenticatedPeer, src, target netip.Addr) {
-	if st := s.relayRoom(target); st != http.StatusOK {
+	if st := s.relayRoom(target, peer.DeviceID()); st != http.StatusOK {
 		w.WriteHeader(st)
 		return
 	}
@@ -243,24 +248,38 @@ func (s *Server) relayDial(ctx context.Context, cancel context.CancelFunc, w htt
 
 // relayRoom: is there a listener for target, and has it room for one more
 // dialer? Asked before a stream is taken over, so a refusal is a status.
-func (s *Server) relayRoom(target netip.Addr) int {
+func (s *Server) relayRoom(target netip.Addr, dialer DeviceID) int {
 	s.relay.mu.Lock()
 	defer s.relay.mu.Unlock()
 	l := s.relay.listeners[target]
 	switch {
 	case l == nil:
 		return http.StatusNotFound // the target does not listen here
-	case len(l.dialers) >= relayMaxDialers:
+	case !l.room(dialer):
 		return http.StatusTooManyRequests
 	}
 	return http.StatusOK
+}
+
+// room: may dialer take one more of the listener's slots? relay.mu is held.
+func (l *relayListener) room(dialer DeviceID) bool {
+	if len(l.dialers) >= relayMaxDialers {
+		return false
+	}
+	n := 0
+	for _, d := range l.dialers {
+		if d.owner == dialer {
+			n++
+		}
+	}
+	return n < relayMaxPerDialer
 }
 
 // relayDialOn pairs an open dialer stream with the target's listener.
 func (s *Server) relayDialOn(ctx context.Context, cancel context.CancelFunc, str relayStream, peer AuthenticatedPeer, src, target netip.Addr) {
 	s.relay.mu.Lock()
 	l := s.relay.listeners[target]
-	full := l != nil && len(l.dialers) >= relayMaxDialers
+	full := l != nil && !l.room(peer.DeviceID())
 	s.relay.mu.Unlock()
 	if l == nil || full {
 		_ = str.Close() // the listener left, or has enough dialers already
@@ -268,9 +287,9 @@ func (s *Server) relayDialOn(ctx context.Context, cancel context.CancelFunc, str
 	}
 	d := &relayDialer{owner: peer.DeviceID(), str: str, cancel: cancel}
 	s.relay.mu.Lock()
-	if s.relay.listeners[target] != l {
+	if s.relay.listeners[target] != l || !l.room(d.owner) {
 		s.relay.mu.Unlock()
-		_ = d.str.Close() // the listener left in between
+		_ = d.str.Close() // the listener left in between, or filled up
 		return
 	}
 	for l.dialers[l.next] != nil || l.next < 1024 {
