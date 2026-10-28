@@ -93,6 +93,8 @@ func RepairHost(ctx context.Context, nc netcfg.Configurator) (RepairReport, erro
 // the host lost them while the node stayed up. The sweep runs either way,
 // and never touches an entry whose tunnel device is still there.
 func (n *Node) Repair(ctx context.Context) (RepairReport, error) {
+	n.hostMu.Lock()
+	defer n.hostMu.Unlock()
 	n.mu.Lock()
 	s := n.sess
 	n.mu.Unlock()

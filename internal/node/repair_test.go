@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/node/netcfg"
 )
@@ -130,5 +131,62 @@ func TestARepairUndoesWhatTheJournalRecorded(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("the journal is still there after everything was undone: %v", err)
+	}
+}
+
+// slowNet is a host whose route removals wait to be let go.
+type slowNet struct {
+	netcfg.Configurator
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *slowNet) AddRoute(context.Context, netip.Prefix, string) error { return nil }
+func (s *slowNet) DelRoute(context.Context, netip.Prefix, string) error {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return nil
+}
+
+// An up that comes while a repair replays the journal waits for it: the
+// replay would otherwise take out the routes the up has just made.
+func TestAnUpWaitsForARepair(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netstate.json")
+	host := &slowNet{entered: make(chan struct{}), release: make(chan struct{})}
+	j := netcfg.NewJournal(host, path)
+	if err := j.AddRoute(context.Background(), netip.MustParsePrefix("10.60.0.0/24"), "utun9"); err != nil {
+		t.Fatal(err)
+	}
+	n := resumeNode()
+	n.net = netcfg.NewJournal(host, path)
+	repaired := make(chan struct{})
+	go func() {
+		defer close(repaired)
+		_, _ = n.Repair(context.Background())
+	}()
+	<-host.entered
+	upDone := make(chan struct{})
+	go func() {
+		defer close(upDone)
+		_ = n.Up(context.Background(), "")
+	}()
+	select {
+	case <-upDone:
+		t.Fatal("the up ran while the repair was replaying the journal")
+	case <-time.After(200 * time.Millisecond):
+	}
+	n.mu.Lock()
+	started := n.sess != nil
+	n.mu.Unlock()
+	if started {
+		t.Fatal("a session started during the repair")
+	}
+	close(host.release)
+	<-repaired
+	select {
+	case <-upDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the up never ran after the repair")
 	}
 }

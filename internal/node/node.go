@@ -347,6 +347,10 @@ type Node struct {
 	spki    devicekey.SPKIHash
 	cert    tls.Certificate
 	net     netcfg.Configurator
+	// hostMu: Up and Repair change the host's network one at a time. A
+	// repair that found no session replays the journal, and an up that
+	// started meanwhile would have its fresh routes taken out by it.
+	hostMu  sync.Mutex
 	control *controlclient.Client
 	holder  *registry.Holder
 	pins    transport.PinStore
@@ -1256,6 +1260,8 @@ func (n *Node) Up(ctx context.Context, profileName string) error {
 	if err := n.waitReady(ctx); err != nil {
 		return err
 	}
+	n.hostMu.Lock()
+	defer n.hostMu.Unlock()
 	n.mu.Lock()
 	if n.sess != nil {
 		n.mu.Unlock()
