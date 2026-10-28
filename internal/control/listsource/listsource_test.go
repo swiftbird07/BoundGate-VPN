@@ -198,6 +198,14 @@ func TestParseTakesTextAndJSON(t *testing.T) {
 	if _, err := listsource.Parse("sni", []byte(`{"entries": []}`)); err == nil {
 		t.Fatal("an object was accepted")
 	}
+	// a line-based file may start with "[", and a Windows editor puts a
+	// byte order mark in front
+	if got, err := listsource.Parse("dynamic", []byte("[2001:db8::1]:443\nexample.com\n")); err != nil || len(got) != 2 {
+		t.Fatalf("a bracketed address first: %v, %v", got, err)
+	}
+	if got, err := listsource.Parse("ip", []byte("\ufeff10.0.0.1\n")); err != nil || len(got) != 1 {
+		t.Fatalf("a byte order mark: %v, %v", got, err)
+	}
 
 	// an error names the line and never quotes it
 	_, err = listsource.Parse("ip", []byte("10.0.0.0/8\n# ok\nAKIAEXAMPLESECRET\n"))
@@ -227,6 +235,8 @@ func TestCheckAddr(t *testing.T) {
 		{"169.254.169.254", private, false},
 		{"::ffff:169.254.169.254", private, false},
 		{"64:ff9b::a9fe:a9fe", private, false},
+		{"64:ff9b:1:a00:1::", listsource.Options{}, false}, // a local NAT64 prefix: 10.0.0.1 in RFC 6052's /48 layout
+		{"64:ff9b:1:a00:1::", private, true},
 		{"fd00:ec2::254", private, false},
 		{"100.100.100.200", private, false},
 		// loopback only when the tests say so

@@ -67,6 +67,9 @@ var (
 	cgnat       = netip.MustParsePrefix("100.64.0.0/10")
 	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
 	nat64       = netip.MustParsePrefix("64:ff9b::/96")
+	// RFC 8215: a network's own NAT64 prefix, with the IPv4 address in one
+	// of several layouts (RFC 6052) -- which one is not known here
+	nat64Local = netip.MustParsePrefix("64:ff9b:1::/48")
 )
 
 // CheckAddr says whether the fetch may connect to a.
@@ -75,6 +78,9 @@ func CheckAddr(a netip.Addr, o Options) error {
 	if nat64.Contains(a) { // the IPv4 address it translates to decides
 		b := a.As16()
 		a = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	}
+	if nat64Local.Contains(a) && !o.AllowPrivate {
+		return fmt.Errorf("%s is behind a local NAT64 prefix: the IPv4 address it reaches cannot be told", a)
 	}
 	for _, m := range metadataAddrs {
 		if a == m {
@@ -247,12 +253,16 @@ func (f *Fetcher) get(ctx context.Context, l db.List) ([]string, string, error) 
 // names the line (or array element) and never quotes it: the text may be
 // whatever answered at the source's address.
 func Parse(kind string, body []byte) ([]string, error) {
-	text := strings.TrimSpace(string(body))
+	// a byte order mark (a file saved by a Windows editor) is not part of
+	// the first entry
+	text := strings.TrimSpace(strings.TrimPrefix(string(body), "\ufeff"))
 	var lines []string
 	unit := "line"
-	if strings.HasPrefix(text, "[") {
+	// JSON only when it is JSON: a line-based file may start with "[" too,
+	// a dynamic entry like [2001:db8::1]:443
+	if strings.HasPrefix(text, "[") && json.Valid([]byte(text)) {
 		if err := json.Unmarshal([]byte(text), &lines); err != nil {
-			return nil, errors.New("the source looks like JSON but is not an array of strings")
+			return nil, errors.New("the source is JSON but not an array of strings")
 		}
 		unit = "element"
 	} else {
