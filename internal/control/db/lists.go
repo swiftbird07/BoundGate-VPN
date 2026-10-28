@@ -254,12 +254,17 @@ func (d *DB) UpdateList(ctx context.Context, l List, by string) (uint64, error) 
 			}
 		}
 		// A source that changed starts over: the ETag of the old URL says
-		// nothing about the new one, and its error is not this one's.
-		var oldURL, oldHeader string
-		if err := tx.QueryRowContext(ctx, `SELECT source_url, source_header FROM lists WHERE id = ?`, l.ID).Scan(&oldURL, &oldHeader); err != nil {
+		// nothing about the new one, and its error is not this one's. So
+		// does a list whose entries or kind were changed here while it has
+		// a source: the source's ETag still matches its file, the next
+		// fetch would get 304 and keep what was written here -- an
+		// allowlist that follows a feed would keep what the feed dropped.
+		var oldURL, oldHeader, oldEntries string
+		if err := tx.QueryRowContext(ctx, `SELECT source_url, source_header, entries_json FROM lists WHERE id = ?`, l.ID).Scan(&oldURL, &oldHeader, &oldEntries); err != nil {
 			return err
 		}
-		reset := oldURL != l.SourceURL || oldHeader != l.SourceHeader
+		reset := oldURL != l.SourceURL || oldHeader != l.SourceHeader ||
+			l.SourceURL != "" && (oldEntries != string(entries) || oldKind != l.Kind)
 		q := `UPDATE lists SET name = ?, kind = ?, description = ?, entries_json = ?, updated_at = ?, updated_by = ?,
 			source_url = ?, source_interval = ?, source_header = ?, source_secret = ?`
 		args := []any{l.Name, l.Kind, l.Description, string(entries), now(), by,

@@ -356,3 +356,40 @@ func TestSignInPageIsNamedForWhatItIs(t *testing.T) {
 		t.Fatalf("with the token: %v %v", err, l.Entries)
 	}
 }
+
+// A list with a source that is edited here is taken from the source again
+// at the next fetch: its ETag still matched the file, a 304 kept the edit.
+func TestAnEditedListIsFetchedAgain(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write([]byte("10.0.0.0/8\n"))
+	}))
+	defer srv.Close()
+	store := open(t)
+	l := newList(t, store, db.List{Name: "feed", Kind: "ip", SourceURL: srv.URL, SourceInterval: time.Minute})
+	f := listsource.New(quiet(), loopback)
+	l, _, err := f.Fetch(ctx, store, &notifier{}, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Entries = []string{"0.0.0.0/0"}
+	if _, err := store.UpdateList(ctx, l, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	l, err = store.ListByID(ctx, l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, _, err = f.Fetch(ctx, store, &notifier{}, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(l.Entries, ",") != "10.0.0.0/8" {
+		t.Fatalf("entries %v: the edit outlived the source", l.Entries)
+	}
+}
