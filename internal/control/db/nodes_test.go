@@ -230,3 +230,31 @@ func TestAChangedGrantDropsTheSignToken(t *testing.T) {
 		t.Fatalf("the token from before the confirm still approves: %v", err)
 	}
 }
+
+// A node that was approved and then demoted (a changed grant, a removed
+// signer key) is confirmed again; revoking it keeps the row, so the key
+// stays known and refused. Rejecting it would delete the row, and the key
+// could enroll again as a new one.
+func TestAConfirmedNodeCanBeRevoked(t *testing.T) {
+	d := open(t)
+	ctx := context.Background()
+	var spki devicekey.SPKIHash
+	spki[0] = 23
+	n, _ := d.CreatePending(ctx, EnrollRequest{SPKI: spki, CertDER: []byte{1}})
+	if _, err := d.RevokeNode(ctx, n.ID, "admin"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a pending node was revoked: %v", err)
+	}
+	if err := d.ConfirmNode(ctx, n.ID, "admin", Grant{Roles: []registry.Role{registry.RoleEndpoint}}, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RevokeNode(ctx, n.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.NodeByID(ctx, n.ID)
+	if got.Status != StatusRevoked || got.OverlayIP.IsValid() {
+		t.Fatalf("after the revocation: %+v", got)
+	}
+	if _, err := d.CreatePending(ctx, EnrollRequest{SPKI: spki, CertDER: []byte{1}}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("the revoked key enrolled again: %v", err)
+	}
+}

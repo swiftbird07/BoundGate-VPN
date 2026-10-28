@@ -688,13 +688,17 @@ func (d *DB) RejectNode(ctx context.Context, id string) error {
 	return err
 }
 
-// RevokeNode unenrolls an approved node and bumps the snapshot. The row
+// RevokeNode unenrolls an approved (or confirmed) node and bumps the snapshot. The row
 // stays for the audit trail; the key can never be re-approved (a new
 // enrollment needs a new key, which is the point). The overlay address is
 // freed.
 func (d *DB) RevokeNode(ctx context.Context, id, by string) (uint64, error) {
 	return d.tx(ctx, true, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE nodes SET status = 'revoked', revoked_at = ?, revoked_by = ?, overlay_ip = '' WHERE id = ? AND status = 'approved'`, now(), by, id)
+		// a confirmed node too: one that was approved and then demoted (a
+		// changed grant, a removed signer key) must stay a known, refused
+		// key -- rejecting it would delete the row and let the key enroll
+		// again as new
+		res, err := tx.ExecContext(ctx, `UPDATE nodes SET status = 'revoked', revoked_at = ?, revoked_by = ?, overlay_ip = '' WHERE id = ? AND status IN ('approved', 'confirmed')`, now(), by, id)
 		if err != nil {
 			return err
 		}

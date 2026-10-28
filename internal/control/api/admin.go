@@ -537,7 +537,7 @@ func (h *Handlers) adminRevokeNode(w http.ResponseWriter, r *http.Request) {
 	version, err := h.d.DB.RevokeNode(r.Context(), id, a.Subject)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
-			writeError(w, http.StatusConflict, "only approved nodes can be revoked; reject pending ones")
+			writeError(w, http.StatusConflict, "only approved or confirmed nodes can be revoked; reject pending ones")
 			return
 		}
 		fail(w, err, h.d.Logs.System)
