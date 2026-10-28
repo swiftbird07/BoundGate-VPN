@@ -56,6 +56,9 @@ type journalState struct {
 	// device. It usually dies with the device, but not when the device
 	// outlives the process (a crash before the TUN was closed).
 	DNS string `json:"dns_iface,omitempty"`
+	// Forward: the host's packet filter lets this device's forwarded
+	// traffic pass (AllowForward, Docker's FORWARD chain on Linux).
+	Forward string `json:"forward_iface,omitempty"`
 }
 
 // Watch passes on to the wrapped configurator when it can watch the network.
@@ -138,6 +141,14 @@ func (j *Journal) Recover(ctx context.Context) int {
 		cancel()
 		n++
 	}
+	if old.Forward != "" {
+		octx, cancel := opContext(ctx)
+		if _, err := j.Configurator.AllowForward(octx, old.Forward, false); cutOff(octx, err) {
+			kept.Forward = old.Forward
+		}
+		cancel()
+		n++
+	}
 	if old.NAT != "" {
 		octx, cancel := opContext(ctx)
 		if cutOff(octx, j.Configurator.SetNAT(octx, netip.Prefix{}, nil, old.NAT)) {
@@ -184,7 +195,7 @@ func giveBackDNS(ctx context.Context, l LinkDNSConfigurator, ifname string) erro
 
 // save writes the state; called with mu held.
 func (j *Journal) save() {
-	if len(j.st.Routes) == 0 && len(j.st.Bypass) == 0 && j.st.NAT == "" && j.st.Arrival == "" && j.st.DNS == "" {
+	if len(j.st.Routes) == 0 && len(j.st.Bypass) == 0 && j.st.NAT == "" && j.st.Arrival == "" && j.st.DNS == "" && j.st.Forward == "" {
 		if _, err := safefile.Reclaim(j.path); err != nil {
 			j.log().Error("the network journal could not be removed", "path", j.path, "err", err)
 		}
@@ -316,6 +327,26 @@ func (j *Journal) SetNAT(ctx context.Context, pool netip.Prefix, dsts []netip.Pr
 	}
 	j.save()
 	return err
+}
+
+// AllowForward passes on and records the device whose forwarded traffic the
+// host's filter now lets pass, so that the rules of a daemon that died are
+// taken out on the next start or by a repair, whatever device name the next
+// run gets.
+func (j *Journal) AllowForward(ctx context.Context, ifname string, on bool) (bool, error) {
+	found, err := j.Configurator.AllowForward(ctx, ifname, on)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	switch {
+	case on && found && (err == nil || cutOff(ctx, err)):
+		j.st.Forward = ifname
+	case !on && err == nil:
+		j.st.Forward = ""
+	default:
+		return found, err
+	}
+	j.save()
+	return found, err
 }
 
 // ReplyViaArrival passes on to the wrapped configurator (ArrivalRouter) and

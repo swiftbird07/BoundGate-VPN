@@ -301,6 +301,12 @@ func (linuxCfg) AllowForward(ctx context.Context, ifname string, on bool) (bool,
 	}
 	for _, dir := range []string{"iifname", "oifname"} {
 		if err := run(ctx, "nft", "insert", "rule", "ip", "filter", "DOCKER-USER", dir, ifname, "counter", "accept"); err != nil {
+			// the other direction alone is no use: take it out again
+			if out, lerr := exec.CommandContext(ctx, "nft", "-a", "list", "chain", "ip", "filter", "DOCKER-USER").Output(); lerr == nil {
+				for _, h := range forwardRuleHandles(string(out), ifname) {
+					_ = run(ctx, "nft", "delete", "rule", "ip", "filter", "DOCKER-USER", "handle", h)
+				}
+			}
 			return true, fmt.Errorf("netcfg: let Docker's FORWARD chain pass %s: %w", ifname, err)
 		}
 	}

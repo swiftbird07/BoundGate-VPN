@@ -14,7 +14,10 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-type fakeCfg struct{ calls []string }
+type fakeCfg struct {
+	calls  []string
+	docker bool // the host has a Docker FORWARD chain
+}
 
 func (f *fakeCfg) CreateTUN(string, int) (tun.Device, string, error)           { return nil, "", ErrUnsupported }
 func (f *fakeCfg) SetAddress(context.Context, string, netip.Prefix, int) error { return nil }
@@ -36,7 +39,12 @@ func (f *fakeCfg) DelBypass(_ context.Context, h netip.Addr) error {
 }
 func (f *fakeCfg) EnableForwarding(context.Context) error { return nil }
 
-func (f *fakeCfg) AllowForward(context.Context, string, bool) (bool, error) { return false, nil }
+func (f *fakeCfg) AllowForward(_ context.Context, i string, on bool) (bool, error) {
+	if !on {
+		f.calls = append(f.calls, "forward-off "+i)
+	}
+	return f.docker, nil
+}
 func (f *fakeCfg) SetNAT(_ context.Context, _ netip.Prefix, d []netip.Prefix, i string) error {
 	if len(d) == 0 {
 		f.calls = append(f.calls, "nat-off "+i)
@@ -350,4 +358,27 @@ type failCfg struct{ fakeCfg }
 
 func (f *failCfg) AddRoute(context.Context, netip.Prefix, string) error {
 	return errors.New("no such device")
+}
+
+// The rules that let a device's forwarded traffic past Docker's FORWARD
+// chain are recorded and taken out after a crash, also when the next run's
+// device has another name.
+func TestForwardRulesAreRecorded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netstate.json")
+	j := NewJournal(&fakeCfg{docker: true}, path)
+	if _, err := j.AllowForward(context.Background(), "bg0", true); err != nil {
+		t.Fatal(err)
+	}
+	next := &fakeCfg{docker: true}
+	if n := NewJournal(next, path).Recover(context.Background()); n != 1 || !reflect.DeepEqual(next.calls, []string{"forward-off bg0"}) {
+		t.Fatalf("recovered %d: %v", n, next.calls)
+	}
+	// a host without Docker: nothing was written, nothing to record
+	j = NewJournal(&fakeCfg{}, path)
+	if _, err := j.AllowForward(context.Background(), "bg0", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("recorded rules that were never written")
+	}
 }
