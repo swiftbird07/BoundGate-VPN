@@ -164,3 +164,17 @@ func TestStatusChangesArriveInOrder(t *testing.T) {
 		}
 	}
 }
+
+// While Up is still applying a session, the status says so: the spoke and
+// the server exist before the overlay is up (an app showed "connected",
+// without an overlay address, for an up that then failed).
+func TestTheStatusStaysStartingWhileUpApplies(t *testing.T) {
+	n := resumeNode()
+	s := &session{n: n, done: make(chan struct{}), profile: profile.Full(), flows: flow.New(flow.Timeouts{}, nil)}
+	s.spoke = newSpokeManager(s)
+	n.sess = s
+	n.status.State = StateStarting
+	if st := n.Status().State; st != StateStarting {
+		t.Fatalf("state %q while the session is still being applied", st)
+	}
+}

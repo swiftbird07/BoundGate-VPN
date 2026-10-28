@@ -1041,9 +1041,8 @@ func (n *Node) publishLocked() {
 			n.status.Relay = &st
 		}
 	}
-	if s.spoke != nil || s.srv != nil {
-		n.status.State = StateUp
-	}
+	// the state is Up's to set: while apply runs, the spoke and the server
+	// exist before the overlay is up, and an apply that fails takes it down
 	n.status.Flows = s.flows.Len()
 	n.status.FlowsDenied = n.denied.Load()
 }
