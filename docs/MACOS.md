@@ -108,7 +108,10 @@ deploy/macos/dev.sh repair               # the lab's
 first, then routes, host routes and NAT) and then asks configd itself for
 every `State:/Network/Service/boundgate-*/DNS` key it still holds and removes
 those too -- the case where a daemon was killed between making a change and
-writing it down. `netbackup.sh restore` runs it as its second step.
+writing it down. `netbackup.sh restore` runs it as its second step. When
+a daemon is running, `-repair` asks it instead (as `boundgatectl repair`
+does): its journal is what its session uses, and replaying it from outside
+would take the routes away from a node that is up.
 
 `deploy/macos/netbackup.sh` is there so that this claim can be checked
 rather than believed:
