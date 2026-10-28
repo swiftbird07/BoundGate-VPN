@@ -157,6 +157,13 @@ func FuzzCapsuleRoundTrip(f *testing.F) {
 		lb := newCapsuleLink(b, nil, 5*time.Second, 0, false)
 		defer la.Close(0, "done")
 		defer lb.Close(0, "done")
+		// the client takes packets for what it was assigned: everything
+		if err := la.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lb.LocalPrefixes(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 		buf := make([]byte, 65535)
 		for i := 0; i < int(copies%4); i++ {
 			w := append([]byte(nil), pkt...)

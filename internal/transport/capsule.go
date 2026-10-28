@@ -74,8 +74,13 @@ type capsuleLink struct {
 	mu        sync.Mutex
 	err       error // why the stream ended (set before done is closed)
 	closeErr  *CloseError
-	prefixes  []netip.Prefix
-	routes    []connectip.IPRoute
+	prefixes  []netip.Prefix      // client: what the hub assigned to us
+	routes    []connectip.IPRoute // client: what the hub advertised
+	// server: what we assigned to the peer and advertised to it; a packet
+	// from the peer must come from the one and go to the other
+	peerPrefixes []netip.Prefix
+	localRoutes  []connectip.IPRoute
+	refused      atomic.Uint64
 	gotAssign chan struct{}
 	gotRoutes chan struct{}
 }
@@ -170,6 +175,10 @@ func (l *capsuleLink) readLoop() {
 			ctxID, m, e := quicvarint.Parse(b)
 			if e != nil || ctxID != 0 || m == len(b) {
 				continue // not an IP packet in context 0: dropped, like connect-ip-go does
+			}
+			if !l.admits(b[m:]) {
+				l.refused.Add(1)
+				continue
 			}
 			select {
 			case l.in <- b[m:]:
@@ -388,8 +397,59 @@ func (l *capsuleLink) Close(code quic.ApplicationErrorCode, reason string) error
 	return nil
 }
 
+// admits applies the rules connect-ip-go applies to a packet from the peer
+// on QUIC (RFC 9484 §4.7), so that both transports carry the same: the
+// source must be an address we assigned to the peer (if we assigned any),
+// the destination one assigned to us or inside a route we advertised, in
+// which only ICMP or the route's protocol passes.
+func (l *capsuleLink) admits(pkt []byte) bool {
+	var src, dst netip.Addr
+	var proto uint8
+	switch pkt[0] >> 4 {
+	case 4:
+		if len(pkt) < 20 {
+			return false
+		}
+		src, dst, proto = netip.AddrFrom4([4]byte(pkt[12:16])), netip.AddrFrom4([4]byte(pkt[16:20])), pkt[9]
+	case 6:
+		if len(pkt) < 40 {
+			return false
+		}
+		src, dst, proto = netip.AddrFrom16([16]byte(pkt[8:24])), netip.AddrFrom16([16]byte(pkt[24:40])), pkt[6]
+	default:
+		return false
+	}
+	l.mu.Lock()
+	peer, mine, routes := l.peerPrefixes, l.prefixes, l.localRoutes
+	l.mu.Unlock()
+	in := func(ps []netip.Prefix, a netip.Addr) bool {
+		for _, p := range ps {
+			if p.Contains(a) {
+				return true
+			}
+		}
+		return false
+	}
+	if peer != nil && !in(peer, src) {
+		return false
+	}
+	if in(mine, dst) {
+		return true
+	}
+	icmp := proto == 1 && dst.Is4() || proto == 58 && dst.Is6()
+	for _, r := range routes {
+		if r.StartIP.Compare(dst) <= 0 && dst.Compare(r.EndIP) <= 0 && (icmp || r.IPProtocol == 0 || r.IPProtocol == proto) {
+			return true
+		}
+	}
+	return false
+}
+
 // AssignAddresses sends ADDRESS_ASSIGN (server side).
 func (l *capsuleLink) AssignAddresses(prefixes []netip.Prefix) error {
+	l.mu.Lock()
+	l.peerPrefixes = append([]netip.Prefix{}, prefixes...)
+	l.mu.Unlock()
 	var b []byte
 	for _, p := range prefixes {
 		b = quicvarint.Append(b, 0) // request ID 0: not in answer to a request
@@ -400,6 +460,9 @@ func (l *capsuleLink) AssignAddresses(prefixes []netip.Prefix) error {
 
 // AdvertiseRoute sends ROUTE_ADVERTISEMENT (server side).
 func (l *capsuleLink) AdvertiseRoute(routes []connectip.IPRoute) error {
+	l.mu.Lock()
+	l.localRoutes = append([]connectip.IPRoute{}, routes...)
+	l.mu.Unlock()
 	var b []byte
 	for _, r := range routes {
 		if r.StartIP.Is4() {
