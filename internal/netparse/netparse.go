@@ -46,6 +46,8 @@ type Header struct {
 	Payload int
 	// TCPFlags is the flags byte for TCP, 0 otherwise.
 	TCPFlags uint8
+	// Seq and Ack are the TCP sequence and acknowledgement numbers.
+	Seq, Ack uint32
 	// IPv4 fragmentation: FragOffset is the offset of this fragment in
 	// bytes (0 for a whole packet and for a first fragment), MoreFragments
 	// the MF bit, FragID the identification that the fragments of one
@@ -133,6 +135,8 @@ func parseL4(h *Header, l4 []byte, off int) {
 		h.SrcPort = binary.BigEndian.Uint16(l4[0:2])
 		h.DstPort = binary.BigEndian.Uint16(l4[2:4])
 		h.TCPFlags = l4[13]
+		h.Seq = binary.BigEndian.Uint32(l4[4:8])
+		h.Ack = binary.BigEndian.Uint32(l4[8:12])
 		doff := int(l4[12]>>4) * 4
 		if doff >= 20 && len(l4) >= doff {
 			h.Payload = off + doff

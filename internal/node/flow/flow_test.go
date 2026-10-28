@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,7 +12,32 @@ import (
 	"gitlab.net407.com/SBH/BoundGate-VPN/internal/transport"
 )
 
+// seqs numbers the segments of the tests' connections as a TCP stack
+// would: per direction, from the SYN on.
+var (
+	seqMu sync.Mutex
+	seqs  = map[string]uint32{}
+)
+
+// tcp builds a segment with the next sequence number of its direction.
 func tcp(src, dst string, sport, dport uint16, flags uint8, payload []byte) []byte {
+	key := fmt.Sprint(src, sport, dst, dport)
+	seqMu.Lock()
+	if flags&netparse.TCPSyn != 0 {
+		seqs[key] = 1000
+	}
+	seq := seqs[key]
+	n := uint32(len(payload))
+	if flags&(netparse.TCPSyn|netparse.TCPFin) != 0 {
+		n++
+	}
+	seqs[key] = seq + n
+	seqMu.Unlock()
+	return tcpSeq(src, dst, sport, dport, flags, seq, payload)
+}
+
+// tcpSeq builds a segment with the given sequence number.
+func tcpSeq(src, dst string, sport, dport uint16, flags uint8, seq uint32, payload []byte) []byte {
 	pkt := make([]byte, 40+len(payload))
 	pkt[0] = 0x45
 	binary.BigEndian.PutUint16(pkt[2:4], uint16(len(pkt)))
@@ -21,6 +47,7 @@ func tcp(src, dst string, sport, dport uint16, flags uint8, payload []byte) []by
 	t := pkt[20:]
 	binary.BigEndian.PutUint16(t[0:2], sport)
 	binary.BigEndian.PutUint16(t[2:4], dport)
+	binary.BigEndian.PutUint32(t[4:8], seq)
 	t[12] = 5 << 4
 	t[13] = flags
 	copy(pkt[40:], payload)

@@ -95,7 +95,12 @@ type Entry struct {
 	Opened, LastSeen                         time.Time
 	BytesIn, BytesOut, PacketsIn, PacketsOut uint64 // In = from the originator
 
+	// sniBuf holds the originator's bytes from sequence number sniStart on,
+	// as the receiver will read them, until the name is decided and then
+	// until the receiver acknowledged them (inspectTCP).
 	sniBuf   []byte
+	sniStart uint32
+	sniSeq   bool // sniStart is known
 	sniDone  bool
 	dnsDone  bool
 	closing  bool
@@ -406,7 +411,10 @@ func (t *Table) handle(h netparse.Header, pkt []byte, origin Origin, decide Deci
 	if h.Proto == netparse.ProtoTCP && h.TCPFlags&(netparse.TCPFin|netparse.TCPRst) != 0 {
 		e.closing = true
 	}
-	changed := e.inspect(h, pkt, src, &t.sniFree)
+	changed, hold := e.inspect(h, pkt, src, &t.sniFree)
+	if hold && !e.Origin.Local {
+		return Drop, e // see inspectTCP; the sender sends it again
+	}
 	if changed && e.Decided {
 		e.decide(decide)
 		if !e.Allowed {
@@ -460,47 +468,93 @@ func (e *Entry) count(src netip.AddrPort, n int) {
 }
 
 // inspect looks at the first payload from the originator for a TLS server
-// name (TCP) or a DNS question (UDP/53). It reports whether an attribute
-// was newly learned. free is what the table has left for ClientHellos that
-// arrive in pieces.
-func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort, free *int) bool {
+// name (TCP) or a DNS question (UDP/53). changed: an attribute was newly
+// learned. hold: the packet must not reach the receiver (inspectTCP). free
+// is what the table has left for ClientHellos that arrive in pieces.
+func (e *Entry) inspect(h netparse.Header, pkt []byte, src netip.AddrPort, free *int) (changed, hold bool) {
+	if h.Proto == netparse.ProtoTCP {
+		return e.inspectTCP(h, pkt, src, free)
+	}
 	if src != e.Originator || h.Payload < 0 || h.Payload >= len(pkt) {
-		return false
+		return false, false
+	}
+	if h.Proto == netparse.ProtoUDP && !e.dnsDone && h.DstPort == 53 {
+		e.dnsDone = true
+		if name, ok := netparse.DNSQueryName(pkt[h.Payload:]); ok {
+			e.DNSName = name
+			return true, false
+		}
+	}
+	return false, false
+}
+
+// inspectTCP reads the originator's first bytes for a ClientHello the way
+// the receiver's TCP will read them: by sequence number. Segments in
+// arrival order are not that: a sender can put a segment the receiver will
+// not take (a bad checksum, outside its window) in front of the real one,
+// or send the same range twice with different bytes, and the name read here
+// would not be the name the server sees, for a permit by name as for a
+// forbid. So the bytes are taken only in order; while the name is open a
+// segment after a gap is held back; and every segment that covers bytes
+// already read must carry those very bytes, until the receiver has
+// acknowledged them -- after that its TCP takes nothing for that range any
+// more. A legitimate sender loses at most a retransmission.
+func (e *Entry) inspectTCP(h netparse.Header, pkt []byte, src netip.AddrPort, free *int) (changed, hold bool) {
+	if src != e.Originator {
+		if e.sniDone && e.sniBuf != nil && h.TCPFlags&netparse.TCPAck != 0 && int32(h.Ack-(e.sniStart+uint32(len(e.sniBuf)))) >= 0 {
+			e.releaseSNI(free)
+		}
+		return false, false
+	}
+	seq := h.Seq
+	if h.TCPFlags&netparse.TCPSyn != 0 {
+		seq++ // data on a SYN (TCP Fast Open) starts after it
+		if !e.sniSeq {
+			e.sniStart, e.sniSeq = seq, true
+		}
+	}
+	if h.Payload < 0 || h.Payload >= len(pkt) || e.sniDone && e.sniBuf == nil {
+		return false, false
 	}
 	payload := pkt[h.Payload:]
-	switch h.Proto {
-	case netparse.ProtoTCP:
-		if e.sniDone {
-			return false
-		}
-		if len(e.sniBuf)+len(payload) > netparse.MaxClientHello || len(payload) > *free {
-			e.releaseSNI(free)
-			e.sniDone = true
-			return false
-		}
-		*free -= len(payload)
-		e.sniBuf = append(e.sniBuf, payload...)
-		name, res := netparse.ClientHelloSNI(e.sniBuf)
-		switch res {
-		case netparse.SNIFound:
-			e.releaseSNI(free)
-			e.SNI, e.sniDone = name, true
-			return true
-		case netparse.SNINotTLS, netparse.SNINone:
-			e.releaseSNI(free)
-			e.sniDone = true
-		}
-	case netparse.ProtoUDP:
-		if e.dnsDone || h.DstPort != 53 {
-			return false
-		}
-		e.dnsDone = true
-		if name, ok := netparse.DNSQueryName(payload); ok {
-			e.DNSName = name
-			return true
-		}
+	if !e.sniSeq {
+		e.sniStart, e.sniSeq = seq, true // a flow seen from its middle
 	}
-	return false
+	off := int64(int32(seq - e.sniStart))
+	if off < 0 {
+		if -off >= int64(len(payload)) {
+			return false, false // before what is read here
+		}
+		payload, off = payload[-off:], 0
+	}
+	if off > int64(len(e.sniBuf)) {
+		return false, !e.sniDone // a gap: the bytes before it are not read yet
+	}
+	o := int(off)
+	n := min(len(payload), len(e.sniBuf)-o)
+	if string(payload[:n]) != string(e.sniBuf[o:o+n]) {
+		return false, true // the same bytes again, but other ones
+	}
+	rest := payload[n:]
+	if e.sniDone || len(rest) == 0 {
+		return false, false
+	}
+	if len(e.sniBuf)+len(rest) > netparse.MaxClientHello || len(rest) > *free {
+		e.releaseSNI(free)
+		e.sniDone = true
+		return false, false
+	}
+	*free -= len(rest)
+	e.sniBuf = append(e.sniBuf, rest...)
+	name, res := netparse.ClientHelloSNI(e.sniBuf)
+	switch res {
+	case netparse.SNIFound:
+		e.SNI, e.sniDone = name, true
+		return true, false
+	case netparse.SNINotTLS, netparse.SNINone:
+		e.sniDone = true
+	}
+	return false, false
 }
 
 // dnsPacket decides one message of a DNS flow from a peer. A resolver
@@ -594,8 +648,8 @@ func (t *Table) probe(e *Entry, h netparse.Header, pkt []byte, src netip.AddrPor
 		return Pass, e // the handshake, acknowledgements, the end
 	}
 	if src == e.Originator {
-		e.inspect(h, pkt, src, &t.sniFree)
-		if !e.sniDone {
+		_, hold := e.inspect(h, pkt, src, &t.sniFree)
+		if hold || !e.sniDone {
 			// a ClientHello split over segments: hold this one back too; the
 			// client retransmits it once the name is known and permitted
 			return Drop, e
