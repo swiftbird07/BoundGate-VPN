@@ -192,7 +192,7 @@ func superviseWorker(ctx context.Context, p *privsep.Parent, uid, gid int, socke
 	if err != nil {
 		return fmt.Errorf("privsep: start the worker: %w", err)
 	}
-	sctx, cancel := context.WithCancel(ctx)
+	sctx, cancel := serveContext(ctx)
 	defer cancel()
 	served := make(chan error, 1)
 	go func() { served <- p.Serve(sctx, conn) }()
@@ -238,6 +238,15 @@ func superviseWorker(ctx context.Context, p *privsep.Parent, uid, gid int, socke
 		<-served
 		return nil
 	}
+}
+
+// serveContext is how long the parent answers its worker: until the worker
+// is gone, not until the service is told to stop. On SIGTERM the worker
+// tears its session down -- resolver, routes, NAT, every one of them a
+// request to this parent -- and a parent that stopped answering with the
+// signal left all of it on the host for the next start to clean up.
+func serveContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.WithoutCancel(ctx))
 }
 
 // reclaimParentFiles clears the parent's names in the state directory of
