@@ -469,6 +469,7 @@ func (s *Snapshot) Validate() error {
 	}
 	seenKey := make(map[devicekey.SPKIHash]bool, len(s.Peers)+1)
 	seenIP := make(map[netip.Addr]bool, len(s.Peers)+1)
+	seenID := make(map[transport.DeviceID]bool, len(s.Peers)+1)
 	check := func(n Node) error {
 		if n.ID == "" || n.SPKI.IsZero() {
 			return fmt.Errorf("registry: node %q needs id and spki", n.ID)
@@ -482,7 +483,13 @@ func (s *Snapshot) Validate() error {
 		if seenIP[n.OverlayIP] {
 			return fmt.Errorf("registry: duplicate overlay ip %s (node %q)", n.OverlayIP, n.ID)
 		}
-		seenKey[n.SPKI], seenIP[n.OverlayIP] = true, true
+		if seenID[n.ID] {
+			// two records of one node, both validly signed (a re-keyed
+			// node's old and new binding): the lookup by key would admit
+			// the old key with the new record's address and roles
+			return fmt.Errorf("registry: duplicate node id %q", n.ID)
+		}
+		seenKey[n.SPKI], seenIP[n.OverlayIP], seenID[n.ID] = true, true, true
 		for _, p := range n.Prefixes {
 			if err := p.Validate(); err != nil {
 				return fmt.Errorf("node %q: %w", n.ID, err)

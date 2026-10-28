@@ -53,3 +53,14 @@ func TestDiffOfATagChange(t *testing.T) {
 		t.Fatalf("diff %+v", d)
 	}
 }
+
+// Two records of one node (a re-keyed node's old and new binding, both
+// validly signed) would let the old key pass as the node with the new
+// record's address and roles: a snapshot with a duplicate id is refused.
+func TestValidateRefusesADuplicateNodeID(t *testing.T) {
+	s := testSnap()
+	s.Peers = append(s.Peers, Node{ID: "node-a", SPKI: devicekey.SPKIHash{3}, OverlayIP: netip.MustParseAddr("10.21.0.3")})
+	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate node id") {
+		t.Fatalf("two records of node-a: %v", err)
+	}
+}
