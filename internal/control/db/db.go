@@ -217,6 +217,8 @@ func (d *DB) tx(ctx context.Context, bump bool, fn func(tx *sql.Tx) error) (uint
 	if err != nil {
 		return 0, err
 	}
+	// a panic in fn must not keep the one writer connection for good
+	defer tx.Rollback()
 	if err := fn(tx); err != nil {
 		tx.Rollback()
 		return 0, err
@@ -241,7 +243,10 @@ func (d *DB) tx(ctx context.Context, bump bool, fn func(tx *sql.Tx) error) (uint
 // SnapshotVersion returns the current registry version.
 func (d *DB) SnapshotVersion(ctx context.Context) (uint64, error) {
 	var v uint64
-	err := d.sql.QueryRowContext(ctx, `SELECT version FROM snapshot_version`).Scan(&v)
+	// read-only, and asked twice per long-poll by every node: not through
+	// the one writer, behind which it would queue with every write and
+	// every checkpoint (R139)
+	err := d.read().QueryRowContext(ctx, `SELECT version FROM snapshot_version`).Scan(&v)
 	return v, err
 }
 

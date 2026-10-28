@@ -240,6 +240,16 @@ func (s *Source) Wait(ctx context.Context, since uint64, timeout time.Duration) 
 	}
 	ch := make(chan struct{})
 	s.mu.Lock()
+	if cur > s.version {
+		s.version = cur
+	}
+	// a change that committed between the read above and this point woke
+	// nobody: its Notify found no waiter. s.version has it, so it is seen
+	// here instead of after the whole timeout (up to two minutes).
+	if s.version > since {
+		s.mu.Unlock()
+		return true, nil
+	}
 	s.waiters = append(s.waiters, ch)
 	s.mu.Unlock()
 	select {
