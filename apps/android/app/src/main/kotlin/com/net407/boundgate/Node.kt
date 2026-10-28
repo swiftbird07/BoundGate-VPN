@@ -43,6 +43,7 @@ class Node(private val context: Context) : Core.Platform {
         if (engine != 0L) return true
         return try {
             val k = key ?: DeviceKey.loadOrCreate().also { key = it }
+            DebugLog.log("node", "engine start key=${k.kind} hardware=${k.hardwareBound}")
             engine = Core.start(config().toString().toByteArray(), this, k.kind, k.hardwareBound)
             startError = null
             true
@@ -57,7 +58,7 @@ class Node(private val context: Context) : Core.Platform {
         .put("state_dir", File(context.filesDir, "boundgate").absolutePath)
         .put("platform", "android")
         .put("name", deviceName())
-        .put("log_level", "info")
+        .put("log_level", if (DebugLog.enabled) "debug" else "info")
 
     private fun deviceName(): String =
         Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() } ?: Build.MODEL
@@ -88,6 +89,12 @@ class Node(private val context: Context) : Core.Platform {
         if (engine != 0L) Core.networkChanged(engine)
     }
 
+    /** The debug log was switched: the core logs at debug while it is on. */
+    fun setDebug(on: Boolean) {
+        if (engine == 0L) return
+        Core.setLogLevel(engine, if (on) "debug" else "info")?.let { Log.w(TAG, "log level: $it") }
+    }
+
     // Core.Platform
 
     override fun apply(settingsJson: String): Int {
@@ -111,6 +118,12 @@ class Node(private val context: Context) : Core.Platform {
      */
     override fun statusChanged(statusJson: String) {
         val s = try { JSONObject(statusJson) } catch (e: Exception) { return }
+        if (DebugLog.enabled) {
+            val hubs = s.optJSONArray("hubs")?.let { h -> (0 until h.length()).map { h.getJSONObject(it) } }.orEmpty()
+            DebugLog.log("status", "state=${s.optString("state")} profile=${s.optString("profile")} routes=${s.optJSONArray("routes")?.length() ?: 0} " +
+                "login_required=${s.optBoolean("login_required")} hubs=${hubs.joinToString(" ") { "${it.optString("name")}:${it.optString("state")}${it.optString("transport").let { t -> if (t.isEmpty()) "" else "/$t" }}${it.optString("error").let { e -> if (e.isEmpty()) "" else "(${e.take(120)})" }}" }} " +
+                "last_error=${s.optString("last_error").take(160)} control_error=${s.optString("control_error").take(160)}")
+        }
         VpnTileService.TileState.of(s).let { if (it != tileState) { tileState = it; VpnTileService.refresh(context) } }
         val hubs = s.optJSONArray("hubs")
         var connected = false
@@ -155,6 +168,7 @@ class Node(private val context: Context) : Core.Platform {
     }
 
     override fun log(level: Int, line: String) {
+        DebugLog.log("core", line)
         val priority = when {
             level >= 8 -> Log.ERROR
             level >= 4 -> Log.WARN

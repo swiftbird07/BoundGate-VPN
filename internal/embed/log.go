@@ -9,8 +9,10 @@ import (
 )
 
 // newPlatformHandler writes records as text lines (without time: the
-// platform's log has its own) to Platform.Log.
-func newPlatformHandler(p Platform, level slog.Level) slog.Handler {
+// platform's log has its own) to Platform.Log. The level can change while
+// the engine runs (Engine.SetLogLevel): a phone's debug log is switched on
+// when something is wrong, not when the app was started.
+func newPlatformHandler(p Platform, level *slog.LevelVar) slog.Handler {
 	w := &lineWriter{p: p}
 	return slog.NewTextHandler(w, &slog.HandlerOptions{Level: level, ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 		if len(groups) == 0 && a.Key == slog.TimeKey {
@@ -47,9 +49,33 @@ func parseLevel(s string) slog.Level {
 	return l
 }
 
-type discard struct{}
+// flowHandler carries the flow log (one line per connection) to the
+// platform's log when Config.FlowLog asks for it, and otherwise whenever
+// the log level is debug: a connection that does not get through is what a
+// debug log of a phone is read for.
+type flowHandler struct {
+	inner  slog.Handler
+	always bool
+	level  *slog.LevelVar
+}
 
-func (discard) Enabled(context.Context, slog.Level) bool  { return false }
-func (discard) Handle(context.Context, slog.Record) error { return nil }
-func (d discard) WithAttrs([]slog.Attr) slog.Handler      { return d }
-func (d discard) WithGroup(string) slog.Handler           { return d }
+func (h flowHandler) on() bool { return h.always || h.level.Level() <= slog.LevelDebug }
+
+func (h flowHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.on() && h.inner.Enabled(ctx, l)
+}
+
+func (h flowHandler) Handle(ctx context.Context, r slog.Record) error {
+	if !h.on() {
+		return nil
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+func (h flowHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	return flowHandler{inner: h.inner.WithAttrs(as), always: h.always, level: h.level}
+}
+
+func (h flowHandler) WithGroup(name string) slog.Handler {
+	return flowHandler{inner: h.inner.WithGroup(name), always: h.always, level: h.level}
+}

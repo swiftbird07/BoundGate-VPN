@@ -226,6 +226,18 @@ func bg_network_changed(h C.int64_t) {
 	}
 }
 
+//export bg_set_log_level
+func bg_set_log_level(h C.int64_t, level *C.char) *C.char {
+	en := lookup(h)
+	if en == nil {
+		return C.CString("no such engine")
+	}
+	if err := en.e.SetLogLevel(C.GoString(level)); err != nil {
+		return C.CString(err.Error())
+	}
+	return nil
+}
+
 //export bg_stop
 func bg_stop(h C.int64_t) {
 	mu.Lock()

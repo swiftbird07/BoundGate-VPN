@@ -54,12 +54,36 @@ the APK carries only the Kotlin standard library besides the app itself.
   a Wi-Fi left it without internet -- the Wi-Fi joined, no icon, nothing
   reached the net -- until the VPN was switched off and on.
 
+  Any network other than the one the core is on counts as a change, also
+  the first one after a gap with none: walking out of a Wi-Fi, a switch from
+  one Wi-Fi to another and airplane mode all arrive as `onLost` and then a
+  new network. Until 2026-10-28 that new network passed as "the first one"
+  and the core was not told; its tunnels stayed on sockets of a network
+  that was gone until QUIC gave up on them. The same network becoming
+  validated (Android confirmed that it reaches the internet) is passed on
+  as well, so a dial that failed while the network was coming up is retried
+  at once. A change of the resolvers below only matters while the VPN
+  carries them (no hub `dns`).
+
   On the core's side a hub tunnel that is lost leaves its routes and
   resolvers standing for 30 s while the link dials again (`routeGrace`,
   spoke.go): withdrawing them and installing them again seconds later would
   be two new interfaces in a row, in the middle of the change of network.
   Meanwhile packets for those routes are dropped, as a VPN that is
   reconnecting should; a hub that refused the device withdraws at once.
+* **Debug log** (menu ⋯ → *Debug log*): everything around the tunnel into
+  a file under the app's storage -- the service's start and stop, every
+  network callback with Android's own description of the network, every
+  interface built or kept and why, the core's log at debug level including
+  one line per connection, the node's status whenever it changes -- with
+  the wall-clock time, the uptime (stops while the phone sleeps) and the
+  elapsed real time (does not) on every line. *Share debug log* hands the
+  file (4 MB, one older part kept) to any app through the app's own
+  `LogProvider`; nothing else of the app's storage is reachable that way.
+  Switching the log on sets the core to debug (`Core.setLogLevel`) and
+  stays on across restarts of the app until it is switched off. The log
+  names nodes, addresses, hubs and the signed-in user, never keys or
+  tokens.
 * **Route:** a "Route" row in the connection card whenever the node offers
   more than one profile ([PROFILES.md](PROFILES.md)): connected, the node
   switches at once (`POST /v1/profile`); otherwise the choice is kept in the

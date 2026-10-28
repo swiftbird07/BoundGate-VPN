@@ -8,6 +8,7 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        DebugLog.init(this)
         node = Node(this)
     }
 }

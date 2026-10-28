@@ -171,3 +171,48 @@ func x509Hex(b []byte) string {
 	}
 	return string(out)
 }
+
+// The log level follows SetLogLevel while the engine runs: a phone's debug
+// log is switched on when something is wrong, without restarting the app.
+// At debug the flow log is on as well.
+func TestLogLevelChangesWhileRunning(t *testing.T) {
+	p := newTestPlatform(t)
+	e, err := Start(Config{StateDir: t.TempDir(), Platform: "ios", Name: "phone", LogLevel: "warn"}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+	has := func(s string) bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		for _, l := range p.lines {
+			if strings.Contains(l, s) {
+				return true
+			}
+		}
+		return false
+	}
+	e.log.Info("quiet one")
+	e.flow.Info("flow one")
+	if has("quiet one") || has("flow one") {
+		t.Fatalf("logged at warn: %v", p.lines)
+	}
+	if err := e.SetLogLevel("loud"); err == nil {
+		t.Fatal("an unknown level was accepted")
+	}
+	if err := e.SetLogLevel("debug"); err != nil {
+		t.Fatal(err)
+	}
+	e.log.Debug("loud one")
+	e.flow.Info("flow two")
+	if !has("loud one") || !has("flow two") || !has("log level changed") {
+		t.Fatalf("after debug: %v", p.lines)
+	}
+	if err := e.SetLogLevel("info"); err != nil {
+		t.Fatal(err)
+	}
+	e.flow.Info("flow three")
+	if has("flow three") {
+		t.Fatal("the flow log stayed on at info")
+	}
+}

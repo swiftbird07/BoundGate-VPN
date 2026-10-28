@@ -279,9 +279,18 @@ class MainActivity : Activity() {
         if (s.optString("fingerprint").isNotEmpty()) m.menu.add(0, 1, 0, "Copy device fingerprint")
         if (s.optJSONObject("user") != null) m.menu.add(0, 2, 0, "Sign out")
         if (s.optString("state") != "unconfigured") m.menu.add(0, 3, 0, "Forget this control plane")
+        m.menu.add(0, 5, 0, "Debug log").apply { isCheckable = true; isChecked = DebugLog.enabled }
+        if (DebugLog.enabled || DebugLog.exists()) m.menu.add(0, 6, 0, "Share debug log")
         m.menu.add(0, 4, 0, "Version ${s.optString("version")}").isEnabled = false
         m.setOnMenuItemClickListener {
             when (it.itemId) {
+                5 -> {
+                    val on = !DebugLog.enabled
+                    DebugLog.setEnabled(this, on)
+                    node.setDebug(on)
+                    Toast.makeText(this, if (on) "Debug log on: reproduce the problem, then share the log" else "Debug log off", Toast.LENGTH_LONG).show()
+                }
+                6 -> shareDebugLog()
                 1 -> {
                     getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("fingerprint", s.optString("fingerprint")))
                     Toast.makeText(this, "Fingerprint copied", Toast.LENGTH_SHORT).show()
@@ -295,6 +304,30 @@ class MainActivity : Activity() {
             true
         }
         m.show()
+    }
+
+    /**
+     * The debug log to whoever is looking into a problem: the share sheet,
+     * with the file read through LogProvider. The export is written first,
+     * off the main thread.
+     */
+    private fun shareDebugLog() {
+        pool.execute {
+            val err = try { DebugLog.snapshot(); null } catch (e: Exception) { e.message ?: e.toString() }
+            main.post {
+                if (err != null) {
+                    actionError = "Debug log: $err"
+                    render()
+                    return@post
+                }
+                val send = Intent(Intent.ACTION_SEND)
+                    .setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, "BoundGate debug log")
+                    .putExtra(Intent.EXTRA_STREAM, LogProvider.uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                startActivity(Intent.createChooser(send, "Share debug log"))
+            }
+        }
     }
 
     // MARK: screen

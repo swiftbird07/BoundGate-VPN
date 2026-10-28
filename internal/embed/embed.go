@@ -118,8 +118,10 @@ type Engine struct {
 	key  devicekey.DeviceKey
 	log  *slog.Logger
 	flow *slog.Logger
-	net  *netcfg.Declarative
-	lock *os.File
+	// level is the log's, changed while running by SetLogLevel
+	level *slog.LevelVar
+	net   *netcfg.Declarative
+	lock  *os.File
 
 	mu      sync.Mutex
 	handler http.Handler
@@ -161,19 +163,19 @@ func Start(cfg Config, p Platform) (*Engine, error) {
 	if cfg.MemoryLimitMiB > 0 {
 		debug.SetMemoryLimit(int64(cfg.MemoryLimitMiB) << 20)
 	}
-	log := slog.New(newPlatformHandler(p, parseLevel(cfg.LogLevel)))
+	level := new(slog.LevelVar)
+	level.Set(parseLevel(cfg.LogLevel))
+	h := newPlatformHandler(p, level)
+	log := slog.New(h)
 	logging.ThrottleStdLog(log)
-	flow := slog.New(discard{})
-	if cfg.FlowLog {
-		flow = log
-	}
+	flow := slog.New(flowHandler{inner: h, always: cfg.FlowLog, level: level})
 	key, err := newPlatformKey(p)
 	if err != nil {
 		lock.Close()
 		return nil, err
 	}
-	e := &Engine{cfg: cfg, p: p, key: key, log: log, flow: flow, lock: lock, net: netcfg.NewDeclarative(p, log)}
-	log.Info("engine starting", "platform", cfg.Platform, "version", version.Version, "key_kind", key.Kind(), "memory_limit_mib", cfg.MemoryLimitMiB)
+	e := &Engine{cfg: cfg, p: p, key: key, log: log, flow: flow, level: level, lock: lock, net: netcfg.NewDeclarative(p, log)}
+	log.Info("engine starting", "platform", cfg.Platform, "version", version.Version, "key_kind", key.Kind(), "memory_limit_mib", cfg.MemoryLimitMiB, "log_level", level.Level())
 	s, err := ipc.LoadSettings(e.settingsPath())
 	if err != nil {
 		lock.Close()
@@ -343,10 +345,27 @@ func (e *Engine) NetworkChanged() {
 	e.mu.Lock()
 	r := e.run
 	e.mu.Unlock()
+	e.log.Debug("the platform reports a change of network", "overlay", r != nil)
 	if r != nil {
 		r.n.NetworkChanged()
 	}
 	e.net.Refresh()
+}
+
+// SetLogLevel changes what the engine logs from now on: debug, info, warn
+// or error. At debug the flow log is on as well (Config.FlowLog).
+func (e *Engine) SetLogLevel(level string) error {
+	var l slog.Level
+	if err := l.UnmarshalText([]byte(level)); err != nil {
+		return fmt.Errorf("embed: log level %q: want debug, info, warn or error", level)
+	}
+	if l == e.level.Level() {
+		return nil
+	}
+	from := e.level.Level()
+	e.level.Set(l)
+	e.log.Info("log level changed", "from", from, "to", l)
+	return nil
 }
 
 // Stop takes the overlay down and releases the state directory.

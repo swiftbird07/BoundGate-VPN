@@ -39,6 +39,9 @@ object Core {
 
     @JvmStatic external fun networkChanged(engine: Long)
 
+    /** What the core logs from now on: debug, info, warn or error. Null when done, else why not. */
+    @JvmStatic external fun setLogLevel(engine: Long, level: String): String?
+
     @JvmStatic external fun stop(engine: Long)
 
     @JvmStatic external fun version(): String

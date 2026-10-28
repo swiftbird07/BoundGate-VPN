@@ -228,6 +228,7 @@ func (d *Declarative) apply(dev *swapTUN) {
 		d.log.Error("the platform refused the network settings", "err", err, "address", s.Address, "routes", len(s.Routes))
 		return
 	}
+	d.log.Debug("network settings handed to the platform", "fd", fd, "kept", fd == d.fd, "routes", len(s.Routes), "dns", s.DNS, "mtu", s.MTU)
 	if fd == d.fd {
 		return
 	}

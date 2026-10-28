@@ -65,6 +65,11 @@ char *bg_request(int64_t engine, const char *method, const char *path, const uin
 // The device moved to another network (Wi-Fi <-> cellular).
 void bg_network_changed(int64_t engine);
 
+// Changes what the engine logs from now on: "debug", "info", "warn" or
+// "error" (at debug the flow log is on as well). Returns NULL, or the
+// reason it was refused (free with bg_free).
+char *bg_set_log_level(int64_t engine, const char *level);
+
 // Takes the overlay down and releases the state directory. Once it returns,
 // no callback of the engine runs again (a request still in flight gets
 // errors instead), so the app may free ctx.

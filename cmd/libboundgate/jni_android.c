@@ -267,6 +267,17 @@ JNIEXPORT void JNICALL Java_com_net407_boundgate_Core_networkChanged(JNIEnv *env
 	bg_network_changed(engine);
 }
 
+// Core.setLogLevel(engine: Long, level: String): String? (null: done; else why not)
+JNIEXPORT jstring JNICALL Java_com_net407_boundgate_Core_setLogLevel(JNIEnv *env, jclass cls, jlong engine, jstring level) {
+	const char *l = (*env)->GetStringUTFChars(env, level, NULL);
+	char *err = bg_set_log_level(engine, (char *)l);
+	(*env)->ReleaseStringUTFChars(env, level, l);
+	if (!err) return NULL;
+	jstring s = jstr(env, err);
+	free(err);
+	return s;
+}
+
 JNIEXPORT void JNICALL Java_com_net407_boundgate_Core_stop(JNIEnv *env, jclass cls, jlong engine) {
 	bg_stop(engine); // the callbacks are done when it returns
 	pthread_mutex_lock(&mu);

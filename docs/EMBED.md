@@ -101,7 +101,7 @@ talk to the Mac's daemon or to their own extension:
 | `mtu` | Default 1280 (`transport.FitMTU`). |
 | `control_pin`, `signers_genesis`, `hub_addrs`, `transport` | Provisioning, as in a daemon's configuration file (MDM). |
 | `memory_limit_mib` | Soft Go heap limit (`debug.SetMemoryLimit`). An iOS packet tunnel is killed at 50 MiB. |
-| `log_level`, `flow_log` | `flow_log` writes a line per connection. Flow records reach the control plane either way. |
+| `log_level`, `flow_log` | `flow_log` writes a line per connection. Flow records reach the control plane either way. `bg_set_log_level` changes the level while the engine runs; at debug the flow lines are written too (the Android app's debug log). |
 
 ## One engine per state directory
 
@@ -143,6 +143,7 @@ header is `cmd/libboundgate/boundgate.h`:
 int64_t bg_start(const char *config_json, const bg_platform *platform, char **err);
 char   *bg_request(int64_t engine, const char *method, const char *path, const uint8_t *body, int32_t len, int32_t *status);
 void    bg_network_changed(int64_t engine);
+char   *bg_set_log_level(int64_t engine, const char *level);   // debug, info, warn, error; NULL or why not
 void    bg_stop(int64_t engine);
 int32_t bg_utun_fd(void);   // network extension: the utun NetworkExtension opened for us
 char   *bg_version(void);
