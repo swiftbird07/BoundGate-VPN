@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -181,3 +183,58 @@ func TestOlderSnapshotIsRefused(t *testing.T) {
 }
 
 var netipPool = netip.MustParsePrefix("10.21.0.0/16")
+
+// A snapshot that does not verify is asked for again, the same version:
+// the fault may have been this node's (a record it could not store) and
+// gone by then. Before, the version counted as seen and the node stayed
+// without a snapshot until the registry changed.
+func TestARejectedSnapshotIsAskedForAgain(t *testing.T) {
+	var sinces []string
+	var mu sync.Mutex
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sinces = append(sinces, r.URL.Query().Get("since"))
+		n := len(sinces)
+		mu.Unlock()
+		if n > 2 {
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(registry.Snapshot{Version: 5, Pool: netipPool})
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	var verified atomic.Int32
+	c := New(Config{Addr: strings.TrimPrefix(srv.URL, "https://"), TLS: &tls.Config{InsecureSkipVerify: true}, Poll: time.Millisecond,
+		Verify: func(*registry.Snapshot) error {
+			if verified.Add(1) == 1 {
+				return errors.New("the record could not be stored")
+			}
+			return nil
+		}})
+	defer c.Close()
+	var holder registry.Holder
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = c.Run(ctx, &holder, func(_ registry.Diff, s *registry.Snapshot) { cancel() })
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		cancel()
+		t.Fatal("the rejected snapshot was never asked for again")
+	}
+	if s := holder.Load(); s == nil || s.Version != 5 {
+		t.Fatalf("holder has %v", s)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sinces) < 2 || sinces[0] != "0" || sinces[1] != "0" {
+		t.Fatalf("asked with since=%v, want the same version twice", sinces)
+	}
+}

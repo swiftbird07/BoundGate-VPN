@@ -218,6 +218,16 @@ func (c *Client) pause(ctx context.Context) bool {
 	return true
 }
 
+// rejectedRetry is how long a snapshot that did not verify is left alone
+// before it is asked for again: the poll interval where there is one, a
+// minute with the long-poll, which would otherwise bring it back at once.
+func (c *Client) rejectedRetry() time.Duration {
+	if c.poll > 0 {
+		return c.poll
+	}
+	return time.Minute
+}
+
 // Transport says what carried the last answer of the control plane: "h3"
 // (HTTP/3 over UDP), "h2" (the TCP fallback) or "" before the first one.
 func (c *Client) Transport() string {
@@ -585,19 +595,27 @@ func (c *Client) Run(ctx context.Context, holder *registry.Holder, onDiff func(r
 			}
 			continue
 		}
-		since = snap.Version
 		if c.verify != nil {
 			if err := c.verify(snap); err != nil {
 				// our own record does not verify: operate with nothing
-				// rather than with a snapshot we cannot trust
-				c.log.Error("snapshot rejected", "version", snap.Version, "err", err)
+				// rather than with a snapshot we cannot trust. since stays
+				// where it was, so the same version is asked for again
+				// after a while: the fault may be this node's (a record it
+				// could not store) and gone by then, and a fault of the
+				// control plane's is not always fixed with a new version.
+				// Until 2026-10-28 the version counted as seen, and the node
+				// stayed without a snapshot until the registry changed.
+				c.log.Error("snapshot rejected", "version", snap.Version, "err", err, "retry_in", c.rejectedRetry())
 				holder.Clear()
-				if !c.pause(ctx) {
+				select {
+				case <-ctx.Done():
 					return nil
+				case <-time.After(c.rejectedRetry()):
 				}
 				continue
 			}
 		}
+		since = snap.Version
 		diff := holder.Store(snap)
 		c.log.Info("snapshot applied", "version", snap.Version, "peers", len(snap.Peers), "hubs", len(snap.Hubs()), "added", diff.AddedPeers, "removed", diff.RemovedPeers)
 		if onDiff != nil {
