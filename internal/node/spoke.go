@@ -271,6 +271,9 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 
 		go m.pump(ctx, t)
 		t = m.wait(ctx, l, t)
+		// ended by itself: its socket and QUIC transport are still ours (a
+		// phone that changes networks would leave one behind each time)
+		_ = t.Close()
 		reason := "connection lost"
 		revoked := false
 		if code, ok := transport.CloseCode(t.Err()); ok {

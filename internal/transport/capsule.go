@@ -373,6 +373,13 @@ func (l *capsuleLink) Err() error {
 
 // Close sends a close capsule (best effort) and ends the stream.
 func (l *capsuleLink) Close(code quic.ApplicationErrorCode, reason string) error {
+	select {
+	case <-l.done:
+		// already ended: closing it frees nothing more, and must not make
+		// its reason this side's close (Err, CloseCode)
+		return nil
+	default:
+	}
 	l.once.Do(func() {
 		close(l.stopKA)
 		l.mu.Lock()

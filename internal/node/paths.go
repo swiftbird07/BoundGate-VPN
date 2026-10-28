@@ -275,6 +275,10 @@ func (pm *pathManager) open(ctx context.Context, cd *candidate) {
 	s.n.publishStatus()
 	go pm.pump(ctx, p)
 	<-p.t.Done()
+	// ended by itself (the peer went, its server closed it): the socket,
+	// its QUIC transport and, on a relay, the stream that holds one of the
+	// target's dialer slots at the hub are still this side's to close
+	_ = p.t.Close()
 	s.dp.table.Detach(peer.OverlayIP, p)
 	for _, pf := range peer.Prefixes {
 		if pf.Prefix.Bits() > 0 {

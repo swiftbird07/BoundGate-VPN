@@ -169,3 +169,20 @@ func TestCapsulePacketsKeepToAssignedAndAdvertised(t *testing.T) {
 		t.Fatalf("client took %v (%v), want packet 8", buf[:n], err)
 	}
 }
+
+// Closing a link that already ended keeps why it ended: the peer's close
+// code stays the peer's (the owner closes every ended tunnel to free it).
+func TestClosingAnEndedLinkKeepsItsReason(t *testing.T) {
+	a, b := net.Pipe()
+	hub := newCapsuleLink(a, nil, time.Minute, 0, true)
+	client := newCapsuleLink(b, nil, time.Minute, 0, false)
+	_ = hub.Close(ErrCodeRevoked, "revoked")
+	<-client.Done()
+	if code, ok := CloseCode(client.Err()); !ok || code != ErrCodeRevoked {
+		t.Fatalf("before: %v", client.Err())
+	}
+	_ = client.Close(0, "client closed")
+	if code, ok := CloseCode(client.Err()); !ok || code != ErrCodeRevoked {
+		t.Fatalf("closing the ended link replaced its reason: %v", client.Err())
+	}
+}
