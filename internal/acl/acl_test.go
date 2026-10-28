@@ -260,3 +260,27 @@ func TestSignInWouldPermit(t *testing.T) {
 		}
 	}
 }
+
+// One subject signed in on two nodes has two sessions, and their groups may
+// differ (the IdP changed them in between). `principal in Group` must
+// answer for each device from its own session, the same as
+// context.user.groups does, not from whichever session came last.
+func TestGroupsComeFromThePrincipalsOwnSession(t *testing.T) {
+	byEntity := registry.Policy{ID: "p1", Name: "ops by entity", Cedar: `permit(principal in BoundGate::Group::"ops", action, resource);`}
+	byContext := registry.Policy{ID: "p2", Name: "ops by context", Cedar: `permit(principal, action, resource) when { context.user.groups.contains("ops") };`}
+	for _, order := range [][2]transport.DeviceID{{"node-a", "node-b"}, {"node-b", "node-a"}} {
+		s := lab(byEntity, byContext)
+		s.Sessions = []registry.Session{
+			{ID: "sl", NodeID: order[0], Subject: "alice", Groups: []string{"ops"}, ExpiresAt: time.Now().Add(time.Hour)},
+			{ID: "sp", NodeID: order[1], Subject: "alice", Groups: nil, ExpiresAt: time.Now().Add(time.Hour)},
+		}
+		s.Index()
+		e := New(s)
+		if d := e.Evaluate(req(string(order[0]), "10.60.0.10", 80, 6)); !d.Allow || len(d.Policies) != 2 {
+			t.Errorf("sessions %v: the device whose session is in ops: allow=%v policies=%v errors=%v", order, d.Allow, d.Policies, d.Errors)
+		}
+		if d := e.Evaluate(req(string(order[1]), "10.60.0.10", 80, 6)); d.Allow {
+			t.Errorf("sessions %v: the device whose session is not in ops was allowed by %v", order, d.Policies)
+		}
+	}
+}

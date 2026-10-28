@@ -386,18 +386,14 @@ func (e *Engine) buildEntities() {
 		}
 		e.base[nodeUID(n.ID)] = e.nodeEntity(n, nil)
 	}
-	for _, se := range s.Sessions {
-		uid := types.NewEntityUID(TypeUser, types.String(se.Subject))
-		parents := make([]types.EntityUID, 0, len(se.Groups))
-		gs := make([]types.Value, 0, len(se.Groups))
+	for i := range s.Sessions {
+		se := &s.Sessions[i]
 		for _, g := range se.Groups {
 			groups[g] = true
-			parents = append(parents, types.NewEntityUID(TypeGroup, types.String(g)))
-			gs = append(gs, types.String(g))
 		}
-		e.base[uid] = types.Entity{UID: uid, Parents: types.NewEntityUIDSet(parents...), Attributes: types.NewRecord(types.RecordMap{
-			"subject": types.String(se.Subject), "email": types.String(se.Email), "username": types.String(se.Username), "groups": types.NewSet(gs...),
-		})}
+		// one entity per subject, for a user that appears as a resource's
+		// owner; the principal's own comes from its session (evaluate)
+		e.base[userUID(se.Subject)] = userEntity(se)
 	}
 	for r := range roles {
 		uid := types.NewEntityUID(TypeRole, types.String(r))
@@ -607,6 +603,14 @@ func (e *Engine) evaluate(r Request) Decision {
 	}
 	top := types.EntityMap{}
 	top[nodeUID(pn.ID)] = e.nodeEntity(pn, se)
+	if se != nil && se.Subject != "" {
+		// the principal's user, with the groups of the principal's own
+		// session: a subject signed in on several nodes has one User
+		// entity in the base map, with whichever session's groups came
+		// last, so `principal in Group` answered for one device by another
+		// device's session (2026-10-28)
+		top[userUID(se.Subject)] = userEntity(se)
+	}
 
 	hostUID := types.NewEntityUID(TypeHost, types.String(r.Dst.String()))
 	var parents []types.EntityUID
@@ -684,4 +688,23 @@ func (e *Engine) evaluate(r Request) Decision {
 	sort.Strings(d.Reasons)
 	sort.Strings(d.Policies)
 	return d
+}
+
+func userUID(subject string) types.EntityUID {
+	return types.NewEntityUID(TypeUser, types.String(subject))
+}
+
+// userEntity is a user as one session describes them: in the groups of
+// that session.
+func userEntity(se *registry.Session) types.Entity {
+	uid := userUID(se.Subject)
+	parents := make([]types.EntityUID, 0, len(se.Groups))
+	gs := make([]types.Value, 0, len(se.Groups))
+	for _, g := range se.Groups {
+		parents = append(parents, types.NewEntityUID(TypeGroup, types.String(g)))
+		gs = append(gs, types.String(g))
+	}
+	return types.Entity{UID: uid, Parents: types.NewEntityUIDSet(parents...), Attributes: types.NewRecord(types.RecordMap{
+		"subject": types.String(se.Subject), "email": types.String(se.Email), "username": types.String(se.Username), "groups": types.NewSet(gs...),
+	})}
 }
