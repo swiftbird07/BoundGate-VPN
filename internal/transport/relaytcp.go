@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
@@ -69,12 +70,15 @@ type capsuleStream struct {
 	r    *bufio.Reader
 	idle time.Duration
 
-	wmu  sync.Mutex
-	wbuf []byte
-
-	in   chan []byte
-	done chan struct{}
-	once sync.Once
+	in chan []byte
+	// out holds capsules for writeLoop: SendDatagram never waits for the
+	// peer. The hub relays to all of a listener's dialers from one
+	// goroutine, and one dialer that stops reading must not hold up the
+	// others.
+	out     chan []byte
+	dropped atomic.Uint64
+	done    chan struct{}
+	once    sync.Once
 }
 
 func newCapsuleStream(conn net.Conn, r *bufio.Reader, idle time.Duration) *capsuleStream {
@@ -84,9 +88,66 @@ func newCapsuleStream(conn net.Conn, r *bufio.Reader, idle time.Duration) *capsu
 	if idle <= 0 {
 		idle = 60 * time.Second // as ClientConfig and ServerConfig default it
 	}
-	s := &capsuleStream{conn: conn, r: r, idle: idle, in: make(chan []byte, capsuleQueue), done: make(chan struct{})}
+	s := &capsuleStream{conn: conn, r: r, idle: idle, in: make(chan []byte, capsuleQueue), out: make(chan []byte, capsuleQueue), done: make(chan struct{})}
 	go s.readLoop()
+	go s.writeLoop()
+	go s.keepAlive()
 	return s
+}
+
+// keepAlive sends a ping capsule well within the idle timeout. A listen
+// stream carries something only while a dialer talks to it: without this,
+// both ends' read deadlines ended a quiet one, and the node stayed
+// unreachable through the relay until its hub connection happened to be
+// made again.
+func (s *capsuleStream) keepAlive() {
+	t := time.NewTicker(max(s.idle/3, 10*time.Millisecond))
+	defer t.Stop()
+	ping := quicvarint.Append(quicvarint.Append(nil, capsuleBGPing), 0)
+	for {
+		select {
+		case <-t.C:
+			s.queue(ping)
+		case <-s.done:
+			return
+		}
+	}
+}
+
+func (s *capsuleStream) writeLoop() {
+	var batch []byte
+	for {
+		var b []byte
+		select {
+		case b = <-s.out:
+		case <-s.done:
+			return
+		}
+		batch = append(batch[:0], b...)
+	more:
+		for len(batch) < 64<<10 {
+			select {
+			case b = <-s.out:
+				batch = append(batch, b...)
+			default:
+				break more
+			}
+		}
+		_ = s.conn.SetWriteDeadline(time.Now().Add(s.idle))
+		if _, err := s.conn.Write(batch); err != nil {
+			_ = s.Close()
+			return
+		}
+	}
+}
+
+// queue hands one capsule to writeLoop; a full queue drops it.
+func (s *capsuleStream) queue(c []byte) {
+	select {
+	case s.out <- c:
+	default:
+		s.dropped.Add(1)
+	}
 }
 
 func (s *capsuleStream) readLoop() {
@@ -126,15 +187,12 @@ func (s *capsuleStream) SendDatagram(b []byte) error {
 		return net.ErrClosed
 	default:
 	}
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	s.wbuf = s.wbuf[:0]
-	s.wbuf = quicvarint.Append(s.wbuf, capsuleDatagram)
-	s.wbuf = quicvarint.Append(s.wbuf, uint64(len(b)))
-	s.wbuf = append(s.wbuf, b...)
-	_ = s.conn.SetWriteDeadline(time.Now().Add(s.idle))
-	_, err := s.conn.Write(s.wbuf)
-	return err
+	c := make([]byte, 0, len(b)+10)
+	c = quicvarint.Append(c, capsuleDatagram)
+	c = quicvarint.Append(c, uint64(len(b)))
+	c = append(c, b...)
+	s.queue(c)
+	return nil
 }
 
 func (s *capsuleStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
