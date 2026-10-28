@@ -57,6 +57,9 @@ class TunnelService : VpnService() {
     private var callback: ConnectivityManager.NetworkCallback? = null
     // what the interface the core holds was built from, and its descriptor
     @Volatile private var applied: Pair<String, Int>? = null
+    // the newest start request: a stop on behalf of an older one must not
+    // end the service a Connect right after it asked for (stopSelf(startId))
+    @Volatile private var lastStart = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -66,8 +69,9 @@ class TunnelService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         DebugLog.log("svc", "start action=${intent?.action} flags=$flags id=$startId")
+        lastStart = startId
         if (intent?.action == ACTION_DISCONNECT) {
-            worker.execute { down() }
+            worker.execute { down(startId) }
             return START_NOT_STICKY
         }
         foreground()
@@ -84,13 +88,13 @@ class TunnelService : VpnService() {
                 Log.w(Node.TAG, "up: ${e.message}")
                 DebugLog.log("svc", "up failed: ${e.message}")
                 node.tunnelError = e.message
-                stopTunnel()
+                stopTunnel(startId)
             }
         }
         return START_STICKY
     }
 
-    private fun down() {
+    private fun down(startId: Int = lastStart) {
         DebugLog.log("svc", "down")
         try {
             node.call("POST", "/v1/down")
@@ -98,7 +102,7 @@ class TunnelService : VpnService() {
             Log.w(Node.TAG, "down: ${e.message}")
             DebugLog.log("svc", "down failed: ${e.message}")
         }
-        stopTunnel() // also when the overlay was not up and nothing is released
+        stopTunnel(startId) // also when the overlay was not up and nothing is released
     }
 
     /** The user or another VPN app took the VPN away. */
@@ -174,17 +178,41 @@ class TunnelService : VpnService() {
         return fd
     }
 
-    /** The core took the overlay down and closed the interface. */
+    /**
+     * The core took the overlay down and closed the interface. When it went
+     * down by itself and comes back on its own (its snapshot ran out while
+     * the control plane did not answer, R26), the service stays: stopped,
+     * the overlay came back with no service to build its interface, and the
+     * app said "Connected" with no VPN at all. Asked on the worker: this is
+     * called from inside the core's teardown.
+     */
     fun released() {
         DebugLog.log("tun", "released by the core (fd=${applied?.second})")
         applied = null
-        stopTunnel()
+        val id = lastStart
+        try {
+            worker.execute {
+                val resuming = try {
+                    node.call("GET", "/v1/status").optBoolean("resuming")
+                } catch (e: Exception) {
+                    false
+                }
+                DebugLog.log("svc", "released; the core comes back by itself: $resuming")
+                if (!resuming) stopTunnel(id)
+            }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            // the service is already going away
+        }
     }
 
-    private fun stopTunnel() {
+    private fun stopTunnel(startId: Int) {
         applied = null
+        if (startId != lastStart) {
+            DebugLog.log("svc", "stop for start $startId skipped: start $lastStart came after it")
+            return
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        stopSelf(startId)
     }
 
     private fun prefix(p: String): Pair<String, Int> {

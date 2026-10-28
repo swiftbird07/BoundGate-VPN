@@ -103,3 +103,17 @@ func TestDownCancelsAPendingResume(t *testing.T) {
 		t.Fatalf("the overlay came back after a down: %q", n.Status().LastError)
 	}
 }
+
+// An app learns from the status that the overlay comes back by itself, and
+// keeps its VPN service for it; after a down by the user it does not.
+func TestTheStatusSaysTheOverlayComesBack(t *testing.T) {
+	n := resumeNode()
+	n.resume = "full"
+	if !n.Status().Resuming {
+		t.Fatal("a pending resume is not in the status")
+	}
+	n.DownByUser()
+	if n.Status().Resuming {
+		t.Fatal("after a down by the user nothing comes back")
+	}
+}

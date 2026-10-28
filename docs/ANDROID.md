@@ -90,7 +90,13 @@ the APK carries only the Kotlin standard library besides the app itself.
   app's preferences and the service brings the overlay up in it.
 * **Disconnect:** `POST /v1/down`. The core closes the interface and calls
   `release`, and the service stops. If another VPN takes over or the user
-  revokes it in the settings (`onRevoke`), the result is the same.
+  revokes it in the settings (`onRevoke`), the result is the same. When the
+  core went down by itself and comes back on its own (its snapshot ran out
+  while the control plane did not answer, R26; the status says `resuming`),
+  the service stays: stopped, the overlay came back with no service to build
+  its interface, and the app said "Connected" without a VPN. A stop only
+  ends the service for the newest start request, so a Connect right after a
+  Disconnect is not undone by it.
 * **Quick Settings tile** (`VpnTileService`, add it by editing the panel):
   one tap connects or disconnects, as the app's button does. It reads the
   same status as the app: "Connected", "Connecting", "Sign-in needed" (all

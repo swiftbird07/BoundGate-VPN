@@ -274,6 +274,11 @@ type Status struct {
 	Since       time.Time             `json:"since,omitempty"`
 	LastError   string                `json:"last_error,omitempty"`
 	LastClose   string                `json:"last_close,omitempty"`
+	// Resuming: the overlay went down by itself and comes back on its own
+	// once the control plane answers again (R26). An app that runs the
+	// tunnel as a service keeps that service for it: stopped, the overlay
+	// came back with no VPN interface to carry it.
+	Resuming bool `json:"resuming,omitempty"`
 	NodeName    string                `json:"node_name"`
 	NodeID      string                `json:"node_id,omitempty"`
 	SPKI        string                `json:"spki"`
@@ -982,6 +987,7 @@ func (n *Node) publishStatus() {
 }
 
 func (n *Node) publishLocked() {
+	n.status.Resuming = n.resume != ""
 	n.status.ControlTransport = n.control.Transport()
 	n.status.PacketPanics = n.guard.panics.Load()
 	n.status.SignIn = nil
