@@ -60,15 +60,17 @@ datagram as one DATAGRAM capsule (RFC 9297) whose payload is what the QUIC
 side puts in an HTTP datagram. The hub pairs the two sides exactly as it does
 on QUIC, and either side may be on either transport. What ends a QUIC node's
 relay streams by itself, losing its admission, is done for these connections
-in `CloseDevice`: a revoked node or an ended session closes them too. A node
+in `CloseDevice`: a revoked node closes them too. A node
 whose network blocks UDP so reaches its peers end to end, at the price of the
 fallback's head-of-line blocking.
 
 "Relay pairs approved nodes only" therefore means: both ends are nodes with a
-signed binding in the hub's snapshot, the dialer has its session, a revoked
-node or an ended session closes the hub connection and with it every relay
-stream. Which flows the target accepts is not the hub's to decide: it cannot
-see them.
+signed binding in the hub's snapshot, and a revoked node loses the hub
+connection and with it every relay stream. A user session is not a
+condition, as it is not one of a tunnel (R109): the target's policies see
+whether the dialer has one, and an ended session closes what a session
+permitted there, not the path. Which flows the target accepts is not the
+hub's to decide: it cannot see them.
 
 ## Who dials, and when
 

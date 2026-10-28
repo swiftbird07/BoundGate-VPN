@@ -76,10 +76,9 @@ func (h *hubService) RelayListen(peer transport.AuthenticatedPeer, addr netip.Ad
 }
 
 // RelayDial implements transport.RelayHandler. The hub pairs only nodes it
-// would itself admit: the dialer approved and, if interactive, with a user
-// session; the target the overlay address of another approved node. Which
-// flows the target then takes is the target's decision (its ACL); the hub
-// cannot see them.
+// would itself admit: the dialer approved, the target the overlay address
+// of another approved node. Which flows the target then takes is the
+// target's decision (its ACL); the hub cannot see them.
 func (h *hubService) RelayDial(peer transport.AuthenticatedPeer, target netip.Addr) (netip.Addr, int) {
 	n := h.s.n
 	if n.cfg.NoRelay {
