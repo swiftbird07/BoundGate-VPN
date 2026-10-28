@@ -295,3 +295,59 @@ func TestTheJournalReclaimsItsName(t *testing.T) {
 		t.Fatal("the journal was written through a link")
 	}
 }
+
+// hangCfg is a host whose commands never answer: each one runs into its
+// deadline, and whether it took effect is unknown.
+type hangCfg struct{ fakeCfg }
+
+func (h *hangCfg) AddRoute(ctx context.Context, d netip.Prefix, i string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (h *hangCfg) AddBypass(ctx context.Context, a netip.Addr) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (h *hangCfg) SetNAT(ctx context.Context, _ netip.Prefix, d []netip.Prefix, i string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A change whose command never answered may have been made: it is
+// recorded, so that a crash does not leave it behind unrecorded. One that
+// answered with an error made nothing and is not.
+func TestAChangeThatNeverAnsweredIsRecorded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netstate.json")
+	j := NewJournal(&hangCfg{}, path)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	lan, pool := netip.MustParsePrefix("10.60.0.0/24"), netip.MustParsePrefix("10.21.0.0/16")
+	hub := netip.MustParseAddr("203.0.113.7")
+	if j.AddRoute(ctx, lan, "utun4") == nil || j.AddBypass(ctx, hub) == nil || j.SetNAT(ctx, pool, []netip.Prefix{lan}, "bg0") == nil {
+		t.Fatal("a command cut off is an error to the caller")
+	}
+	// refused outright: nothing to record
+	refused := &failCfg{}
+	j2 := NewJournal(refused, filepath.Join(t.TempDir(), "netstate.json"))
+	if j2.AddRoute(context.Background(), lan, "utun5") == nil {
+		t.Fatal("the refusal must reach the caller")
+	}
+	if _, err := os.Stat(j2.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a refused change was recorded")
+	}
+
+	next := &fakeCfg{}
+	if n := NewJournal(next, path).Recover(context.Background()); n != 3 {
+		t.Fatalf("recovered %d, want the route, the host route and the NAT: %v", n, next.calls)
+	}
+	want := []string{"del 10.60.0.0/24 utun4", "unbypass 203.0.113.7", "nat-off bg0"}
+	if !reflect.DeepEqual(next.calls, want) {
+		t.Fatalf("calls %v, want %v", next.calls, want)
+	}
+}
+
+type failCfg struct{ fakeCfg }
+
+func (f *failCfg) AddRoute(context.Context, netip.Prefix, string) error {
+	return errors.New("no such device")
+}

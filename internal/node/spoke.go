@@ -815,7 +815,14 @@ func (m *spokeManager) applyDNSLocked(dns []netip.Addr) {
 	}
 	ctx, cancel := opCtx()
 	err := l.SetLinkDNS(ctx, s.ifname, dns)
+	cut := err != nil && ctx.Err() != nil
 	cancel()
+	if cut {
+		// never answered: the host may be pointed at the tunnel all the
+		// same, so teardown has to give it back (the journal records it
+		// for the same reason)
+		s.resolver = true
+	}
 	if err != nil {
 		m.dns, m.dnsErr = nil, err.Error()
 		s.noLinkDNS.Do(func() {

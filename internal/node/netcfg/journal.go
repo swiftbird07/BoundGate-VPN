@@ -229,20 +229,26 @@ func (j *Journal) CreateTUN(name string, mtu int) (tun.Device, string, error) {
 	return j.Configurator.CreateTUN(name, mtu)
 }
 
+// An addition is recorded when it succeeded and also when its command never
+// answered (cutOff): it may have taken effect all the same, and a record of
+// a change that is not there costs nothing -- its removal answers "no such
+// route" and counts as done -- while a change without a record outlives a
+// crash. A command that answered with an error changed nothing.
 func (j *Journal) AddRoute(ctx context.Context, dst netip.Prefix, ifname string) error {
-	if err := j.Configurator.AddRoute(ctx, dst, ifname); err != nil {
+	err := j.Configurator.AddRoute(ctx, dst, ifname)
+	if err != nil && !cutOff(ctx, err) {
 		return err
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	for _, r := range j.st.Routes {
 		if r.Dst == dst && r.Iface == ifname {
-			return nil
+			return err
 		}
 	}
 	j.st.Routes = append(j.st.Routes, journalRoute{dst, ifname})
 	j.save()
-	return nil
+	return err
 }
 
 func (j *Journal) DelRoute(ctx context.Context, dst netip.Prefix, ifname string) error {
@@ -263,19 +269,20 @@ func (j *Journal) DelRoute(ctx context.Context, dst netip.Prefix, ifname string)
 }
 
 func (j *Journal) AddBypass(ctx context.Context, host netip.Addr) error {
-	if err := j.Configurator.AddBypass(ctx, host); err != nil {
+	err := j.Configurator.AddBypass(ctx, host)
+	if err != nil && !cutOff(ctx, err) {
 		return err
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	for _, h := range j.st.Bypass {
 		if h == host {
-			return nil
+			return err
 		}
 	}
 	j.st.Bypass = append(j.st.Bypass, host)
 	j.save()
-	return nil
+	return err
 }
 
 func (j *Journal) DelBypass(ctx context.Context, host netip.Addr) error {
@@ -296,18 +303,19 @@ func (j *Journal) DelBypass(ctx context.Context, host netip.Addr) error {
 }
 
 func (j *Journal) SetNAT(ctx context.Context, pool netip.Prefix, dsts []netip.Prefix, ifname string) error {
-	if err := j.Configurator.SetNAT(ctx, pool, dsts, ifname); err != nil {
-		return err
-	}
+	err := j.Configurator.SetNAT(ctx, pool, dsts, ifname)
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if len(dsts) == 0 {
-		j.st.NAT = ""
-	} else {
+	switch {
+	case len(dsts) > 0 && (err == nil || cutOff(ctx, err)):
 		j.st.NAT = ifname
+	case len(dsts) == 0 && err == nil:
+		j.st.NAT = ""
+	default:
+		return err // nothing changed, or a removal that may not have happened
 	}
 	j.save()
-	return nil
+	return err
 }
 
 // ReplyViaArrival passes on to the wrapped configurator (ArrivalRouter) and
@@ -331,7 +339,7 @@ func (j *Journal) SetLinkDNS(ctx context.Context, ifname string, servers []netip
 		// without it a machine whose daemon is gone resolves no name at
 		// all until someone reboots it (R144). Measured on 2026-10-22.
 		return err
-	case len(servers) > 0 && err == nil:
+	case len(servers) > 0 && (err == nil || cutOff(ctx, err)):
 		j.st.DNS = ifname
 	case len(servers) == 0:
 		j.st.DNS = ""
@@ -349,6 +357,10 @@ func (j *Journal) ReplyViaArrival(ctx context.Context, ifname string, on bool) e
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if cutOff(ctx, err) {
+		if on && j.st.Arrival != ifname {
+			j.st.Arrival = ifname // it may be there all the same
+			j.save()
+		}
 		return err // never answered: the rule may still be there
 	}
 	if on && err == nil {
