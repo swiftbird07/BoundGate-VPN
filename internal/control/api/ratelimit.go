@@ -13,7 +13,13 @@ type rateLimiter struct {
 	burst   float64
 	per     time.Duration
 	buckets map[string]*bucket
+	swept   time.Time // when idle buckets were last dropped
 }
+
+// maxBuckets bounds what the limiter remembers: beyond it, a client it has
+// not seen is refused rather than given memory. One bucket per fresh
+// address (a /64 for IPv6) is what a flood from a large allocation costs.
+const maxBuckets = 50000
 
 type bucket struct {
 	tokens float64
@@ -36,8 +42,21 @@ func (l *rateLimiter) allowN(key string, n float64) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// keep the map bounded: idle buckets go, at most once a second (the
+	// sweep walks the whole map), and beyond the cap no new one is made
+	if len(l.buckets) > 10000 && now.Sub(l.swept) > time.Second {
+		l.swept = now
+		for k, v := range l.buckets {
+			if now.Sub(v.last) > l.per {
+				delete(l.buckets, k)
+			}
+		}
+	}
 	b := l.buckets[key]
 	if b == nil {
+		if len(l.buckets) >= maxBuckets {
+			return false
+		}
 		b = &bucket{tokens: l.burst, last: now}
 		l.buckets[key] = b
 	}
@@ -48,14 +67,6 @@ func (l *rateLimiter) allowN(key string, n float64) bool {
 		return false
 	}
 	b.tokens -= n
-	// keep the map bounded
-	if len(l.buckets) > 10000 {
-		for k, v := range l.buckets {
-			if now.Sub(v.last) > l.per {
-				delete(l.buckets, k)
-			}
-		}
-	}
 	return true
 }
 
