@@ -227,3 +227,37 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// A second network whose name makes the same slug as the first gets a
+// number, and that number has to fit: a slug at its full length with a
+// number behind it was no slug any more, and the file was refused on the
+// next start, with the daemon unable to come up at all.
+func TestANumberedIDIsStillASlug(t *testing.T) {
+	ns := &Networks{}
+	name := "Northern Lights Research Network" // its slug is cut at 24
+	first, err := ns.Add(name, Settings{ControlAddr: "vpn.one.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.ID) != maxSlug {
+		t.Fatalf("id %q: the test needs a name whose slug is at the full length", first.ID)
+	}
+	for i := 0; i < 10; i++ {
+		n, err := ns.Add(name, Settings{ControlAddr: "vpn.two.example"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slug(n.ID) != n.ID || n.ID == first.ID {
+			t.Fatalf("id %q is not a slug or collides", n.ID)
+		}
+	}
+	if err := ns.validate(); err != nil {
+		t.Fatalf("the file would be refused on the next start: %v", err)
+	}
+	if n := ns.List[1].ID; n != "northern-lights-researc2" {
+		t.Errorf("second id %q", n)
+	}
+	if n := ns.List[10].ID; n != "northern-lights-resear11" {
+		t.Errorf("eleventh id %q", n)
+	}
+}

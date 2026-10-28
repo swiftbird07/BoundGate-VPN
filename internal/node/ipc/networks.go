@@ -204,14 +204,21 @@ func (ns *Networks) Remove(id string) error {
 }
 
 // freeID is the slug of name, with a number appended while it is taken.
+// The number takes the place of the slug's last characters when the slug
+// is at its full length: the result has to be a slug itself, or validate
+// refuses the file on the next start.
 func (ns *Networks) freeID(name string) string {
 	base := slug(name)
 	id := base
 	for i := 2; ns.Find(id) >= 0; i++ {
-		id = base + strconv.Itoa(i)
+		num := strconv.Itoa(i)
+		id = strings.TrimRight(base[:min(len(base), maxSlug-len(num))], "-") + num
 	}
 	return id
 }
+
+// maxSlug is the longest ID slug makes.
+const maxSlug = 24
 
 // slug makes an ID a user can type and a directory name that needs no
 // quoting: lower case, letters, digits and dashes.
@@ -229,7 +236,7 @@ func slug(name string) string {
 				dash = true
 			}
 		}
-		if b.Len() >= 24 {
+		if b.Len() >= maxSlug {
 			break
 		}
 	}
