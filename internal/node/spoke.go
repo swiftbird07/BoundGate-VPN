@@ -23,7 +23,8 @@ import (
 
 // spokeManager keeps one tunnel to every hub in the snapshot, elects the
 // primary (first connected hub in snapshot order) as uplink and keeps the
-// kernel routes equal to profile ∩ (union of what connected hubs advertise).
+// kernel routes equal to profile ∩ (union of what connected hubs advertise,
+// and for routeGrace after a loss what the lost hub advertised).
 type spokeManager struct {
 	s *session
 
@@ -48,7 +49,30 @@ type hubLink struct {
 	since      time.Time
 	tunnel     *transport.ClientTunnel
 	advertised []netip.Prefix
-	retry      chan bool // poke: retry now; true: the user session changed
+	dns        []netip.Addr // the resolvers the tunnel offered; kept with advertised
+	// lostAt: when the tunnel was lost (zero: it was not, or the hub refused
+	// this device). The routes and resolvers it advertised stay for
+	// routeGrace from here while the link dials again.
+	lostAt time.Time
+	retry  chan bool // poke: retry now; true: the user session changed
+}
+
+// routeGrace is how long the routes and resolvers a hub advertised stay
+// after its tunnel was lost, while the link dials it again. Withdrawing
+// them at once and installing them again a few seconds later is two
+// changes of the network configuration in a row; on a phone each one is a
+// new tunnel interface, and two of those in the middle of the phone joining
+// a Wi-Fi were what left it without internet until the VPN was switched
+// off and on (Android, 2026-10-28). Meanwhile the packets for those routes
+// are dropped (no uplink), which is what a VPN that is reconnecting should
+// do; after the grace the routes go, as before, and the machine's own
+// default route takes over until the hub is back.
+const routeGrace = 30 * time.Second
+
+// kept reports whether the link's routes still stand although its tunnel
+// is gone: lost less than routeGrace ago, and not refused since.
+func (l *hubLink) kept(now time.Time) bool {
+	return l.tunnel == nil && !l.lostAt.IsZero() && now.Sub(l.lostAt) < routeGrace
 }
 
 // HubStatus is the CLI view of one hub link.
@@ -205,6 +229,12 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 			}
 			m.mu.Lock()
 			l.state, l.err, l.tunnel = state, msg, nil
+			if login {
+				// a refusal is an answer: nothing of what the hub
+				// advertised stands any more
+				l.advertised, l.dns, l.lostAt = nil, nil, time.Time{}
+				m.applyRoutesLocked()
+			}
 			m.mu.Unlock()
 			n.log.Warn("hub connection failed", "hub", l.hub.Name, "addr", l.hub.PublicAddr, "err", err, "retry_in", wait)
 			n.publishStatus()
@@ -226,6 +256,7 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 		backoff = time.Second
 		m.mu.Lock()
 		l.state, l.err, l.tunnel, l.advertised, l.since = "connected", "", t, adv, time.Now()
+		l.dns, l.lostAt = t.DNS(), time.Time{}
 		// The hub itself is reached through its own link, whichever hub
 		// is primary: hubs do not forward for each other (M1.5).
 		m.s.dp.table.Attach(l.hub.OverlayIP, t)
@@ -262,14 +293,20 @@ func (m *spokeManager) run(ctx context.Context, l *hubLink) {
 		}
 		m.mu.Lock()
 		m.s.dp.table.Detach(l.hub.OverlayIP, t)
-		l.state, l.err, l.tunnel, l.advertised = "connecting", reason, nil, nil
+		l.state, l.err, l.tunnel = "connecting", reason, nil
+		if keep := ctx.Err() == nil && m.keepsRoutes(t.Err()); keep {
+			l.lostAt = time.Now()
+			m.graceEnds(ctx, l)
+		} else {
+			l.advertised, l.dns, l.lostAt = nil, nil, time.Time{}
+		}
 		m.electLocked()
 		m.applyRoutesLocked()
 		m.mu.Unlock()
 		if ctx.Err() != nil {
 			return
 		}
-		n.log.Warn("hub disconnected", "hub", l.hub.Name, "reason", reason)
+		n.log.Warn("hub disconnected", "hub", l.hub.Name, "reason", reason, "routes_kept_for", routeGrace)
 		if code, ok := transport.CloseCode(t.Err()); ok && code == transport.ErrCodeSessionExpired {
 			m.mu.Lock()
 			l.state = "login required"
@@ -317,6 +354,7 @@ func (m *spokeManager) wait(ctx context.Context, l *hubLink, t *transport.Client
 			old := t
 			t = nt
 			l.tunnel, l.advertised, l.since = nt, adv, time.Now()
+			l.dns = nt.DNS()
 			m.s.dp.table.Detach(l.hub.OverlayIP, old)
 			m.s.dp.table.Attach(l.hub.OverlayIP, nt)
 			m.primary = nil // re-elect so the uplink points at the new tunnel
@@ -332,6 +370,41 @@ func (m *spokeManager) wait(ctx context.Context, l *hubLink, t *transport.Client
 			n.publishStatus()
 		}
 	}
+}
+
+// keepsRoutes decides whether a tunnel that ended with err leaves its
+// routes standing for routeGrace: yes for a connection that was lost or
+// given up on and for a hub that is restarting, no when the hub answered
+// that this device is not welcome (revoked, policy, session expired) --
+// then nothing it advertised stands any more.
+func (m *spokeManager) keepsRoutes(err error) bool {
+	code, ok := transport.CloseCode(err)
+	if !ok {
+		return true
+	}
+	switch code {
+	case transport.ErrCodeRevoked, transport.ErrCodeSessionExpired, transport.ErrCodePolicy:
+		return false
+	}
+	return true
+}
+
+// graceEnds withdraws the routes of a link that is still away when its
+// grace is over.
+func (m *spokeManager) graceEnds(ctx context.Context, l *hubLink) {
+	time.AfterFunc(routeGrace, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if ctx.Err() != nil || l.tunnel != nil || l.kept(time.Now()) {
+			return // gone, back, or lost again since (that loss has its own timer)
+		}
+		if l.advertised == nil && l.dns == nil {
+			return
+		}
+		l.advertised, l.dns, l.lostAt = nil, nil, time.Time{}
+		m.s.n.log.Warn("hub still away; the routes it advertised are withdrawn", "hub", l.hub.Name, "after", routeGrace)
+		m.applyRoutesLocked()
+	})
 }
 
 // dial connects to a hub with the configured transport preference: QUIC
@@ -570,8 +643,9 @@ func localNetsKey(ls []localNet) string {
 func (m *spokeManager) applyRoutesLocked() {
 	s := m.s
 	var adv []netip.Prefix
+	now := time.Now()
 	for _, l := range m.links {
-		if l.tunnel != nil {
+		if l.tunnel != nil || l.kept(now) {
 			adv = append(adv, l.advertised...)
 		}
 	}
@@ -683,12 +757,23 @@ func (m *spokeManager) skippedRoutes() []string {
 }
 
 // resolversLocked are the resolvers the primary hub offers, or none when the
-// node is to keep the host's own (resolver: system).
+// node is to keep the host's own (resolver: system). While the primary is
+// away for a moment they stay, as its routes do (routeGrace): the first
+// hub in snapshot order whose routes still stand lends its resolvers.
 func (m *spokeManager) resolversLocked() []netip.Addr {
-	if m.s.n.cfg.Resolver == ResolverSystem || m.primary == nil || m.primary.tunnel == nil {
+	if m.s.n.cfg.Resolver == ResolverSystem {
 		return nil
 	}
-	return m.primary.tunnel.DNS()
+	if m.primary != nil && m.primary.tunnel != nil {
+		return m.primary.dns
+	}
+	now := time.Now()
+	for _, id := range m.order {
+		if l := m.links[id]; l != nil && l.kept(now) {
+			return l.dns
+		}
+	}
+	return nil
 }
 
 // applyDNSLocked points the host at those resolvers, or gives them back when

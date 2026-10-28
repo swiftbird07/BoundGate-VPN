@@ -53,6 +53,13 @@ the APK carries only the Kotlin standard library besides the app itself.
   hand-over built a new interface, and one built while the phone was joining
   a Wi-Fi left it without internet -- the Wi-Fi joined, no icon, nothing
   reached the net -- until the VPN was switched off and on.
+
+  On the core's side a hub tunnel that is lost leaves its routes and
+  resolvers standing for 30 s while the link dials again (`routeGrace`,
+  spoke.go): withdrawing them and installing them again seconds later would
+  be two new interfaces in a row, in the middle of the change of network.
+  Meanwhile packets for those routes are dropped, as a VPN that is
+  reconnecting should; a hub that refused the device withdraws at once.
 * **Route:** a "Route" row in the connection card whenever the node offers
   more than one profile ([PROFILES.md](PROFILES.md)): connected, the node
   switches at once (`POST /v1/profile`); otherwise the choice is kept in the
