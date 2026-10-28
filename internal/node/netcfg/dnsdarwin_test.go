@@ -100,4 +100,3 @@ func TestTheMacScriptRefusesAStrangeDeviceName(t *testing.T) {
 		}
 	}
 }
-
