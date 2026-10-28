@@ -1,8 +1,8 @@
 package netcfg
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"sync"
