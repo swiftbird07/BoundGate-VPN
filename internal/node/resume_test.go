@@ -96,7 +96,7 @@ func TestResumeWithTheNextSnapshot(t *testing.T) {
 func TestDownCancelsAPendingResume(t *testing.T) {
 	n := resumeNode()
 	n.resume = "full"
-	n.Down("down by user")
+	n.DownByUser()
 	n.onSnapshot(registry.Diff{}, n.holder.Load())
 	time.Sleep(50 * time.Millisecond)
 	if n.Status().LastError != "" {

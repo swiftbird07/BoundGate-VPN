@@ -245,7 +245,7 @@ func handler(n *node.Node, opt Options, onReset, onSwitch func()) *http.ServeMux
 		writeJSON(w, http.StatusOK, n.Status())
 	})
 	mux.HandleFunc("POST /v1/down", func(w http.ResponseWriter, r *http.Request) {
-		n.Down("down by user")
+		n.DownByUser()
 		writeJSON(w, http.StatusOK, n.Status())
 	})
 	// The way back for a host that is pointed at a resolver in a tunnel that

@@ -1352,11 +1352,21 @@ func (n *Node) SetProfile(name string) error {
 	return nil
 }
 
+// DownByUser is `down` from the CLI or an app: the overlay stays down until
+// someone says up, also when it was waiting to come back by itself after
+// its snapshot ran out. The node's own reasons to go down (Down) leave that
+// wait in place.
+func (n *Node) DownByUser() {
+	n.mu.Lock()
+	n.resume = ""
+	n.mu.Unlock()
+	n.Down("down by user")
+}
+
 // Down tears the overlay down.
 func (n *Node) Down(reason string) {
 	n.mu.Lock()
 	s := n.sess
-	n.resume = "" // down is final: an overlay that was waiting to come back stays down
 	n.mu.Unlock()
 	if s == nil {
 		return
