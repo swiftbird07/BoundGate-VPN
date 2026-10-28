@@ -399,6 +399,11 @@ func (d *DB) ConfirmNode(ctx context.Context, id, by string, g Grant, pool netip
 		if g.PublicAddr != nil {
 			publicAddr = strings.TrimSpace(*g.PublicAddr)
 		}
+		// a sign token minted for the previous grant must not approve the
+		// node under this one: the admin gets a new token after the confirm
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sign_tokens WHERE node_id = ? AND used_at IS NULL`, id); err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE nodes SET status = 'confirmed', confirmed_at = ?, confirmed_by = ?,
 			name = COALESCE(NULLIF(?, ''), name), kind = ?, hardware_bound = ?, roles_json = ?, prefixes_json = ?, overlay_ip = ?,
 			public_addr = COALESCE(?, public_addr), tags_json = COALESCE(?, tags_json), binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL
@@ -514,52 +519,65 @@ func (d *DB) UsedTags(ctx context.Context) ([]string, error) {
 // needs a new signature. A name or public-address change keeps the
 // approval and only bumps the snapshot. Returns the version and whether the
 // node was demoted.
+//
+// The node is read and written in one transaction, and the write is bound
+// to the status that was read: an update that raced a revocation or a
+// signature (two admins, or the admin UI and the CLI) used to carry the
+// stale status back -- a revoked node became confirmed again, and could be
+// approved; an approval landed under a grant that was no longer the one
+// signed. A revoked node is not changed at all.
 func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Prefix) (uint64, bool, error) {
-	cur, err := d.NodeByID(ctx, id)
-	if err != nil {
-		return 0, false, err
-	}
-	if g.Roles == nil {
-		g.Roles = cur.Roles
-	}
-	if g.Prefixes == nil {
-		g.Prefixes = cur.Prefixes
-	}
-	if !g.OverlayIP.IsValid() {
-		g.OverlayIP = cur.OverlayIP
-	}
-	publicAddr := cur.PublicAddr
-	if g.PublicAddr != nil {
-		publicAddr = strings.TrimSpace(*g.PublicAddr)
-		if publicAddr != "" {
-			if _, err := CleanPublicAddr(publicAddr); err != nil {
-				return 0, false, fmt.Errorf("%w: %v", ErrConflict, err)
+	var demote bool
+	version, err := d.tx(ctx, false, func(tx *sql.Tx) error {
+		cur, err := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeCols+` FROM nodes WHERE id = ?`, id))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if cur.Status == StatusRevoked {
+			return fmt.Errorf("%w: node is revoked", ErrConflict)
+		}
+		if g.Roles == nil {
+			g.Roles = cur.Roles
+		}
+		if g.Prefixes == nil {
+			g.Prefixes = cur.Prefixes
+		}
+		if !g.OverlayIP.IsValid() {
+			g.OverlayIP = cur.OverlayIP
+		}
+		publicAddr := cur.PublicAddr
+		if g.PublicAddr != nil {
+			publicAddr = strings.TrimSpace(*g.PublicAddr)
+			if publicAddr != "" {
+				if _, err := CleanPublicAddr(publicAddr); err != nil {
+					return fmt.Errorf("%w: %v", ErrConflict, err)
+				}
 			}
 		}
-	}
-	if g.Kind == "" {
-		g.Kind = cur.Kind
-	}
-	if cur.Status == StatusApproved || cur.Status == StatusConfirmed {
-		if err := g.Validate(pool); err != nil {
-			return 0, false, fmt.Errorf("%w: %v", ErrConflict, err)
+		if g.Kind == "" {
+			g.Kind = cur.Kind
 		}
-	}
-	hw := cur.HardwareBound
-	if g.HardwareBound != nil {
-		hw = *g.HardwareBound
-	}
-	if hw && !cur.HardwareClaimed {
-		return 0, false, fmt.Errorf("%w: %s", ErrConflict, errNoHardwareClaim)
-	}
-	tags := cur.Tags
-	if g.Tags != nil {
-		tags = *g.Tags
-	}
-	signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP || g.Kind != cur.Kind || hw != cur.HardwareBound || !slices.Equal(tags, cur.Tags)
-	demote := cur.Status == StatusApproved && signedChanged
-	bump := cur.Status == StatusApproved
-	version, err := d.tx(ctx, bump, func(tx *sql.Tx) error {
+		if cur.Status == StatusApproved || cur.Status == StatusConfirmed {
+			if err := g.Validate(pool); err != nil {
+				return fmt.Errorf("%w: %v", ErrConflict, err)
+			}
+		}
+		hw := cur.HardwareBound
+		if g.HardwareBound != nil {
+			hw = *g.HardwareBound
+		}
+		if hw && !cur.HardwareClaimed {
+			return fmt.Errorf("%w: %s", ErrConflict, errNoHardwareClaim)
+		}
+		tags := cur.Tags
+		if g.Tags != nil {
+			tags = *g.Tags
+		}
+		signedChanged := !equalRoles(g.Roles, cur.Roles) || !equalPrefixes(g.Prefixes, cur.Prefixes) || g.OverlayIP != cur.OverlayIP || g.Kind != cur.Kind || hw != cur.HardwareBound || !slices.Equal(tags, cur.Tags)
+		demote = cur.Status == StatusApproved && signedChanged
 		overlay := ""
 		if g.OverlayIP.IsValid() {
 			overlay = g.OverlayIP.String()
@@ -568,14 +586,27 @@ func (d *DB) UpdateNode(ctx context.Context, id string, g Grant, pool netip.Pref
 		if demote {
 			q += `, status = 'confirmed', binding_json = '', binding_sig = '', signed_by = '', signed_at = NULL, approved_at = NULL, approved_by = NULL`
 		}
-		res, err := tx.ExecContext(ctx, q+` WHERE id = ?`, g.Name, string(g.Kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, publicAddr, jsonOf(orEmptyTags(tags)), id)
+		res, err := tx.ExecContext(ctx, q+` WHERE id = ? AND status = ?`, g.Name, string(g.Kind), hw, jsonOf(g.Roles), jsonOf(g.Prefixes), overlay, publicAddr, jsonOf(orEmptyTags(tags)), id, cur.Status)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("%w: overlay ip %s is already taken", ErrConflict, g.OverlayIP)
 			}
 			return err
 		}
-		return affected(res)
+		if err := affected(res); err != nil {
+			return err
+		}
+		if signedChanged && cur.Status != StatusPending {
+			// a sign token minted for the old grant would approve the node
+			// under a binding that no longer describes it
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sign_tokens WHERE node_id = ? AND used_at IS NULL`, id); err != nil {
+				return err
+			}
+		}
+		if cur.Status == StatusApproved {
+			_, err = tx.ExecContext(ctx, `UPDATE snapshot_version SET version = version + 1, updated_at = ?`, now())
+		}
+		return err
 	})
 	return version, demote, err
 }

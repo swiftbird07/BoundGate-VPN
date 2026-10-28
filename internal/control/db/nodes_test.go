@@ -166,3 +166,67 @@ func TestPoolMustBePrivate(t *testing.T) {
 		}
 	}
 }
+
+// An update that races a revocation must not carry the stale status back:
+// a revoked node stays revoked, whatever the update says.
+func TestUpdateNodeLeavesARevokedNodeAlone(t *testing.T) {
+	d := open(t)
+	ctx := context.Background()
+	var spki devicekey.SPKIHash
+	spki[0] = 21
+	n, _ := d.CreatePending(ctx, EnrollRequest{SPKI: spki, CertDER: []byte{1}})
+	if _, err := approve(t, d, n.ID, Grant{Roles: []registry.Role{registry.RoleEndpoint}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RevokeNode(ctx, n.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := d.UpdateNode(ctx, n.ID, Grant{Roles: []registry.Role{registry.RoleHub}}, pool)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("update of a revoked node: %v", err)
+	}
+	got, _ := d.NodeByID(ctx, n.ID)
+	if got.Status != StatusRevoked || got.OverlayIP.IsValid() || len(got.Roles) != 1 || got.Roles[0] != registry.RoleEndpoint {
+		t.Fatalf("after the update: %+v", got)
+	}
+}
+
+// A sign token is minted for one grant. A change of the grant while the
+// token is out (another confirm, an update of roles) takes the token with
+// it, so a signature made for the old grant cannot approve the new one.
+func TestAChangedGrantDropsTheSignToken(t *testing.T) {
+	d := open(t)
+	ctx := context.Background()
+	var spki devicekey.SPKIHash
+	spki[0] = 22
+	n, _ := d.CreatePending(ctx, EnrollRequest{SPKI: spki, CertDER: []byte{1}})
+	endpoint := Grant{Roles: []registry.Role{registry.RoleEndpoint}}
+	if err := d.ConfirmNode(ctx, n.ID, "admin", endpoint, pool); err != nil {
+		t.Fatal(err)
+	}
+	tok, _, err := d.CreateSignToken(ctx, n.ID, spki, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := d.UpdateNode(ctx, n.ID, Grant{Roles: []registry.Role{registry.RoleHub}}, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ApproveSigned(ctx, n.ID, tok, `{"binding":true}`, "sig", "SHA256:x"); !errors.Is(err, ErrTokenUsed) {
+		t.Fatalf("the token of the old grant still approves: %v", err)
+	}
+	// a change that leaves the grant as it is keeps the token
+	tok, _, _ = d.CreateSignToken(ctx, n.ID, spki, "admin")
+	if _, _, err := d.UpdateNode(ctx, n.ID, Grant{Name: "renamed"}, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.LookupSignToken(ctx, tok); err != nil {
+		t.Fatalf("a rename took the token: %v", err)
+	}
+	// confirming again (a new grant) takes it as well
+	if err := d.ConfirmNode(ctx, n.ID, "admin", endpoint, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ApproveSigned(ctx, n.ID, tok, `{"binding":true}`, "sig", "SHA256:x"); !errors.Is(err, ErrTokenUsed) {
+		t.Fatalf("the token from before the confirm still approves: %v", err)
+	}
+}
