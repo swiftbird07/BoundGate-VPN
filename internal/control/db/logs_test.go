@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"context"
 	"os"
 	"path/filepath"
@@ -187,7 +188,15 @@ func TestTheLookupIsAnsweredWhileTheWriterIsBusy(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := d.NodeBySPKI(ctx, spki)
+	n, err := d.NodeBySPKI(ctx, spki)
+	if err == nil {
+		// what every batch of shipped logs looks up, once per node and
+		// session it names
+		_, err = d.NodeByID(ctx, n.ID)
+	}
+	if _, serr := d.SessionByID(ctx, "no-such-session"); err == nil && !errors.Is(serr, ErrNotFound) {
+		err = serr
+	}
 	took := time.Since(start)
 	// the long query must still be running, or the test proves nothing
 	select {

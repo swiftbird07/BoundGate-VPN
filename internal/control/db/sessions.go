@@ -286,7 +286,7 @@ func (d *DB) ListSessions(ctx context.Context, all bool) ([]Session, error) {
 
 // SessionByID fetches one session.
 func (d *DB) SessionByID(ctx context.Context, id string) (Session, error) {
-	s, err := scanSession(d.sql.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM user_sessions WHERE id = ?`, id))
+	s, err := scanSession(d.read().QueryRowContext(ctx, `SELECT `+sessionCols+` FROM user_sessions WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}

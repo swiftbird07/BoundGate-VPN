@@ -170,7 +170,7 @@ func (d *DB) CreatePending(ctx context.Context, r EnrollRequest) (Node, error) {
 
 // NodeByID fetches one node.
 func (d *DB) NodeByID(ctx context.Context, id string) (Node, error) {
-	row := d.sql.QueryRowContext(ctx, `SELECT `+nodeCols+` FROM nodes WHERE id = ?`, id)
+	row := d.read().QueryRowContext(ctx, `SELECT `+nodeCols+` FROM nodes WHERE id = ?`, id)
 	n, err := scanNode(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrNotFound
