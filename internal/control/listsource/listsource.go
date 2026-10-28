@@ -163,7 +163,7 @@ func (f *Fetcher) Fetch(ctx context.Context, store *db.DB, src Notifier, l db.Li
 	if err != nil {
 		status = err.Error()
 	}
-	version, saveErr := store.SaveListFetch(ctx, l.ID, entries, etag, status)
+	version, saveErr := store.SaveListFetch(ctx, l.ID, l.SourceURL, entries, etag, status)
 	if saveErr != nil {
 		return l, 0, saveErr
 	}

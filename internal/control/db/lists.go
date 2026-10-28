@@ -320,15 +320,27 @@ func (d *DB) ListsDue(ctx context.Context) ([]List, error) {
 // leaves the entries alone (nothing changed, or the fetch failed); status is
 // the reason it failed, empty when it worked. The snapshot version comes
 // back non-zero only when the entries changed.
-func (d *DB) SaveListFetch(ctx context.Context, id string, entries []string, etag, status string) (uint64, error) {
+//
+// sourceURL is the source that was fetched: a fetch takes seconds, and an
+// admin who changed or cleared the source meanwhile must not get the old
+// source's entries written over the new one's, marked as fetched from it.
+// Such a result is dropped (ErrSourceChanged).
+func (d *DB) SaveListFetch(ctx context.Context, id, sourceURL string, entries []string, etag, status string) (uint64, error) {
 	ts := now()
+	stillOurs := func(res sql.Result, err error) error {
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err == nil && n == 0 {
+			return ErrSourceChanged
+		}
+		return nil
+	}
 	mark := func(keepETag bool) (uint64, error) {
 		if keepETag && etag == "" { // a failed fetch says nothing about the ETag
-			_, err := d.sql.ExecContext(ctx, `UPDATE lists SET source_fetched_at = ?, source_status = ? WHERE id = ?`, ts, status, id)
-			return 0, err
+			return 0, stillOurs(d.sql.ExecContext(ctx, `UPDATE lists SET source_fetched_at = ?, source_status = ? WHERE id = ? AND source_url = ?`, ts, status, id, sourceURL))
 		}
-		_, err := d.sql.ExecContext(ctx, `UPDATE lists SET source_fetched_at = ?, source_status = ?, source_etag = ? WHERE id = ?`, ts, status, etag, id)
-		return 0, err
+		return 0, stillOurs(d.sql.ExecContext(ctx, `UPDATE lists SET source_fetched_at = ?, source_status = ?, source_etag = ? WHERE id = ? AND source_url = ?`, ts, status, etag, id, sourceURL))
 	}
 	if entries == nil {
 		return mark(true)
@@ -345,11 +357,14 @@ func (d *DB) SaveListFetch(ctx context.Context, id string, entries []string, eta
 		return mark(false)
 	}
 	return d.tx(ctx, true, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE lists SET entries_json = ?, updated_at = ?, updated_by = 'source', source_fetched_at = ?, source_status = ?, source_etag = ? WHERE id = ?`,
-			string(b), ts, ts, status, etag, id)
-		return err
+		return stillOurs(tx.ExecContext(ctx, `UPDATE lists SET entries_json = ?, updated_at = ?, updated_by = 'source', source_fetched_at = ?, source_status = ?, source_etag = ? WHERE id = ? AND source_url = ?`,
+			string(b), ts, ts, status, etag, id, sourceURL))
 	})
 }
+
+// ErrSourceChanged: the list's source is no longer the one that was
+// fetched (or the list is gone); the result was not stored.
+var ErrSourceChanged = errors.New("db: the list's source changed while it was fetched; the result was dropped")
 
 // listUsed reports whether any policy names the list.
 func listUsed(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
