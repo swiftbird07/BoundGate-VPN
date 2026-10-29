@@ -42,11 +42,19 @@ the APK carries only the Kotlin standard library besides the app itself.
   (`addDisallowedApplication` for the app itself). That covers the control
   channel, the hub links and the IdP. The `excluded` hosts need no route
   here.
-* **Network changes:** the service follows the app's default network (the one
+* **Network changes:** the service follows the best network that is not a
+  VPN and has internet (`registerBestMatchingNetworkCallback`; the one
   under the VPN). When it changes, it tells the core (`NetworkChanged`: the
   control channel reconnects at once and the hub links move to new sockets
-  by QUIC connection migration, POWER.md) and sets it as the VPN's
-  underlying network, so Android reports metering correctly. The core then
+  by QUIC connection migration, POWER.md). The VPN's underlying network is
+  left to Android (`setUnderlyingNetworks(null)`, called once: the system's
+  default network, followed as it changes), so the status bar shows the
+  network's icon and metering is right. Until 2026-10-28 the service used
+  the app's default network callback and named that network as the
+  underlying one; on a Samsung (Android 17) the callback reported only the
+  VPN itself, so a move to Wi-Fi never reached the core and the VPN kept the
+  dead network as its underlying one -- Wi-Fi joined, no icon, no internet
+  until the VPN was switched off and on. The core then
   hands the settings over again; the interface is only built anew when
   something in them changed (the resolvers copied from the network below,
   lockdown), otherwise the one the core holds stays. Until 2026-10-26 every

@@ -11,7 +11,10 @@ import android.net.IpPrefix
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import java.net.InetAddress
@@ -130,8 +133,8 @@ class TunnelService : VpnService() {
      * same interface again, in the middle of the phone joining a Wi-Fi, left
      * it without internet until the VPN was switched off and on (reported
      * 2026-10-26; iOS had the same, 2026-09-22): when nothing that goes into
-     * the interface changed, the one the core holds is kept, and only the
-     * network underneath is told to it (setUnderlyingNetworks, watchNetwork).
+     * the interface changed, the one the core holds is kept (watchNetwork
+     * tells the core of the network underneath).
      */
     fun establish(s: JSONObject): Int {
         val lp = below
@@ -173,10 +176,18 @@ class TunnelService : VpnService() {
         }
         b.addDisallowedApplication(packageName)
         b.setConfigureIntent(openApp())
-        network?.let { b.setUnderlyingNetworks(arrayOf(it)) }
+        // null: the VPN runs over the system's default network, whichever
+        // that is now. A network named here stuck when the phone moved on
+        // (watchNetwork): the VPN then carried a dead network, so the status
+        // bar lost its Wi-Fi icon and the system thought the VPN had
+        // nothing underneath (Samsung, Android 17, 2026-10-28). The call
+        // must come once, or Android merges nothing (WireGuard found the
+        // same, Android 9)
+        b.setUnderlyingNetworks(null)
         val pfd = b.establish() ?: throw IllegalStateException("Android does not let BoundGate set up the VPN (was the permission revoked?)")
         val fd = pfd.detachFd()
         applied = key to fd
+        setUnderlyingNetworks(null)
         DebugLog.log("tun", "interface established fd=$fd")
         return fd
     }
@@ -234,9 +245,14 @@ class TunnelService : VpnService() {
      * links at once (new sockets; QUIC connection migration) and hands the
      * settings over again, so the VPN gets the new network's DNS servers.
      *
-     * The default network callback of this app (which the VPN leaves out)
-     * reports the network underneath. Any network other than the one the
-     * core is on is a change -- also the first one after a gap with none,
+     * The best network that is not a VPN and has internet is the one
+     * underneath; its callback reports it like a default network callback
+     * does. The default network callback of this app (which the VPN leaves
+     * out) was used until 2026-10-28: on a Samsung (Android 17) it reported
+     * only the VPN itself, so the phone's move to Wi-Fi never reached the
+     * core, and the VPN kept the dead network as its underlying one. Any
+     * network other than the one the core is on is a change -- also the
+     * first one after a gap with none,
      * which is how walking out of a Wi-Fi, a switch from one Wi-Fi to
      * another and airplane mode present themselves: onLost, then a new
      * network. Until 2026-10-28 that counted as "the first network", the
@@ -270,7 +286,6 @@ class TunnelService : VpnService() {
                 network = n
                 validated = ok
                 below = cm.getLinkProperties(n)
-                setUnderlyingNetworks(arrayOf(n))
                 changed("network $n (validated=$ok)")
             }
 
@@ -311,9 +326,9 @@ class TunnelService : VpnService() {
                 below = cm.getLinkProperties(n)
             }
         }
-        // the default network of this app, which the VPN leaves out: the one
-        // underneath (the VPN itself shows up here too while it starts)
-        cm.registerDefaultNetworkCallback(cb)
+        // NetworkRequest.Builder asks for NOT_VPN by itself
+        val want = NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
+        cm.registerBestMatchingNetworkCallback(want, cb, Handler(Looper.getMainLooper()))
         callback = cb
         return true
     }
