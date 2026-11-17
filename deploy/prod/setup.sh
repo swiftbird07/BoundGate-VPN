@@ -9,9 +9,10 @@
 #   curl -fsSLO https://raw.githubusercontent.com/swiftbird07/BoundGate-VPN/main/deploy/prod/setup.sh
 #   less setup.sh && sh setup.sh
 #
-# Two kinds of setup (docs/DEPLOY.md):
+# Three kinds of setup (docs/DEPLOY.md, docs/REVERSE-PROXY.md):
 #   1  control plane and a hub on one server, sharing port 443 (the first server)
 #   2  one node: a subnet router, an exit node, another hub, or a workload endpoint
+#   3  a reverse proxy: nginx with ModSecurity in front of this host's web services
 #
 # It writes files in the directory you name and, if you say so, a cron file. It
 # changes nothing else on the host, keeps every file that already exists, and
@@ -76,14 +77,26 @@ CONTROL_UID=65532
 WORKER_UID=65531
 # own UID DIR...: hands directories (relative to the kit directory) to UID. As
 # root with chown; otherwise with the kit's image, since whoever may use docker
-# may do that anyway
+# may do that anyway.
+# Only a directory that is not UID's yet, on the first run: later, what is in
+# it is the containers' doing. A worker of privilege separation may create
+# files in its node's state directory, and one under a name of the parent's
+# that a second run handed to root would pass for the parent's own. -h: a
+# link in the tree is changed itself, never what it points to.
 own() {
   u=$1; shift
-  if [ "$(id -u)" = 0 ]; then chown -R "$u:$u" "$@" || die "cannot hand $* to user $u"; return; fi
+  todo=
+  for d in "$@"; do
+    [ "$(ls -nd "$d" 2>/dev/null | awk '{print $3}')" = "$u" ] || todo="$todo $d"
+  done
+  [ -n "$todo" ] || return 0
+  # shellcheck disable=SC2086 # the kit's own directory names, without spaces
+  set -- $todo
+  if [ "$(id -u)" = 0 ]; then chown -hR "$u:$u" "$@" || die "cannot hand $* to user $u"; return; fi
   img=$(sed -n 's/^BOUNDGATE_IMAGE=//p' .env | tail -1)
   [ -n "$img" ] || die "no BOUNDGATE_IMAGE in $DIR/.env"
-  docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH -v "$DIR:/kit" -w /kit --entrypoint chown "$img" -R "$u:$u" "$@" \
-    || die "cannot hand $* to user $u (run this as root, or: sudo chown -R $u:$u $*)"
+  docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH -v "$DIR:/kit" -w /kit --entrypoint chown "$img" -hR "$u:$u" "$@" \
+    || die "cannot hand $* to user $u (run this as root, or: sudo chown -hR $u:$u $*)"
 }
 # identity_question: a node that is set up a second time usually wants one
 # thing the questions above do not offer - a new device key. Changing
@@ -91,7 +104,10 @@ own() {
 # the other. Never by deleting the state directory: under a running daemon
 # that leaves the process writing into an unlinked directory.
 identity_question() {
-  [ "$KIND" = 2 ] || return 0
+  [ "$KIND" != 1 ] || return 0
+  # the kit's service: node in the node kit, proxy in the reverse proxy's
+  # (A6 of the review of 2026-11-14)
+  svc=node; [ "$KIND" != 3 ] || svc=proxy
   kind=
   for f in device.tpm device.sekey device.key; do
     [ -e "state/$f" ] || continue
@@ -108,14 +124,14 @@ identity_question() {
   say "A new one means enrolling again, an administrator approving it again, and revoking"
   say "the old node in the admin UI. Say no if you only want to change the configuration."
   confirm "Give this node a new identity?" n || return 0
-  docker compose up -d node >/dev/null 2>&1 || true
-  if ! docker compose exec -T node boundgatectl down >/dev/null 2>&1; then
+  docker compose up -d "$svc" >/dev/null 2>&1 || true
+  if ! docker compose exec -T "$svc" boundgatectl down >/dev/null 2>&1; then
     say "   the node does not answer at its socket. Start it, then:"
-    say "     cd $DIR && docker compose exec node boundgatectl down && docker compose exec node boundgatectl reset -new-identity"
+    say "     cd $DIR && docker compose exec $svc boundgatectl down && docker compose exec $svc boundgatectl reset -new-identity"
     return 0
   fi
-  docker compose exec -T node boundgatectl reset -new-identity >/dev/null \
-    || die "the node did not give up its identity (run the command by hand to see why: docker compose exec node boundgatectl reset -new-identity)"
+  docker compose exec -T "$svc" boundgatectl reset -new-identity >/dev/null \
+    || die "the node did not give up its identity (run the command by hand to see why: docker compose exec $svc boundgatectl reset -new-identity)"
   NEW_IDENTITY=1
   say "   done; the node opens a new key as soon as its service is back"
 }
@@ -180,7 +196,8 @@ main() {
   say ""
   say "  1  control plane and hub on this server (the first server of an installation)"
   say "  2  a node on this server: subnet router, exit node, another hub, or workload endpoint"
-  ask KIND "What do you want to set up?" 1 '^[12]$' "1 or 2"
+  say "  3  a reverse proxy on this server: nginx with ModSecurity in front of its web services, run from the control plane"
+  ask KIND "What do you want to set up?" 1 '^[123]$' "1, 2 or 3"
   ask DIR "Directory for the configuration and state" /opt/boundgate '^/[A-Za-z0-9._/-]+$' "an absolute path without spaces"
   mkdir -p "$DIR" || die "cannot create $DIR"
   cd "$DIR"
@@ -194,7 +211,7 @@ main() {
   tpm_device() { if [ $TPM = tpm2 ]; then sed 's|^      # - /dev/tpmrm0:/dev/tpmrm0|      - /dev/tpmrm0:/dev/tpmrm0|'; else cat; fi; }
   identity_question
 
-  if [ "$KIND" = 1 ]; then setup_control; else setup_node; fi
+  if [ "$KIND" = 1 ]; then setup_control; elif [ "$KIND" = 3 ]; then setup_proxy; else setup_node; fi
 
   # ---- how this server gets new versions ----
   say ""
@@ -216,7 +233,8 @@ main() {
   kit release_keys; write_new release_keys < "$GOT"
   touch .env; chmod 600 .env
   if [ "$UPD" = 2 ]; then
-    grep -q '^BOUNDGATE_IMAGE=' .env || echo "BOUNDGATE_IMAGE=$PUBLIC_IMAGE:latest" >> .env
+    IMG=$PUBLIC_IMAGE; [ "$KIND" != 3 ] || IMG=$PUBLIC_IMAGE-reverse-proxy   # the reverse proxy has an image of its own
+    grep -q '^BOUNDGATE_IMAGE=' .env || echo "BOUNDGATE_IMAGE=$IMG:latest" >> .env
   else
     say "== checking the latest release and pulling its image"
     ./update.sh pin || die "update.sh could not verify or pull the release (its message is above); nothing was started"
@@ -236,6 +254,8 @@ main() {
   else
     system_users "$WORKER_UID"
     own 0 state logs
+    # the reverse proxy's worker reads the token files itself (docs/REVERSE-PROXY.md)
+    [ "$KIND" != 3 ] || own "$WORKER_UID" secrets
   fi
 
   say ""
@@ -375,6 +395,46 @@ EOF
   (umask 077; mkdir -p state); mkdir -p logs
 }
 
+setup_proxy() {
+  say ""
+  ask NODE "Name of this reverse proxy, as admins will see it" "$(hostname 2>/dev/null | cut -d. -f1)" "$NAME_RE" "letters, digits, . _ -"
+  ask NAME "DNS name of the control plane" "" "$HOSTNAME_RE" "a name like bg.example.com"
+  ask EMAIL "E-mail address for the Let's Encrypt account (empty: no certificates from ACME)" "" '^([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)?$' "an e-mail address, or nothing"
+  say "The proxy obtains certificates with Cloudflare DNS-01 (a token with Zone:DNS:Edit for the zones) and"
+  say "gates by country with MaxMind's GeoLite2 (a license key). Both go into $DIR/secrets, one line each, 0600, owner $WORKER_UID."
+  kit reverse-proxy/docker-compose.yml; tpm_device < "$GOT" | write_new docker-compose.yml
+  ACME_BLOCK="  acme:
+    email: $EMAIL
+    cloudflare_token_file: /etc/boundgate/secrets/cloudflare.token"
+  [ -n "$EMAIL" ] || ACME_BLOCK="  acme:
+    disabled: true                 # certificates come from the control plane (internal) only"
+  write_new reverse-proxy.yaml <<YAML
+# One reverse proxy (docs/REVERSE-PROXY.md). The node part is node.yaml's.
+name: $NODE
+state_dir: /var/lib/boundgate
+key_kind: $TPM
+control:
+  addr: $NAME:443
+  server_name: nodes.$NAME
+privsep:                           # required: nginx runs as this user, never as root
+  user: "$WORKER_UID"
+roles: [endpoint]                  # reverse-proxy is added by the program
+auto_up: true
+profile: lan-only
+socket: /run/boundgate/node.sock
+tun_name: bg0
+log_dir: /var/log/boundgate
+log_stdout: true
+
+proxy:
+  listen_http: ":80"
+$ACME_BLOCK
+  geoip:
+    maxmind_license_key_file: /etc/boundgate/secrets/maxmind.key
+YAML
+  (umask 077; mkdir -p state secrets); mkdir -p logs
+}
+
 next_steps() {
   say ""
   say "Done. What is left:"
@@ -390,6 +450,14 @@ next_steps() {
     say "      cd $DIR && docker compose exec hub boundgatectl enroll"
     say "    compare the fingerprint it prints with the admin UI, confirm and sign the hub there."
     say "  * back up $DIR/state/control (database and the key every node pins)."
+  elif [ "$KIND" = 3 ]; then
+    say "  * secrets: $DIR/secrets/cloudflare.token and $DIR/secrets/maxmind.key, one line each (chmod 600, owner $WORKER_UID)"
+    say "  * enroll:  cd $DIR && docker compose exec proxy boundgatectl enroll"
+    say "    compare the fingerprint with the admin UI of https://$NAME, confirm it with the roles endpoint and reverse-proxy, sign it."
+    [ -z "$NEW_IDENTITY" ] || say "    this proxy gave up its old identity: revoke the old node in the admin UI."
+    say "  * sites: Proxy in the admin UI, or import an nginx-waf hosts.toml:  boundgatectl proxy import --node <id> hosts.toml  (docs/REVERSE-PROXY.md)"
+    say "  * status:  docker compose exec proxy boundgatectl status   (revision, nginx, certificates under extra)"
+    say "  * firewall: TCP 80 and the sites' ports (443, 8443, ...) open; back up $DIR/state: identity, ACME account and keys."
   else
     say "  * enroll:  cd $DIR && docker compose exec node boundgatectl enroll"
     say "    compare the fingerprint with the admin UI of https://$NAME, confirm the node with its role and sign it."

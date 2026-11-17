@@ -1,0 +1,32 @@
+# One reverse proxy (docs/REVERSE-PROXY.md). The node part is node.yaml's
+# (docs/DEPLOY.md); the proxy block is this program's own.
+name: proxy1                     # shown to admins
+state_dir: /var/lib/boundgate
+key_kind: softkey                  # tpm2 with a TPM or vTPM (docs/TPM.md): pass /dev/tpmrm0 in docker-compose.yml
+control:
+  addr: bg.example.com:443
+  server_name: nodes.bg.example.com
+privsep:                           # required for a reverse proxy: nginx runs as this user, never as root
+  user: "65531"
+roles: [endpoint]                  # reverse-proxy is added by the program; the admin grants both at approval
+auto_up: true
+profile: lan-only                  # the overlay's networks, not an exit node's default route: the sites' upstreams
+                                   # may be in the LAN and the proxy's own internet must stay its own
+socket: /run/boundgate/node.sock
+tun_name: bg0
+log_dir: /var/log/boundgate
+log_stdout: true
+
+proxy:
+  listen_http: ":80"               # ACME HTTP-01 answers and the redirect to https; "off" for none
+  # ipv6: auto                     # sites also listen on [::]: auto (when the host can), on or off
+  # resolvers: [10.0.0.1]          # what nginx asks for upstream names; default: this host's /etc/resolv.conf
+  acme:
+    email: ops@example.com         # the account's contact (Let's Encrypt)
+    cloudflare_token_file: /etc/boundgate/secrets/cloudflare.token   # DNS-01: a token with Zone:DNS:Edit for the zones
+    # resolvers: [1.1.1.1]         # asked whether the DNS record is in place before the CA is
+    # disabled: true               # no ACME here: certificates come from the control plane (internal) only
+  geoip:
+    maxmind_license_key_file: /etc/boundgate/secrets/maxmind.key     # GeoLite2 country database, refreshed weekly; without it no country gate
+  # audit: true                    # ModSecurity's audit records go to the control plane as waf events
+  # ports: {health: 9112, shadow: 9120}   # loopback ports of /healthz and the shadow; the oracle and ACME answer on unix sockets

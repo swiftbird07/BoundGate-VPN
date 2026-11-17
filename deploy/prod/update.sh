@@ -23,6 +23,14 @@
 #       RESTART_CMD.
 # The server is trusted with nothing but being reachable.
 #
+# The kit follows the release as well: a manifest that names this script and
+# release_keys (kind kit) brings them along, and a run replaces the files next
+# to it where they differ, then starts again as the new script. Only from a
+# release that is not older than what runs here, and only after the manifest
+# verified against the keys this run started with: a new key list arrives
+# signed by the old one, as it does for the apps (R91). BOUNDGATE_KIT_UPDATE=0
+# keeps the kit as it is; so does RELEASE_KEYS pointing elsewhere.
+#
 # Settings: environment, or a file update.env next to the compose file:
 #   BOUNDGATE_UPDATE_SOURCE      github or gitea     (github; gitea if only a URL is set)
 #   BOUNDGATE_UPDATE_URL         the Gitea instance  (github: https://github.com)
@@ -44,7 +52,8 @@ set -eu
 # install): otherwise a server shown an old signed release as the latest
 # would start on it, with whatever that release had to fix. release.sh refuses
 # to tag a release while this is older than the previous one.
-KIT_FLOOR=v0.1.24
+KIT_FLOOR=v0.1.25
+ARGS0=$*   # for the restart as a new script: -q and an action, never anything with spaces
 QUIET=; [ "${1:-}" != "-q" ] || { QUIET=1; shift; }
 ACTION=${1:-apply}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -84,11 +93,18 @@ mkdir "$LOCK" 2>/dev/null || die "another update is running ($LOCK)"
 trap 'rm -rf "$WORK" "$LOCK"' EXIT INT TERM
 
 # the token goes to the configured Gitea instance only, never to where an asset
-# link points, and never to GitHub, which is read anonymously
+# link points, and never to GitHub, which is read anonymously. It stays off
+# curl's command line, which every process list and EDR agent on the host
+# sees (A8 of the review of 2026-11-14): curl reads it from a file in WORK,
+# which only this user can read.
+if [ "$SOURCE" = gitea ] && [ -n "$TOKEN_FILE" ]; then
+  [ -r "$TOKEN_FILE" ] || die "cannot read BOUNDGATE_UPDATE_TOKEN_FILE $TOKEN_FILE"
+  (umask 077; printf 'header = "Authorization: token %s"\n' "$(tr -d '\r\n' < "$TOKEN_FILE")" > "$WORK/auth")
+fi
 fetch() { # fetch URL FILE
   case "$SOURCE $1" in
     "gitea $URL"/*) if [ -n "$TOKEN_FILE" ]; then
-        curl -fsSL --proto '=https,http' --max-time 300 -H "Authorization: token $(tr -d '\n' < "$TOKEN_FILE")" -o "$2" "$1"; return
+        curl -fsSL --proto '=https,http' --max-time 300 -K "$WORK/auth" -o "$2" "$1"; return
       fi ;;
   esac
   curl -fsSL --proto '=https,http' --max-time 300 -o "$2" "$1"
@@ -133,8 +149,13 @@ newer() { # newer CURRENT CANDIDATE: is CANDIDATE a later version than CURRENT?
 ENVFILE="$COMPOSE_DIR/.env"
 current() { [ -f "$1" ] && sed -n 's/^BOUNDGATE_RELEASE=//p' "$1" | tail -1 || true; }
 if [ "$MODE" = binaries ]; then CUR=$(cat "$INSTALL_DIR/.boundgate-release" 2>/dev/null || true); else CUR=$(current "$ENVFILE"); fi
+UPTODATE=
 if [ -n "$CUR" ]; then
-  if ! newer "$CUR" "$VERSION"; then say "up to date: $CUR (latest release $VERSION)"; exit 0; fi
+  if ! newer "$CUR" "$VERSION"; then
+    # an older release offered as the latest brings nothing, not even its kit
+    if newer "$VERSION" "$CUR"; then say "up to date: $CUR (latest release $VERSION)"; exit 0; fi
+    UPTODATE=1
+  fi
 else
   # nothing recorded: a fresh install starts no older than this kit
   FLOOR=$KIT_FLOOR
@@ -146,6 +167,38 @@ else
     die "the latest release offered is $VERSION, older than $FLOOR, which this kit starts with at least: refusing (an old release offered as the latest is a rollback)"
   fi
 fi
+
+# -- the kit: release_keys and this script as the verified manifest names them
+filesum() { # size and SHA-256 of a file, as the manifest writes them
+  [ -f "$1" ] || { echo none; return; }
+  if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum "$1" | cut -d' ' -f1); else s=$(openssl dgst -sha256 -r "$1" | cut -d' ' -f1); fi
+  echo "$(wc -c < "$1" | tr -d ' ') $s"
+}
+kit() {
+  [ "$ACTION" != check ] && [ "${BOUNDGATE_KIT_UPDATE:-1}" != 0 ] && [ -z "${BOUNDGATE_KIT_RESTARTED:-}" ] || return 0
+  [ "$RELEASE_KEYS" = "$HERE/release_keys" ] || return 0   # keys kept elsewhere are the operator's, and so is the kit
+  restart=
+  for k in release_keys update.sh; do   # the keys first: the new script verifies with them
+    want=$(jq -r --arg n "$k" '[.assets[]? | select(.kind == "kit" and .name == $n)][0] // empty | "\(.size) \(.sha256)"' "$M")
+    [ -n "$want" ] || continue   # a release from before the kit was part of it
+    [ "$(filesum "$HERE/$k")" != "$want" ] || continue
+    u=$(asset_url "$k"); [ -n "$u" ] || die "release $VERSION names $k but does not offer it"
+    fetch "$u" "$WORK/kit-$k" || die "cannot download $k of $VERSION"
+    [ "$(filesum "$WORK/kit-$k")" = "$want" ] || die "$k of $VERSION does not match the signed manifest: refusing"
+    m=644; [ "$k" != update.sh ] || m=755
+    [ ! -f "$HERE/$k" ] || cp -p "$HERE/$k" "$HERE/$k.previous"
+    install -m $m "$WORK/kit-$k" "$HERE/.$k.new" && mv "$HERE/.$k.new" "$HERE/$k" || { rm -f "$HERE/.$k.new"; die "could not replace $HERE/$k"; }
+    echo "kit: $k from $VERSION"
+    [ "$k" != update.sh ] || restart=1
+  done
+  [ -n "$restart" ] || return 0
+  # the running shell keeps reading the old file (it was replaced, not changed);
+  # the new one does this run again from the start, without the kit step
+  rm -rf "$WORK" "$LOCK"; trap - EXIT INT TERM
+  BOUNDGATE_KIT_RESTARTED=1 exec "$HERE/update.sh" $ARGS0
+}
+kit
+if [ -n "$UPTODATE" ]; then say "up to date: $CUR (latest release $VERSION)"; exit 0; fi
 if [ "$ACTION" = check ]; then echo "update available: ${CUR:-unknown} -> $VERSION"; exit 0; fi
 
 if [ "$MODE" = binaries ]; then
@@ -159,9 +212,14 @@ if [ "$MODE" = binaries ]; then
   if command -v sha256sum >/dev/null 2>&1; then SUM=$(sha256sum "$WORK/$NAME" | cut -d' ' -f1); else SUM=$(openssl dgst -sha256 -r "$WORK/$NAME" | cut -d' ' -f1); fi
   [ "$(wc -c < "$WORK/$NAME" | tr -d ' ') $SUM" = "$WANT" ] || die "$NAME does not match the signed manifest: refusing"
   mkdir "$WORK/x" && tar -xzf "$WORK/$NAME" -C "$WORK/x"
+  # every binary replaced, or the release is not recorded: a host that holds
+  # itself up to date does not try again (A7 of the review of 2026-11-14;
+  # set -e does not stop at the left side of an && list)
   for b in "$WORK"/x/boundgate*; do
-    [ -f "$INSTALL_DIR/$(basename "$b")" ] || continue      # only what is installed here
-    install -m 755 "$b" "$INSTALL_DIR/.$(basename "$b").new" && mv "$INSTALL_DIR/.$(basename "$b").new" "$INSTALL_DIR/$(basename "$b")"
+    n=$(basename "$b")
+    [ -f "$INSTALL_DIR/$n" ] || continue      # only what is installed here
+    install -m 755 "$b" "$INSTALL_DIR/.$n.new" || { rm -f "$INSTALL_DIR/.$n.new"; die "could not install $n into $INSTALL_DIR (full?): $VERSION is not recorded, the next run tries again"; }
+    mv "$INSTALL_DIR/.$n.new" "$INSTALL_DIR/$n" || die "could not replace $INSTALL_DIR/$n: $VERSION is not recorded, the next run tries again"
   done
   echo "$VERSION" > "$INSTALL_DIR/.boundgate-release"
   $RESTART_CMD || die "installed $VERSION, but the restart failed: $RESTART_CMD"
@@ -172,6 +230,13 @@ fi
 REF=$(jq -r '.image.ref // empty' "$M"); DIGEST=$(jq -r '.image.digest // empty' "$M")
 echo "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' && [ -n "$REF" ] || die "the signed manifest names no image"
 REF=${BOUNDGATE_IMAGE_REPO:-$REF}
+# a reverse proxy kit (deploy/prod/reverse-proxy, docs/REVERSE-PROXY.md) runs the
+# other image of the release: the one the manifest names under images
+if [ -f "$COMPOSE_DIR/reverse-proxy.yaml" ]; then
+  REF=$(jq -r '.images["reverse-proxy"].ref // empty' "$M"); DIGEST=$(jq -r '.images["reverse-proxy"].digest // empty' "$M")
+  echo "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' && [ -n "$REF" ] || die "the signed manifest names no reverse proxy image ($VERSION is older than the reverse proxy?)"
+  REF=${BOUNDGATE_PROXY_IMAGE_REPO:-$REF}
+fi
 case "$REF" in *[!A-Za-z0-9./:_-]*) die "bad image reference" ;; esac
 [ -f "$COMPOSE_DIR/docker-compose.yml" ] || die "no docker-compose.yml in $COMPOSE_DIR (COMPOSE_DIR, or MODE=binaries)"
 IMAGE="$REF@$DIGEST"
