@@ -1,0 +1,49 @@
+# A single BoundGate node from the prebuilt image (docs/DEPLOY.md): a hub, a
+# subnet router in front of a LAN, an exit node, or a workload endpoint. The
+# control plane runs elsewhere (deploy/prod/all-in-one). Host network: the
+# tunnel device, routes and NAT the node installs belong to the host.
+#
+# The image is the one BOUNDGATE_IMAGE in .env names, pinned by digest by
+# `./update.sh pin` after it checked the release signature; there is no
+# default tag.
+#
+#   cp node.yaml.example node.yaml               # name, control plane, roles
+#   ./update.sh pin && docker compose up -d
+#   docker compose exec node boundgatectl enroll   # then confirm + sign in the admin UI
+#   docker compose exec node boundgatectl status
+#
+# Privilege separation (privsep in node.yaml, docs/PRIVSEP.md): a root
+# parent keeps the device key and changes the host's network, the node itself
+# (every packet, the control channel) runs as uid 65531. The parent has
+# NET_ADMIN (routes, nftables, the TUN device) and what it takes to start and
+# stop the worker and hand it ./state and ./logs (SETUID, SETGID, CHOWN,
+# KILL); the worker keeps only NET_BIND_SERVICE (a hub on :443). Nothing
+# else, on a read-only root.
+#
+# Updating: ./update.sh (signed releases, docs/RELEASES.md)
+name: boundgate-node
+
+services:
+  node:
+    image: ${BOUNDGATE_IMAGE:?BOUNDGATE_IMAGE is not set in .env - run ./update.sh pin (docs/DEPLOY.md)}
+    network_mode: host
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_BIND_SERVICE, SETUID, SETGID, CHOWN, KILL]   # the last four only for privsep
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /run/boundgate:size=1m,mode=0755     # the daemon's socket
+      - /tmp:size=16m,mode=1777
+    devices:
+      - /dev/net/tun:/dev/net/tun
+      # TPM or vTPM (key_kind: tpm2 in node.yaml, docs/TPM.md); on Proxmox add a vTPM to the VM:
+      # - /dev/tpmrm0:/dev/tpmrm0
+    volumes:
+      - ./node.yaml:/etc/boundgate/node.yaml:ro
+      # routing profiles (docs/PROFILES.md); the path must be the one
+      # profiles_dir names, which is a path inside the container
+      # - ./profiles:/etc/boundgate/profiles:ro
+      - ./state:/var/lib/boundgate             # the device identity: losing it means re-enrolling
+      - ./logs:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/node.yaml"]
