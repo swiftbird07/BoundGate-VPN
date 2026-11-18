@@ -42,3 +42,11 @@ admin:
 # the API on purpose: an admin account alone cannot open the internal network.
 # list_sources:
 #   allow_private: true
+# The reverse proxy (docs/REVERSE-PROXY.md): its admin pages and API, the
+# proxy part of the nodes' snapshots, the Core Rule Set channel and the role
+# reverse-proxy exist only when it is switched on. Off by default: a control
+# plane without proxies does not carry them. Switching it off again keeps
+# what is stored.
+# proxy:
+#   enabled: true
+#   crs_updates: true              # ask GitHub for Core Rule Set releases; false: move the channel by hand

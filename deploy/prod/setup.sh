@@ -12,7 +12,8 @@
 # Three kinds of setup (docs/DEPLOY.md, docs/REVERSE-PROXY.md):
 #   1  control plane and a hub on one server, sharing port 443 (the first server)
 #   2  one node: a subnet router, an exit node, another hub, or a workload endpoint
-#   3  a reverse proxy: nginx with ModSecurity in front of this host's web services
+#   3  the reverse proxy module beside a node: nginx with ModSecurity in front of
+#      this host's web services (with a node first, where there is none yet)
 #
 # It writes files in the directory you name and, if you say so, a cron file. It
 # changes nothing else on the host, keeps every file that already exists, and
@@ -75,6 +76,8 @@ write_new() {
 CONTROL_UID=65532
 # the node's worker under privilege separation (privsep.user in node.yaml)
 WORKER_UID=65531
+# the reverse proxy module beside a node (module_uid in node.yaml)
+MODULE_UID=65533
 # own UID DIR...: hands directories (relative to the kit directory) to UID. As
 # root with chown; otherwise with the kit's image, since whoever may use docker
 # may do that anyway.
@@ -105,9 +108,7 @@ own() {
 # that leaves the process writing into an unlinked directory.
 identity_question() {
   [ "$KIND" != 1 ] || return 0
-  # the kit's service: node in the node kit, proxy in the reverse proxy's
-  # (A6 of the review of 2026-11-14)
-  svc=node; [ "$KIND" != 3 ] || svc=proxy
+  svc=node
   kind=
   for f in device.tpm device.sekey device.key; do
     [ -e "state/$f" ] || continue
@@ -156,6 +157,7 @@ system_users() {
     name=boundgate
     [ "$u" = 65531 ] && name=boundgate-node
     [ "$u" = 65532 ] && name=boundgate-control
+    [ "$u" = 65533 ] && name=boundgate-proxy
     if id -u "$name" >/dev/null 2>&1; then say "   kept    user $name"; continue; fi
     if command -v useradd >/dev/null 2>&1; then
       useradd --system --no-create-home --shell /usr/sbin/nologin --uid "$u" "$name" 2>/dev/null \
@@ -196,22 +198,47 @@ main() {
   say ""
   say "  1  control plane and hub on this server (the first server of an installation)"
   say "  2  a node on this server: subnet router, exit node, another hub, or workload endpoint"
-  say "  3  a reverse proxy on this server: nginx with ModSecurity in front of its web services, run from the control plane"
-  ask KIND "What do you want to set up?" 1 '^[123]$' "1, 2 or 3"
+  say "  3  a new reverse proxy on this server: a node, and beside it the reverse proxy module (nginx with"
+  say "     ModSecurity in front of its web services, run from the control plane)"
+  say "  4  the reverse proxy module for the node already set up on this server (it keeps its identity)"
+  ask KIND "What do you want to set up?" 1 '^[1234]$' "1, 2, 3 or 4"
   ask DIR "Directory for the configuration and state" /opt/boundgate '^/[A-Za-z0-9._/-]+$' "an absolute path without spaces"
   mkdir -p "$DIR" || die "cannot create $DIR"
   cd "$DIR"
   # what the questions below may set (set -u: next_steps reads them)
   NEW_IDENTITY=; PROFILE=; PROFILES_DIR=; RESOLVER=
-  if [ -e docker-compose.yml ]; then
+  # a reverse proxy kit of v0.2.0 ran the proxy as a node of its own; it is
+  # moved by hand, not set up over (docs/REVERSE-PROXY.md)
+  if [ -e reverse-proxy.yaml ] && [ ! -e docker-compose.reverse-proxy.yml ]; then
+    die "$DIR holds a reverse proxy of v0.2.0, which ran as a node of its own. Move it to the module as docs/REVERSE-PROXY.md (\"From a reverse proxy of v0.2.0\") says; this changes nothing here"
+  fi
+  # 4, or 3 over a node set up here: the module joins the node, which stays
+  # as it is. Inside, both are kind 3 from here on
+  ADD_TO_NODE=
+  if [ "$KIND" = 4 ]; then
+    [ -e node.yaml ] || die "there is no node in $DIR: give the directory of the node, or choose 3 for a new one with the reverse proxy"
+    KIND=3; ADD_TO_NODE=1
+  elif [ "$KIND" = 3 ] && [ -e node.yaml ]; then
+    say "A node is set up in $DIR already: the reverse proxy joins it (as with 4)."
+    ADD_TO_NODE=1
+  fi
+  if [ -n "$ADD_TO_NODE" ]; then
+    confirm "The reverse proxy joins the node in $DIR: its node.yaml and .env get one line each, the node restarts. Continue?" y || exit 0
+  elif [ -e docker-compose.yml ]; then
     confirm "There is a setup in $DIR already. Existing files are kept, missing ones written. Continue?" n || exit 0
   fi
   TPM=softkey
-  if [ -e /dev/tpmrm0 ] && confirm "This machine has a TPM. Keep the node's device key in it? (the key then cannot be copied off this machine)" y; then TPM=tpm2; fi
   tpm_device() { if [ $TPM = tpm2 ]; then sed 's|^      # - /dev/tpmrm0:/dev/tpmrm0|      - /dev/tpmrm0:/dev/tpmrm0|'; else cat; fi; }
-  identity_question
+  if [ -z "$ADD_TO_NODE" ]; then
+    if [ -e /dev/tpmrm0 ] && confirm "This machine has a TPM. Keep the node's device key in it? (the key then cannot be copied off this machine)" y; then TPM=tpm2; fi
+    identity_question
+  fi
 
-  if [ "$KIND" = 1 ]; then setup_control; elif [ "$KIND" = 3 ]; then setup_proxy; else setup_node; fi
+  if [ "$KIND" = 1 ]; then setup_control
+  elif [ "$KIND" = 3 ]; then
+    if [ -z "$ADD_TO_NODE" ]; then say ""; say "No node here yet: one is set up first, and the reverse proxy joins it."; setup_node; fi
+    setup_proxy
+  else setup_node; fi
 
   # ---- how this server gets new versions ----
   say ""
@@ -233,8 +260,10 @@ main() {
   kit release_keys; write_new release_keys < "$GOT"
   touch .env; chmod 600 .env
   if [ "$UPD" = 2 ]; then
-    IMG=$PUBLIC_IMAGE; [ "$KIND" != 3 ] || IMG=$PUBLIC_IMAGE-reverse-proxy   # the reverse proxy has an image of its own
+    IMG=$PUBLIC_IMAGE
     grep -q '^BOUNDGATE_IMAGE=' .env || echo "BOUNDGATE_IMAGE=$IMG:latest" >> .env
+    # the reverse proxy module has an image of its own
+    [ "$KIND" != 3 ] || grep -q '^BOUNDGATE_PROXY_IMAGE=' .env || echo "BOUNDGATE_PROXY_IMAGE=$IMG-reverse-proxy:latest" >> .env
   else
     say "== checking the latest release and pulling its image"
     ./update.sh pin || die "update.sh could not verify or pull the release (its message is above); nothing was started"
@@ -252,10 +281,11 @@ main() {
     own "$CONTROL_UID" state/control state/certs logs/control
     own 0 state/hub logs/hub
   else
-    system_users "$WORKER_UID"
+    if [ "$KIND" = 3 ]; then system_users "$WORKER_UID" "$MODULE_UID"; else system_users "$WORKER_UID"; fi
     own 0 state logs
-    # the reverse proxy's worker reads the token files itself (docs/REVERSE-PROXY.md)
-    [ "$KIND" != 3 ] || own "$WORKER_UID" secrets
+    # the reverse proxy module reads the token files itself, as its user
+    # (docs/REVERSE-PROXY.md); its state and logs it takes over at start
+    [ "$KIND" != 3 ] || own "$MODULE_UID" secrets proxy-state proxy-logs
   fi
 
   say ""
@@ -395,35 +425,43 @@ EOF
   (umask 077; mkdir -p state); mkdir -p logs
 }
 
+# setup_proxy adds the reverse proxy module to the node of this directory
+# (docs/REVERSE-PROXY.md): its compose file, its configuration, its
+# directories, and the one line in node.yaml that makes the node serve it.
 setup_proxy() {
   say ""
-  ask NODE "Name of this reverse proxy, as admins will see it" "$(hostname 2>/dev/null | cut -d. -f1)" "$NAME_RE" "letters, digits, . _ -"
-  ask NAME "DNS name of the control plane" "" "$HOSTNAME_RE" "a name like bg.example.com"
+  [ -n "${NAME:-}" ] || NAME=$(sed -n 's/^  server_name: nodes\.//p' node.yaml | head -1)
   ask EMAIL "E-mail address for the Let's Encrypt account (empty: no certificates from ACME)" "" '^([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)?$' "an e-mail address, or nothing"
   say "The proxy obtains certificates with Cloudflare DNS-01 (a token with Zone:DNS:Edit for the zones) and"
-  say "gates by country with MaxMind's GeoLite2 (a license key). Both go into $DIR/secrets, one line each, 0600, owner $WORKER_UID."
-  kit reverse-proxy/docker-compose.yml; tpm_device < "$GOT" | write_new docker-compose.yml
+  say "gates by country with MaxMind's GeoLite2 (a license key). Both go into $DIR/secrets, one line each, 0600, owner $MODULE_UID."
+  kit reverse-proxy/docker-compose.reverse-proxy.yml; write_new docker-compose.reverse-proxy.yml < "$GOT"
+  # docker compose reads the module's file next to the node's from now on,
+  # update.sh too
+  touch .env
+  if ! grep -q '^COMPOSE_FILE=' .env; then
+    echo "COMPOSE_FILE=docker-compose.yml:docker-compose.reverse-proxy.yml" >> .env
+    say "   added   COMPOSE_FILE to .env"
+  fi
+  # the node serves the module: it asks for the role reverse-proxy and makes
+  # the module's socket
+  if grep -q '^modules:' node.yaml; then
+    grep -q '^modules:.*reverse-proxy' node.yaml || say "   note: node.yaml names other modules; add reverse-proxy to its modules: by hand"
+  else
+    printf '\n# the reverse proxy module beside this node (docker-compose.reverse-proxy.yml, docs/REVERSE-PROXY.md)\nmodules: [reverse-proxy]\n' >> node.yaml
+    say "   added   modules: [reverse-proxy] to node.yaml"
+  fi
   ACME_BLOCK="  acme:
     email: $EMAIL
     cloudflare_token_file: /etc/boundgate/secrets/cloudflare.token"
   [ -n "$EMAIL" ] || ACME_BLOCK="  acme:
     disabled: true                 # certificates come from the control plane (internal) only"
   write_new reverse-proxy.yaml <<YAML
-# One reverse proxy (docs/REVERSE-PROXY.md). The node part is node.yaml's.
-name: $NODE
-state_dir: /var/lib/boundgate
-key_kind: $TPM
-control:
-  addr: $NAME:443
-  server_name: nodes.$NAME
-privsep:                           # required: nginx runs as this user, never as root
-  user: "$WORKER_UID"
-roles: [endpoint]                  # reverse-proxy is added by the program
-auto_up: true
-profile: lan-only
-socket: /run/boundgate/node.sock
-tun_name: bg0
-log_dir: /var/log/boundgate
+# The reverse proxy module beside the node of this directory (docs/REVERSE-PROXY.md).
+# Everything about the overlay is node.yaml's.
+module:
+  socket: /run/boundgate/module/module.sock
+state_dir: /var/lib/boundgate-proxy
+log_dir: /var/log/boundgate-proxy
 log_stdout: true
 
 proxy:
@@ -432,7 +470,7 @@ $ACME_BLOCK
   geoip:
     maxmind_license_key_file: /etc/boundgate/secrets/maxmind.key
 YAML
-  (umask 077; mkdir -p state secrets); mkdir -p logs
+  (umask 077; mkdir -p secrets proxy-state); mkdir -p proxy-logs modules
 }
 
 next_steps() {
@@ -451,13 +489,21 @@ next_steps() {
     say "    compare the fingerprint it prints with the admin UI, confirm and sign the hub there."
     say "  * back up $DIR/state/control (database and the key every node pins)."
   elif [ "$KIND" = 3 ]; then
-    say "  * secrets: $DIR/secrets/cloudflare.token and $DIR/secrets/maxmind.key, one line each (chmod 600, owner $WORKER_UID)"
-    say "  * enroll:  cd $DIR && docker compose exec proxy boundgatectl enroll"
-    say "    compare the fingerprint with the admin UI of https://$NAME, confirm it with the roles endpoint and reverse-proxy, sign it."
-    [ -z "$NEW_IDENTITY" ] || say "    this proxy gave up its old identity: revoke the old node in the admin UI."
-    say "  * sites: Proxy in the admin UI, or import an nginx-waf hosts.toml:  boundgatectl proxy import --node <id> hosts.toml  (docs/REVERSE-PROXY.md)"
-    say "  * status:  docker compose exec proxy boundgatectl status   (revision, nginx, certificates under extra)"
-    say "  * firewall: TCP 80 and the sites' ports (443, 8443, ...) open; back up $DIR/state: identity, ACME account and keys."
+    if [ -z "$ADD_TO_NODE" ]; then
+      say "  * enroll the node:  cd $DIR && docker compose exec node boundgatectl enroll"
+      say "    compare the fingerprint with the admin UI of https://$NAME, confirm the node with its roles, reverse-proxy among them, and sign it."
+      [ -z "$NEW_IDENTITY" ] || say "    this node gave up its old identity: revoke the old node in the admin UI."
+    else
+      say "  * the node asks for the role reverse-proxy now: in the admin UI of https://$NAME confirm and sign it again"
+      say "    with reverse-proxy among its roles. Until then the proxy serves its last configuration, if it has one."
+    fi
+    say "  * the control plane: proxy: {enabled: true} in its control.yaml, or it refuses the role (docs/REVERSE-PROXY.md)"
+    say "  * secrets: $DIR/secrets/cloudflare.token and $DIR/secrets/maxmind.key, one line each (chmod 600, owner $MODULE_UID)"
+    say "  * sites: Reverse Proxy in the admin UI; an nginx-waf hosts.toml goes in with Settings > Import, dry run first"
+    say "  * status:  docker compose exec node boundgatectl status   (the proxy's revision, nginx, certificates under extra)"
+    say "    logs:    docker compose logs reverse-proxy"
+    say "  * firewall: TCP 80 and the sites' ports (443, 8443, ...) open; back up $DIR/state (the node's identity)"
+    say "    and $DIR/proxy-state (ACME account and keys)."
   else
     say "  * enroll:  cd $DIR && docker compose exec node boundgatectl enroll"
     say "    compare the fingerprint with the admin UI of https://$NAME, confirm the node with its role and sign it."

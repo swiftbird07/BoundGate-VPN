@@ -30,6 +30,12 @@ prefixes:
 # workload endpoint (a server that only needs to be reached, no user login)
 # roles: [endpoint]
 #
+# reverse proxy beside this node (docs/REVERSE-PROXY.md; setup.sh kind 3 or 4 writes it): the module
+# container reaches the node on ./modules/reverse-proxy/module.sock, answered for module_uid alone
+# modules: [reverse-proxy]              # requests the role reverse-proxy with the roles above
+# modules_dir: /run/boundgate/modules   # mount ./modules there (docker-compose.reverse-proxy.yml does)
+# module_uid: 65533                     # the module's user; not the worker's 65531
+#
 # transport: auto                  # tunnels to hubs: QUIC on UDP/443, the same tunnel over TCP/443 when the
                                    # network blocks UDP, back to QUIC when it works again (quic_retry: 2m).
                                    # `tcp` forces the fallback, `quic` never uses it

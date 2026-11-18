@@ -1,20 +1,12 @@
-# One reverse proxy (docs/REVERSE-PROXY.md). The node part is node.yaml's
-# (docs/DEPLOY.md); the proxy block is this program's own.
-name: proxy1                     # shown to admins
-state_dir: /var/lib/boundgate
-key_kind: softkey                  # tpm2 with a TPM or vTPM (docs/TPM.md): pass /dev/tpmrm0 in docker-compose.yml
-control:
-  addr: bg.example.com:443
-  server_name: nodes.bg.example.com
-privsep:                           # required for a reverse proxy: nginx runs as this user, never as root
-  user: "65531"
-roles: [endpoint]                  # reverse-proxy is added by the program; the admin grants both at approval
-auto_up: true
-profile: lan-only                  # the overlay's networks, not an exit node's default route: the sites' upstreams
-                                   # may be in the LAN and the proxy's own internet must stay its own
-socket: /run/boundgate/node.sock
-tun_name: bg0
-log_dir: /var/log/boundgate
+# The reverse proxy module beside a node (docs/REVERSE-PROXY.md). Everything
+# about the overlay is node.yaml's: the module only says where its node's
+# socket is and how it serves. Sites, rules, profiles and certificates come
+# from the control plane, through the node.
+module:
+  socket: /run/boundgate/module/module.sock   # the node makes it (node.yaml: modules: [reverse-proxy])
+  # user: "65533"                  # the user it becomes; the node's module_uid
+state_dir: /var/lib/boundgate-proxy
+log_dir: /var/log/boundgate-proxy
 log_stdout: true
 
 proxy:

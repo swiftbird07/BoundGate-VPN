@@ -15,7 +15,8 @@
 # boundgate-release) and refuses anything else. Then, only if that release is
 # newer than what runs here:
 #   MODE=compose (default)  pulls the image BY THE DIGEST the signed manifest
-#       names - not a tag somebody could move -, writes BOUNDGATE_IMAGE and
+#       names - not a tag somebody could move -, writes BOUNDGATE_IMAGE (and
+#       BOUNDGATE_PROXY_IMAGE where the reverse proxy module runs beside) and
 #       BOUNDGATE_RELEASE to .env, `docker compose up -d`, and goes back to the
 #       previous image if the containers do not stay up.
 #   MODE=binaries  downloads boundgate-<v>-linux-<arch>.tar.gz, checks size and
@@ -52,7 +53,7 @@ set -eu
 # install): otherwise a server shown an old signed release as the latest
 # would start on it, with whatever that release had to fix. release.sh refuses
 # to tag a release while this is older than the previous one.
-KIT_FLOOR=v0.1.25
+KIT_FLOOR=v0.2.0
 ARGS0=$*   # for the restart as a new script: -q and an action, never anything with spaces
 QUIET=; [ "${1:-}" != "-q" ] || { QUIET=1; shift; }
 ACTION=${1:-apply}
@@ -230,20 +231,31 @@ fi
 REF=$(jq -r '.image.ref // empty' "$M"); DIGEST=$(jq -r '.image.digest // empty' "$M")
 echo "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' && [ -n "$REF" ] || die "the signed manifest names no image"
 REF=${BOUNDGATE_IMAGE_REPO:-$REF}
-# a reverse proxy kit (deploy/prod/reverse-proxy, docs/REVERSE-PROXY.md) runs the
-# other image of the release: the one the manifest names under images
-if [ -f "$COMPOSE_DIR/reverse-proxy.yaml" ]; then
-  REF=$(jq -r '.images["reverse-proxy"].ref // empty' "$M"); DIGEST=$(jq -r '.images["reverse-proxy"].digest // empty' "$M")
-  echo "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' && [ -n "$REF" ] || die "the signed manifest names no reverse proxy image ($VERSION is older than the reverse proxy?)"
-  REF=${BOUNDGATE_PROXY_IMAGE_REPO:-$REF}
-fi
 case "$REF" in *[!A-Za-z0-9./:_-]*) die "bad image reference" ;; esac
-[ -f "$COMPOSE_DIR/docker-compose.yml" ] || die "no docker-compose.yml in $COMPOSE_DIR (COMPOSE_DIR, or MODE=binaries)"
 IMAGE="$REF@$DIGEST"
+# the reverse proxy module beside the node (reverse-proxy.yaml next to the
+# compose file, docs/REVERSE-PROXY.md) runs the other image of the release:
+# the one the manifest names under images, pinned as BOUNDGATE_PROXY_IMAGE
+PROXY_IMAGE=
+if [ -f "$COMPOSE_DIR/reverse-proxy.yaml" ]; then
+  # a reverse proxy kit of v0.2.0 ran the proxy as a node of its own, from
+  # the node image: this release runs it as a module, and the kit is moved
+  # by hand once (docs/REVERSE-PROXY.md, "From a reverse proxy of v0.2.0").
+  # Pinned as it is it would not start, and roll back every night
+  [ -f "$COMPOSE_DIR/docker-compose.reverse-proxy.yml" ] || die "$COMPOSE_DIR is a reverse proxy of v0.2.0 (reverse-proxy.yaml without docker-compose.reverse-proxy.yml), which $VERSION runs as a module beside a node: move it as docs/REVERSE-PROXY.md says (\"From a reverse proxy of v0.2.0\"); nothing was changed"
+  PREF=$(jq -r '.images["reverse-proxy"].ref // empty' "$M"); PDIGEST=$(jq -r '.images["reverse-proxy"].digest // empty' "$M")
+  echo "$PDIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' && [ -n "$PREF" ] || die "the signed manifest names no reverse proxy image ($VERSION is older than the reverse proxy?)"
+  PREF=${BOUNDGATE_PROXY_IMAGE_REPO:-$PREF}
+  case "$PREF" in *[!A-Za-z0-9./:_-]*) die "bad image reference" ;; esac
+  PROXY_IMAGE="$PREF@$PDIGEST"
+fi
+[ -f "$COMPOSE_DIR/docker-compose.yml" ] || die "no docker-compose.yml in $COMPOSE_DIR (COMPOSE_DIR, or MODE=binaries)"
 $DOCKER pull -q "$IMAGE" >/dev/null || die "cannot pull $IMAGE"
+[ -z "$PROXY_IMAGE" ] || $DOCKER pull -q "$PROXY_IMAGE" >/dev/null || die "cannot pull $PROXY_IMAGE"
 touch "$ENVFILE"; cp "$ENVFILE" "$ENVFILE.before-update"
-{ grep -v '^BOUNDGATE_IMAGE=\|^BOUNDGATE_RELEASE=' "$ENVFILE.before-update" || true; echo "BOUNDGATE_IMAGE=$IMAGE"; echo "BOUNDGATE_RELEASE=$VERSION"; } > "$ENVFILE"
-if [ "$ACTION" = pin ]; then rm -f "$ENVFILE.before-update"; echo "pinned $VERSION ($IMAGE)"; exit 0; fi
+{ grep -v '^BOUNDGATE_IMAGE=\|^BOUNDGATE_PROXY_IMAGE=\|^BOUNDGATE_RELEASE=' "$ENVFILE.before-update" || true
+  echo "BOUNDGATE_IMAGE=$IMAGE"; [ -z "$PROXY_IMAGE" ] || echo "BOUNDGATE_PROXY_IMAGE=$PROXY_IMAGE"; echo "BOUNDGATE_RELEASE=$VERSION"; } > "$ENVFILE"
+if [ "$ACTION" = pin ]; then rm -f "$ENVFILE.before-update"; echo "pinned $VERSION ($IMAGE${PROXY_IMAGE:+, $PROXY_IMAGE})"; exit 0; fi
 up() { (cd "$COMPOSE_DIR" && $DOCKER compose up -d --remove-orphans >/dev/null 2>&1); }
 healthy() { # every container of the project running, none restarting
   sleep "${SETTLE:-20}"
