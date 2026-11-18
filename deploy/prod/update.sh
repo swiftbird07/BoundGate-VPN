@@ -53,7 +53,7 @@ set -eu
 # install): otherwise a server shown an old signed release as the latest
 # would start on it, with whatever that release had to fix. release.sh refuses
 # to tag a release while this is older than the previous one.
-KIT_FLOOR=v0.2.0
+KIT_FLOOR=v0.2.1
 ARGS0=$*   # for the restart as a new script: -q and an action, never anything with spaces
 QUIET=; [ "${1:-}" != "-q" ] || { QUIET=1; shift; }
 ACTION=${1:-apply}
@@ -199,7 +199,10 @@ kit() {
   BOUNDGATE_KIT_RESTARTED=1 exec "$HERE/update.sh" $ARGS0
 }
 kit
-if [ -n "$UPTODATE" ]; then say "up to date: $CUR (latest release $VERSION)"; exit 0; fi
+# pin writes .env even then: setup.sh asks for it after adding the reverse
+# proxy module to a node on the latest release, whose BOUNDGATE_PROXY_IMAGE
+# is missing until then
+if [ -n "$UPTODATE" ] && [ "$ACTION" != pin ]; then say "up to date: $CUR (latest release $VERSION)"; exit 0; fi
 if [ "$ACTION" = check ]; then echo "update available: ${CUR:-unknown} -> $VERSION"; exit 0; fi
 
 if [ "$MODE" = binaries ]; then
