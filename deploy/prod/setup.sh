@@ -170,6 +170,27 @@ system_users() {
   done
 }
 
+# networkd_keep_rules: systemd-networkd removes every policy rule and route it
+# did not make itself when it starts, and an unattended upgrade restarts it.
+# With reply_via_arrival those are the rules that lead into the tunnel: the
+# tunnel stands and the host's own traffic misses it (Martins-NAS 2026-11-17,
+# pCore 2026-11-22; #38). The node puts them back, the drop-in keeps them.
+networkd_keep_rules() {
+  command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-networkd 2>/dev/null || return 0
+  dir=${BOUNDGATE_NETWORKD_DIR:-/etc/systemd/networkd.conf.d}
+  f=$dir/boundgate.conf
+  if [ -e "$f" ]; then say "   kept    $f"; return 0; fi
+  say ""
+  say "systemd-networkd runs here. Every time it starts (a security update restarts it) it removes"
+  say "routing rules and routes it did not make itself, the node's among them (docs/ARRIVAL.md)."
+  confirm "Write $f so that it leaves them alone?" y || return 0
+  if mkdir -p "$dir" 2>/dev/null && printf '[Network]\nManageForeignRoutingPolicyRules=no\nManageForeignRoutes=no\n' > "$f" 2>/dev/null; then
+    say "   wrote   $f (takes effect at networkd's next start)"
+  else
+    say "   could not write $f: write it as root (docs/ARRIVAL.md)"
+  fi
+}
+
 # kit PATH-IN-deploy/prod: downloads to $GOT. Not in a pipeline: a failed download must stop everything
 kit() {
   GOT=$TMPD/$(basename "$1")
@@ -367,7 +388,8 @@ public_addr: \"$PUBLIC:443\"" ;;
   case "$ROUTING" in
     2) PROFILE=full
        say "   note: this takes over the machine's default route. A server behind a port forward"
-       say "   also needs reply_via_arrival in node.yaml (docs/ARRIVAL.md)" ;;
+       say "   also needs reply_via_arrival in node.yaml (docs/ARRIVAL.md)"
+       networkd_keep_rules ;;
     3) PROFILE=wan-only ;;
     4) PROFILE=site; PROFILES_DIR=/etc/boundgate/profiles
        NETS=
