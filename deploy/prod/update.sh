@@ -53,7 +53,7 @@ set -eu
 # install): otherwise a server shown an old signed release as the latest
 # would start on it, with whatever that release had to fix. release.sh refuses
 # to tag a release while this is older than the previous one.
-KIT_FLOOR=v0.2.2
+KIT_FLOOR=v0.2.4
 ARGS0=$*   # for the restart as a new script: -q and an action, never anything with spaces
 QUIET=; [ "${1:-}" != "-q" ] || { QUIET=1; shift; }
 ACTION=${1:-apply}
