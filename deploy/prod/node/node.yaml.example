@@ -27,6 +27,19 @@ prefixes:
 # listen: ":443"
 # public_addr: "hub2.example.com:443"
 #
+# exit hub: a hub that is one of several exit nodes (docs/EXITS.md); beside a node that uses the
+# host's network, in a namespace of its own (docker-compose.exit-hub.yml), on HUB_PORT of .env
+# roles: [hub, exit-node]
+# prefixes:
+#   - {prefix: 0.0.0.0/0, mode: snat}
+# listen: ":8443"
+# public_addr: "203.0.113.7:8443"
+# dns: [9.9.9.9, 1.1.1.1]          # what clients resolve with while this hub is their primary
+# exit:
+#   priority: 2                    # failover order, lowest first; the other exits say theirs
+#   capacity_mbps: 1000            # the uplink, in and out together
+#   mode: failover                 # or balance, on every exit alike
+#
 # workload endpoint (a server that only needs to be reached, no user login)
 # roles: [endpoint]
 #

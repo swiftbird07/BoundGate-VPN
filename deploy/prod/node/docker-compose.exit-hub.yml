@@ -1,0 +1,61 @@
+# A hub that is an exit node, on a host that already runs a node with the
+# host's network (docs/EXITS.md): pxTurn keeps its node with the reverse
+# proxy as a spoke, and this one beside it takes clients for the internet.
+#
+# It runs in a network namespace of its own: two nodes in the host's would
+# both claim the route of the overlay pool and the default route's halves.
+# Its port is published; the clients' addresses reach it (Docker's DNAT
+# keeps them), and what leaves for the internet is translated twice, by the
+# node into this namespace's address and by Docker into the host's.
+#
+# Its own directory, its own node.yaml, state and .env:
+#
+#   mkdir /root/boundgate-hub && cd /root/boundgate-hub
+#   cp <kit>/docker-compose.exit-hub.yml docker-compose.yml
+#   cp <kit>/update.sh <kit>/release_keys .      # as for every node
+#   $EDITOR node.yaml                            # node.yaml.example, "Exit hub"
+#   ./update.sh pin && docker compose up -d
+#   docker compose exec node boundgatectl enroll # then confirm + sign in the admin UI
+#   # updates: setup.sh wrote a cron entry for the host's first node only;
+#   # 30 minutes apart from the one in /etc/cron.d/boundgate-update (both
+#   # restart); bash -c, as root's shell may be fish
+#   bash -c 'm=$(awk "/^[0-9]+ /{print \$1; exit}" /etc/cron.d/boundgate-update) && [ -n "$m" ] || { echo "no /etc/cron.d/boundgate-update: run setup.sh first" >&2; exit 1; }; echo "$(( (m + 30) % 60 )) 3 * * * root cd /root/boundgate-hub && ./update.sh -q" > /etc/cron.d/boundgate-update-hub'
+#
+# HUB_PORT (.env, default 8443) is the port on UDP and TCP; public_addr in
+# node.yaml names it. A host whose TCP 443 belongs to a web server keeps it:
+# clients reach this hub on HUB_PORT, and on a network that blocks it they
+# fall back to the other hubs.
+name: boundgate-exit-hub
+
+services:
+  node:
+    image: ${BOUNDGATE_IMAGE:?BOUNDGATE_IMAGE is not set in .env - run ./update.sh pin (docs/DEPLOY.md)}
+    restart: unless-stopped
+    networks: [hub]
+    ports:
+      - "${HUB_PORT:-8443}:${HUB_PORT:-8443}/udp"
+      - "${HUB_PORT:-8443}:${HUB_PORT:-8443}/tcp"
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    # a hub needs 13-25 MiB idle and grows with its clients (52 MiB on pVPN);
+    # past the limit the kernel ends it and Docker starts it again
+    mem_limit: 256m
+    memswap_limit: 256m
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_BIND_SERVICE, SETUID, SETGID, CHOWN, KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /run/boundgate:size=1m,mode=0755
+      - /tmp:size=16m,mode=1777
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./node.yaml:/etc/boundgate/node.yaml:ro
+      - ./state:/var/lib/boundgate
+      - ./logs:/var/log/boundgate
+    command: ["boundgate-node", "-config", "/etc/boundgate/node.yaml"]
+
+networks:
+  hub:
+    driver: bridge
