@@ -1,0 +1,53 @@
+# The reverse proxy module (docs/REVERSE-PROXY.md): nginx with ModSecurity in
+# front of the web services of this host, beside the BoundGate node of this
+# directory and configured from the control plane through it. It is no node:
+# no device key, no tunnel, no NET_ADMIN. It reaches its node on a socket in
+# ./modules/reverse-proxy, which the node makes for uid 65533 alone and
+# checks every caller of (internal/node/module).
+#
+# This file joins the node's docker-compose.yml: .env says
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.reverse-proxy.yml
+# and node.yaml
+#   modules: [reverse-proxy]
+# (setup.sh, kind 3 or 4, writes both). The images are the ones .env names,
+# pinned by digest by `./update.sh pin` after it checked the release
+# signature: BOUNDGATE_IMAGE the node's, BOUNDGATE_PROXY_IMAGE this one's.
+#
+#   cp reverse-proxy.yaml.example reverse-proxy.yaml   # ACME e-mail
+#   (umask 077; mkdir -p secrets proxy-state); mkdir -p proxy-logs modules
+#   printf '%s\n' TOKEN > secrets/cloudflare.token     # chown 65533:65533, chmod 600
+#   ./update.sh pin && docker compose up -d
+#   then sign the node again in the admin UI, with the role reverse-proxy
+#
+# The module starts as root only to make proxy-state and proxy-logs its
+# user's, then runs as uid 65533 with NET_BIND_SERVICE for :80 and :443 and
+# nothing else; nginx runs as that user too. It needs no node to start: nginx
+# comes up on the last revision and keeps the sites that never ask BoundGate
+# answering while the node is away (docs/REVERSE-PROXY.md, "Failures").
+
+services:
+  node:
+    volumes:
+      # the node makes reverse-proxy/ here: its socket, group 65533 alone
+      - ./modules:/run/boundgate/modules
+
+  reverse-proxy:
+    image: ${BOUNDGATE_PROXY_IMAGE:?BOUNDGATE_PROXY_IMAGE is not set in .env - run ./update.sh pin (docs/REVERSE-PROXY.md)}
+    # no depends_on: the module starts without its node
+    network_mode: host                 # the sites' ports on this host, the upstreams in its LAN and through bg0
+    restart: unless-stopped
+    init: true                         # nginx's workers are reaped when they end
+    user: "0:0"                        # only to own its directories, then uid 65533
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID, CHOWN, KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./reverse-proxy.yaml:/etc/boundgate/reverse-proxy.yaml:ro
+      - ./proxy-state:/var/lib/boundgate-proxy     # revisions, certificates and ACME account, rule sets, the last configuration
+      - ./proxy-logs:/var/log/boundgate-proxy      # nginx and ModSecurity
+      - ./secrets:/etc/boundgate/secrets:ro        # cloudflare.token, maxmind.key (0600, owner 65533)
+      - ./modules/reverse-proxy:/run/boundgate/module   # its own socket, nothing of the node's
+    command: ["boundgate-reverse-proxy", "-config", "/etc/boundgate/reverse-proxy.yaml"]
