@@ -1,0 +1,40 @@
+# aio-full (docs/DEPLOY.md): control plane, hub and a reverse proxy on one
+# server. This file joins docker-compose.yml (.env:
+# COMPOSE_FILE=docker-compose.yml:docker-compose.full.yml; setup.sh writes
+# it). The reverse proxy and its node are a kit of their own in ./proxy.
+#
+# The hub leaves the host's network for one of its own. A hub puts the whole
+# overlay pool on its tunnel device; in the host's network that device
+# would be the host's, and the reverse proxy's node beside it, which needs
+# a tunnel of its own, refuses a pool another interface holds. Here the
+# hub's device and routes stay in its namespace. The mux (UDP 443) and
+# nginx (TCP 443, the passthrough in proxy/reverse-proxy.yaml) reach it at
+# 172.31.254.2:8444 and arrive from the network's gateway 172.31.254.1,
+# which hub.yaml trusts. Nothing is published: no port of the hub's is
+# open on the host.
+#
+# These addresses are in hub.yaml, mux.yaml and proxy/reverse-proxy.yaml
+# as well; a network of another range changes all four files.
+#
+# !reset needs Docker Compose 2.24 or later (as env_file's `required` in
+# docker-compose.yml does).
+services:
+  hub:
+    network_mode: !reset null
+    networks:
+      hub:
+        ipv4_address: 172.31.254.2
+    # a hub forwards and does not start without it; in a namespace of its
+    # own the setting is that namespace's, not the host's, and /proc/sys is
+    # read-only in the container: Docker sets it
+    sysctls:
+      net.ipv4.ip_forward: "1"
+
+networks:
+  hub:
+    name: boundgate-hub
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.254.0/29
+          gateway: 172.31.254.1
